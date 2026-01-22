@@ -7,7 +7,7 @@ name = "sarvalanche"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-    {name="Zach Keskinen", email="zachhoppinen@gmail.com"}
+    {name="Zach Hoppinen", email="zachhoppinen@gmail.com"}
 ]
 description = "Avalanche debris detection from Sentinel-1 and NISAR SAR imagery"
 license = {text = "BSD-3-Clause"}
@@ -44,6 +44,9 @@ develop = [
 [project.urls]
 Homepage = "https://github.com/zachhoppinen/sarvalanche"
 Documentation = "https://github.com/zachhoppinen/sarvalanche#readme"
+
+[project.scripts]
+sarvalanche = "sarvalanche.__main__:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

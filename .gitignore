@@ -138,37 +138,14 @@ dmypy.json
 data/*
 *.pkl
 
-#image types
+#image/data types
 *.zip
 *.gz
 *.asc
-# *.nc
+*.nc
 *.tif
-
-#data directory
-data/
-
-# include all netcdf files in the SnowEx-Data file!
-# This will override the other rules excluding netcdf files.
-#!SnowEx-Data/*.nc
-
-HL_codes_data/
-
-# HPCs
-slurms/
-logs/
-Lidar_s1_stacks/
-
-scripts/optimize/param_sds
-
 *.csv
-
-!/results/site_param_rmses/*.csv
-!/contrib/palomaki/*.csv
-
 *.sqlite
-
-*.nfs*
 
 .vscode/
 local/

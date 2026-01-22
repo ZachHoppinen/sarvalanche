@@ -62,3 +62,4 @@ def validate_canonical(
     # --- Mask sanity ---
     if da.dtype == bool and da.ndim not in (2, 3):
         raise ValueError("Boolean masks must be 2D or time-stacked 3D arrays")
+
