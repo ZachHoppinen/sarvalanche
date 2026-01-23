@@ -14,10 +14,14 @@ import rioxarray  # noqa: F401 (ensures .rio accessor is registered)
 # -----------------------------------------------------------------------------
 
 @pytest.fixture
-def aoi():
+def aoi_projected():
     """Simple projected AOI polygon (meters)."""
     return box(500_000, 4_000_000, 501_000, 4_001_000)
 
+@pytest.fixture
+def aoi_wgs():
+    # Intersects first ASF footprint (-10 to -5)
+    return box(-9, -9, -4, -4)
 
 @pytest.fixture
 def start_date():

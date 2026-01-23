@@ -10,12 +10,11 @@ class BaseFinder(ABC):
         self,
         aoi: Polygon,
         start_date: datetime,
-        end_date: datetime,
+        stop_date: datetime,
     ):
         self.aoi = aoi
         self.start_date = start_date
-        self.end_date = end_date
-
+        self.stop_date = stop_date
     def find(self) -> list[str]:
         self.validate_inputs()
         results = self.query_provider()
@@ -27,7 +26,7 @@ class BaseFinder(ABC):
 
     def validate_inputs(self):
         validate_aoi(self.aoi)
-        validate_dates(self.start_date, self.end_date)
+        validate_dates(self.start_date, self.stop_date)
 
     @abstractmethod
     def query_provider(self):
