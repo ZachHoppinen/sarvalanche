@@ -1,13 +1,14 @@
 # tests/io/finder/test_asf.py
 
 import pandas as pd
+from unittest.mock import MagicMock
+
 import pytest
 from shapely.geometry import box
 
 import asf_search as asf
 
 from sarvalanche.io.finders.Sentinel1Finder import Sentinel1Finder
-from sarvalanche.io.finders.asf_utils import subset_asf_search_results
 
 @pytest.fixture
 def asf_df():
@@ -40,49 +41,7 @@ def asf_df():
         }
     )
 
-def test_get_opera_urls_from_asf_search(asf_df):
-    urls = get_opera_urls_from_asf_search(asf_df)
 
-    assert set(urls) == {
-        "https://example.com/A_VV.tif",
-        "https://example.com/B_VH.tif",
-        "https://example.com/A_mask.tif",
-    }
-
-def test_subset_by_path_number(asf_df):
-    df = subset_asf_search_results(
-        asf_df,
-        path_numbers=[42],
-    )
-
-    assert len(df) == 1
-    assert df.iloc[0]["properties.pathNumber"] == 42
-
-def test_subset_by_direction(asf_df):
-    df = subset_asf_search_results(
-        asf_df,
-        direction="ASCENDING",
-    )
-
-    assert len(df) == 1
-    assert df.iloc[0]["properties.flightDirection"] == "ASCENDING"
-
-def test_subset_by_aoi_wgs(asf_df, aoi_wgs):
-    df = subset_asf_search_results(
-        asf_df,
-        aoi=aoi_wgs,
-    )
-
-    # Only first footprint intersects AOI
-    assert len(df) == 1
-
-    # Optional but strong assertion: make sure it's the expected scene
-    assert df.iloc[0]["properties.url"].endswith("A_VV.tif")
-
-def test_subset_without_aoi_returns_all(asf_df):
-    df = subset_asf_search_results(asf_df)
-
-    assert len(df) == len(asf_df)
 
 @pytest.fixture
 def fake_asf_results(mocker):
@@ -90,11 +49,35 @@ def fake_asf_results(mocker):
     mock = mocker.MagicMock()
     # mock geojson to return something pd.json_normalize can handle
     mock.geojson.return_value = {
-        "features": [
-            {"properties": {"url": "https://example.com/A_VV.tif"}},
-            {"properties": {"url": "https://example.com/B_VH.tif"}},
-        ]
-    }
+    "features": [
+        {
+            "type": "Feature",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[(-5, -5), (5, -5), (5, 5), (-5, 5), (-5, -5)]],
+            },
+            "properties": {
+                "url": "https://example.com/A_VV.tif",
+                "additionalUrls": ["https://example.com/A_mask.tif"],
+                "pathNumber": 1,
+                "polarization": "VV",
+            },
+        },
+        {
+            "type": "Feature",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[(20, 20), (30, 20), (30, 30), (20, 30), (20, 20)]],
+            },
+            "properties": {
+                "url": "https://example.com/B_VH.tif",
+                "additionalUrls": [],
+                "pathNumber": 2,
+                "polarization": "VH",
+            },
+        },
+    ]
+}
     mock.find_urls.return_value = [
         "https://example.com/A_VV.tif",
         "https://example.com/B_VH.tif",
@@ -104,7 +87,7 @@ def fake_asf_results(mocker):
 
 @pytest.mark.parametrize("product_type,expected_filtered", [
     (asf.PRODUCT_TYPE.RTC, True),   # RTC should filter extensions
-    ("CSLC", False), # CSLC should skip filter_results
+    ("CSLC", True), # CSLC should skip filter_results
 ])
 def test_find_filters_conditionally(mocker, aoi_wgs, fake_asf_results, product_type, expected_filtered):
     # Patch geo_search to return our fake ASF results
@@ -127,19 +110,122 @@ def test_find_filters_conditionally(mocker, aoi_wgs, fake_asf_results, product_t
     # All URLs should still come from find_urls
     assert set(urls).issubset(set(fake_asf_results.find_urls.return_value))
 
-def test_find_subsets_called(mocker, aoi_wgs, fake_asf_results):
-    """Test that subset_asf_search_results is called if subset_kwargs are provided"""
-    mocker.patch("sarvalanche.io.finders.Sentinel1Finder.asf.geo_search", return_value=fake_asf_results)
+@pytest.fixture
+def aoi_wgs():
+    # small box AOI
+    return box(-155.5, 19.9, -155.4, 20.0)
 
-    finder = Sentinel1Finder(aoi=aoi_wgs, start_date="2024-01-01", stop_date="2024-01-10")
 
-    # Patch subset_asf_search_results
-    mock_subset = mocker.patch("sarvalanche.io.finder.asf_utils.subset_asf_search_results",
-                               wraps=lambda df, **kwargs: df)
+@pytest.fixture
+def fake_asf_results():
+    mock = MagicMock()
+    mock.find_urls.return_value = [
+        "https://example.com/A_VV.tif",
+        "https://example.com/A_VH.tif",
+        "https://example.com/A_mask.tif",
+        "https://example.com/B_VV.tif",
+    ]
+    return mock
 
-    finder.find(path_numbers=[1, 2], polarization="VV")
 
-    mock_subset.assert_called_once()
-    args, kwargs = mock_subset.call_args
-    assert "path_numbers" in kwargs
-    assert "polarization" in kwargs
+def test_init_with_filters(aoi_wgs):
+    finder = Sentinel1Finder(
+        aoi=aoi_wgs,
+        start_date="2020-01-01",
+        stop_date="2020-01-10",
+        path_number=42,
+        direction="ASCENDING",
+        burst_id=7,
+        frame=3,
+    )
+
+    assert finder.path_number == 42
+    assert finder.direction == "ASCENDING"
+    assert finder.burst_id == 7
+    assert finder.frame == 3
+
+
+def test_query_provider_calls_geo_search(mocker, aoi_wgs):
+    # patch asf.geo_search
+    geo_patch = mocker.patch("asf_search.geo_search", return_value=MagicMock())
+
+    finder = Sentinel1Finder(
+        aoi=aoi_wgs,
+        start_date="2020-01-01",
+        stop_date="2020-01-10",
+        path_number=87,
+        direction="DESCENDING",
+        burst_id=5,
+        frame=2,
+    )
+
+    results = finder.query_provider()
+    geo_patch.assert_called_once()
+
+    # check that correct arguments passed
+    called_kwargs = geo_patch.call_args.kwargs
+    assert called_kwargs["intersectsWith"] == aoi_wgs.wkt
+    assert called_kwargs["relativeOrbit"] == 87
+    assert called_kwargs["flightDirection"] == "DESCENDING"
+    assert called_kwargs["relativeBurstID"] == 5
+    assert called_kwargs["frame"] == 2
+    assert called_kwargs["processingLevel"] == asf.PRODUCT_TYPE.RTC
+    assert results == geo_patch.return_value
+
+
+def test_find_rtc_extension_filtering(mocker, aoi_wgs, fake_asf_results):
+    # patch query_provider to return our fake ASFSearchResults
+    mocker.patch.object(Sentinel1Finder, "query_provider", return_value=fake_asf_results)
+
+    finder = Sentinel1Finder(
+        aoi=aoi_wgs,
+        start_date="2020-01-01",
+        stop_date="2020-01-10",
+        product_type=asf.PRODUCT_TYPE.RTC,
+    )
+
+    urls = finder.find()
+    # RTC should filter to _VV, _VH, _mask
+    for u in urls:
+        assert u.endswith(("_VV.tif", "_VH.tif", "_mask.tif"))
+
+    # All URLs from fake_asf_results.find_urls that match
+    assert len(urls) == 4  # 3 matching
+
+
+def test_find_cslc_extension_filtering(mocker, aoi_wgs, fake_asf_results):
+    fake_asf_results.find_urls.return_value = [
+        "file1.h5",
+        "file2.h5",
+        "file3.tif",
+    ]
+
+    mocker.patch.object(Sentinel1Finder, "query_provider", return_value=fake_asf_results)
+
+    finder = Sentinel1Finder(
+        aoi=aoi_wgs,
+        start_date="2020-01-01",
+        stop_date="2020-01-10",
+        product_type=asf.PRODUCT_TYPE.CSLC,
+    )
+
+    urls = finder.find()
+    # CSLC should only keep .h5
+    assert all(u.endswith(".h5") for u in urls)
+    assert len(urls) == 2
+
+
+def test_find_no_filters_applied(mocker, aoi_wgs, fake_asf_results):
+    # product_type that does not trigger filtering
+    mocker.patch.object(Sentinel1Finder, "query_provider", return_value=fake_asf_results)
+
+    finder = Sentinel1Finder(
+        aoi=aoi_wgs,
+        start_date="2020-01-01",
+        stop_date="2020-01-10",
+        product_type="SLC",
+    )
+
+    urls = finder.find()
+    # all URLs returned since no filtering applied
+    assert urls == fake_asf_results.find_urls()

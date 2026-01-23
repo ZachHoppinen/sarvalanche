@@ -1,7 +1,9 @@
 import pytest
 import asf_search as asf
+from shapely.geometry import box
 
 import sarvalanche.io as io
+
 from sarvalanche.io.finders.BaseFinder import BaseFinder
 
 class DummyFinder(BaseFinder):
@@ -130,11 +132,6 @@ def test_filter_by_substring(urls, dummy_finder):
     # No match
     filtered = dummy_finder.filter_by_substring(urls, ["foobar"])
     assert filtered == []
-
-import pytest
-from shapely.geometry import box
-
-from sarvalanche.io import find_data
 
 @pytest.mark.network
 @pytest.mark.slow

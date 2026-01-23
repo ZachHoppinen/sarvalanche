@@ -1,7 +1,6 @@
 # src/sarvalanche/io/__init__.py
 
 from .finders.dispatch import get_finder
-from .loader import load_data
 
 __all__ = [
     "get_finder",
