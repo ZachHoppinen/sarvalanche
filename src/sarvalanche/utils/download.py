@@ -37,7 +37,7 @@ def download_urls(urls, out_directory, reprocess=False, retries = 3):
     download_fps = []
     for url in tqdm(urls, desc = 'Downloading Urls'):
         out_fp = out_directory.joinpath(Path(url).name)
-        
+
         if out_fp.exists() and out_fp.stat().st_size != 0 and not reprocess:
             download_fps.append(out_fp)
             continue
@@ -54,7 +54,7 @@ def download_urls(urls, out_directory, reprocess=False, retries = 3):
                 time.sleep(2)  # wait before retrying
 
         download_fps.append(out_fp)
-    
+
     return download_fps
 
 def download_urls_parallel(
