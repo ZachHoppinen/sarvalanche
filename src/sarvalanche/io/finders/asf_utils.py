@@ -2,19 +2,6 @@ import pandas as pd
 import geopandas as gpd
 from shapely.geometry import box, Polygon
 
-def get_opera_urls_from_asf_search(asf_results_df):
-    urls = []
-
-    for _, row in asf_results_df.iterrows():
-        main = row.get("properties.url")
-        if main:
-            urls.append(main)
-
-        extras = row.get("properties.additionalUrls") or []
-        urls.extend(extras)
-
-    return urls
-
 def subset_asf_search_results(
     results_df,
     aoi=None,
@@ -76,7 +63,3 @@ def subset_asf_search_results(
         df = df[df['properties.sceneName'] == scene_name]
 
     return df
-
-def _looks_projected(geom):
-    xmin, ymin, xmax, ymax = geom.bounds
-    return abs(xmin) > 180 or abs(ymin) > 90

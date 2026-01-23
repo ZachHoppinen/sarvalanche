@@ -5,10 +5,7 @@ import asf_search as asf
 import pandas as pd
 
 from .BaseFinder import BaseFinder
-from .asf_utils import (
-    get_opera_urls_from_asf_search,
-    subset_asf_search_results,
-)
+from .asf_utils import subset_asf_search_results
 
 class Sentinel1Finder(BaseFinder):
     def __init__(
@@ -32,19 +29,25 @@ class Sentinel1Finder(BaseFinder):
             processingLevel=self.product_type,
         )
 
-        # Convert to DataFrame once
-        df = pd.DataFrame(results.geojson())
-        return df
+        return results
 
     def find(self, **subset_kwargs):
-        df = self.query_provider()
+        asf_results = self.query_provider()
+
+        results_df = pd.json_normalize(asf_results.geojson(), record_path = ['features'])
 
         if subset_kwargs:
-            df = subset_asf_search_results(df, aoi=self.aoi, **subset_kwargs)
+            df = subset_asf_search_results(results_df, aoi=self.aoi, **subset_kwargs)
 
-        urls = get_opera_urls_from_asf_search(df)
+        urls =  asf_results.find_urls()
 
-        return self.filter_results(
-            urls,
-            extensions=("_VV.tif", "_VH.tif", "_mask.tif"),
-        )
+        # Apply extension filtering only for RTC products
+        if self.product_type == asf.PRODUCT_TYPE.RTC:
+            urls = self.filter_by_extensions(
+                urls,
+                extensions=("_VV.tif", "_VH.tif", "_mask.tif"),
+            )
+
+        # TODO: other filtering for SLC or static products
+
+        return urls
