@@ -1,3 +1,38 @@
+## Current detection probability logic
+
+We are using a bayesian model based on our inputs to predic the probability of debris at a pixel (y, x) and time (t)
+
+`P(debris | SAR change, snow change, terrain context, ...)`
+
+```
+logP = (
+    w0 * log(P0)
+  + w_vv * log(L_vv)
+  + w_vh * log(L_vh)
+  + w_snow * log(L_snow)
+)
+
+P = sigmoid(logP)
+```
+
+```
+P_prior   = debris_zone
+P_vv      = vv_likelihood(ΔVV)
+P_vh      = vh_likelihood(ΔVH)
+P_snow    = snow_likelihood(Δsnow)
+```
+
+combined with:
+
+```
+P_debris = normalize(
+    P_prior**w0 *
+    P_vv**w1 *
+    P_vh**w2 *
+    P_snow**w3
+)
+```
+
 ## Module workflow
 
 Everything flows:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
+import time
 import xarray as xr
 import rioxarray
 import numpy as np
@@ -20,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from sarvalanche.utils import download_urls_parallel, _compute_file_checksum, combine_close_images
 from sarvalanche.utils.constants import REQUIRED_ATTRS, CANONICAL_DIMS_2D, CANONICAL_DIMS_3D
 
+def time_since(time, start_time): print(f'Time since: {time - start_time}')
 class BaseLoader(ABC):
     """
     Base class for all data loaders.
@@ -49,7 +51,7 @@ class BaseLoader(ABC):
         self.substring = substring
 
     def load(self, urls: list[str]) -> Union[xr.DataArray, xr.Dataset]:
-            # Filter by substring if requested
+        # Filter by substring if requested
         if self.substring is not None:
             urls = [u for u in urls if self.substring in u]
 
@@ -68,8 +70,8 @@ class BaseLoader(ABC):
 
         # Run loading files in parallel
         # could speed up more with pre-allocation
-        with ThreadPoolExecutor() as executor:
-            futures = {executor.submit(process_file, f): f for f in sorted(files)}
+        with ThreadPoolExecutor() as ex:
+            futures = [ex.submit(process_file, f) for f in sorted(files)]
             for fut in as_completed(futures):
                 arrays.append(fut.result())
 
@@ -230,23 +232,35 @@ class BaseLoader(ABC):
 
         raise ValueError("Multiple arrays but no time dimension")
 
+
     def _reproject(self, da: xr.DataArray) -> xr.DataArray:
         if da.rio.crs is None:
             raise ValueError("dataarray must have a valid CRS")
 
+        # Initialize reference grid once
         if self.reference_grid is None:
-            # First time: set reference grid from this DA
             self.reference_grid = da
+            self._dst_crs = da.rio.crs
+            self._dst_transform = da.rio.transform()
+            self._dst_shape = da.shape
+            return da
 
-        if self.reference_grid.rio.crs is None:
-            raise ValueError("reference_grid must have a valid CRS")
+        # Fast path: already aligned
+        if (
+            da.rio.crs == self._dst_crs
+            and da.rio.transform() == self._dst_transform
+            and da.shape == self._dst_shape
+        ):
+            return da
 
+        # rioxarray fallback (generic & safe)
         da = da.rio.reproject_match(self.reference_grid)
 
         if self.target_crs is not None:
             da = da.rio.reproject(self.target_crs)
 
         return da
+
 
     def _add_attrs(self, da: xr.DataArray, urls: list[str]) -> xr.DataArray:
         attrs = dict(da.attrs)
