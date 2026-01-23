@@ -13,8 +13,9 @@ import warnings
 from collections import defaultdict
 from statistics import median
 from datetime import datetime
+from typing import Union
 
-from sarvalanche.utils import download_urls_parallel, _compute_file_checksum
+from sarvalanche.utils import download_urls_parallel, _compute_file_checksum, combine_close_images
 from sarvalanche.utils.constants import REQUIRED_ATTRS, CANONICAL_DIMS_2D, CANONICAL_DIMS_3D
 
 class BaseLoader(ABC):
@@ -38,17 +39,23 @@ class BaseLoader(ABC):
         cache_dir: Path | None = None,
         reference_grid: xr.DataArray | None = None,
         target_crs: str | None = None,
+        substring: str | None = None
     ):
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.reference_grid = reference_grid
         self.target_crs = target_crs
+        self.substring = substring
 
-    def load(self, urls: list[str]) -> xr.DataArray:
+    def load(self, urls: list[str]) -> Union[xr.DataArray, xr.Dataset]:
+            # Filter by substring if requested
+        if self.substring is not None:
+            urls = [u for u in urls if self.substring in u]
+
         files = self._download(urls)
         self._validate_files(files)
 
         arrays = []
-        for f in files:
+        for f in sorted(files):
             da = self._open_file(f)
             da = self._normalize_dims(da)
             da = self._reproject(da)
@@ -58,7 +65,8 @@ class BaseLoader(ABC):
 
         out = self._stack(arrays)
         out = self._add_attrs(out, urls)
-
+        out = out.sortby('time')
+        out = combine_close_images(out, time_tol="2min")
         self._validate_output(out)
 
         return out

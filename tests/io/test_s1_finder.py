@@ -9,6 +9,7 @@ from shapely.geometry import box
 import asf_search as asf
 
 from sarvalanche.io.finders.Sentinel1Finder import Sentinel1Finder
+from sarvalanche.io import find_data
 
 @pytest.fixture
 def asf_df():
@@ -229,3 +230,51 @@ def test_find_no_filters_applied(mocker, aoi_wgs, fake_asf_results):
     urls = finder.find()
     # all URLs returned since no filtering applied
     assert urls == fake_asf_results.find_urls()
+
+@pytest.mark.network
+@pytest.mark.slow
+def test_find_data_sentinel1_cslc_real_asf():
+    """
+    Real ASF network test for Sentinel-1 OPERA RTC products.
+
+    This test:
+    - Hits ASF directly
+    - Uses a small AOI + narrow time window
+    - Asserts known OPERA RTC outputs
+    """
+
+    aoi = box(-155.5, 19.9, -155.4, 20.0)
+    start_date = "2020-01-01"
+    end_date = "2020-01-04"
+
+    urls = find_data(
+        aoi=aoi,
+        start_date=start_date,
+        stop_date=end_date,
+        dataset="Sentinel-1",
+        product_type = asf.PRODUCT_TYPE.CSLC,
+    )
+
+    # --- Basic sanity checks ---
+    assert isinstance(urls, list)
+    assert len(urls) == 2
+
+    # --- Assert expected file types ---
+    assert all(
+        u.endswith((".h5",))
+        for u in urls
+    )
+
+    # --- Assert OPERA RTC path ---
+    assert all(
+        "OPERA_L2_CSLC-S1" in u
+        for u in urls
+    )
+
+    # --- Assert exact expected set (order-insensitive) ---
+    expected = {
+    'https://datapool.asf.alaska.edu/CSLC/OPERA-S1/OPERA_L2_CSLC-S1_T087-185679-IW2_20200101T161622Z_20240429T185938Z_S1A_VV_v1.1.h5',
+    'https://datapool.asf.alaska.edu/CSLC/OPERA-S1/OPERA_L2_CSLC-S1_T087-185680-IW2_20200101T161625Z_20240429T185938Z_S1A_VV_v1.1.h5'
+    }
+
+    assert set(urls) == expected

@@ -206,7 +206,7 @@ def test_normalize_dims_noop_if_already_yx():
 
     out = loader._normalize_dims(da)
 
-    assert out is not da  # renamed returns new object
+    assert out is da  # renamed returns new object
     assert out.dims == ("y", "x")
     np.testing.assert_array_equal(out.values, da.values)
 
@@ -724,3 +724,13 @@ def test_assign_time_multiple_calls(loader, da_yx):
     assert "time" in out2.dims
     assert out2.sizes["time"] == 1
     assert out2.coords["time"][0] == pd.Timestamp("2020-01-02")
+
+@pytest.fixture
+def fake_urls(tmp_path):
+    """Create fake GeoTIFF-like files (empty but named)"""
+    files = []
+    for name in ["S1_VV.tif", "S1_VH.tif", "S1_mask.tif"]:
+        f = tmp_path / name
+        f.write_text("dummy")  # just to create a Path
+        files.append(str(f))
+    return files

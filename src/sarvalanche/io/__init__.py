@@ -24,7 +24,8 @@ def load_data(
     sensor: str,
     product: str,
     cache_dir=None,
+    substring=None
 ):
     loader_cls = LOADERS[(sensor, product)]
-    loader = loader_cls(cache_dir=cache_dir)
+    loader = loader_cls(cache_dir=cache_dir, substring = substring)
     return loader.load(urls)

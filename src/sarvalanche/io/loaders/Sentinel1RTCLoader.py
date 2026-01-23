@@ -22,6 +22,19 @@ class Sentinel1RTCLoader(BaseLoader):
     sensor = SENTINEL1
     product = OPERA_RTC
 
+    RAW_TO_CANONICAL = {
+    "PROCESSING_INFORMATION_OUTPUT_BACKSCATTER_EXPRESSION_CONVENTION": "units",
+    "PROCESSING_INFORMATION_OUTPUT_BACKSCATTER_NORMALIZATION_CONVENTION": "backscatter_type",
+    "RADAR_BAND": "band",
+    "TRACK_NUMBER": "track",
+    "ORBIT_PASS_DIRECTION": "direction",
+    "PLATFORM": "platform",
+    }
+
+    POLS = ['VV', 'VH', 'mask']
+
+    ALLOWED_EXTENSIONS = (".tif", ".tiff")
+
     def _parse_time(self, path: Path) -> pd.Timestamp | None:
         stem = path.stem
 
@@ -59,5 +72,50 @@ class Sentinel1RTCLoader(BaseLoader):
         # Could not parse time
         raise ValueError(f'Unable to parse time from s1 RTC file: {path}')
 
-    def  _open_file(self, path):
-        da = xr.open_dataarray(path)
+    def _apply_canonical_attrs(self, da: xr.DataArray) -> xr.DataArray:
+        # Start with sensor and product
+        da.attrs["sensor"] = self.sensor
+        da.attrs["product"] = self.product
+        da.attrs["crs"] = str(da.rio.crs) if da.rio.crs else None
+
+        # Map raw attrs to canonical ones
+        for raw_attr, canonical in self.RAW_TO_CANONICAL.items():
+            if raw_attr in da.attrs:
+                da.attrs[canonical] = da.attrs[raw_attr]
+            else:
+                # fallback if attribute is missing
+                da.attrs[canonical] = None
+
+        return da
+
+    def get_polarization(self, path: Path) -> str:
+        name = path.name
+        if '_mask.tif' in name: return 'mask'
+        elif '_VV.tif' in name: return 'VV'
+        elif '_VH.tif' in name: return 'VH'
+        raise ValueError(f'Unable to parse polarization from {path}')
+
+
+    def _open_file(self, path: Path) -> xr.DataArray:
+        if not path.suffix.lower() in self.ALLOWED_EXTENSIONS:
+            raise ValueError(
+                f"Sentinel1RTCLoader only supports GeoTIFF files. Got: {path}"
+            )
+
+        da = xr.open_dataarray(path)[0]
+
+        pol = self.get_polarization(path)
+
+        da = da.rename(pol)
+        # Apply canonical attributes
+        da = self._apply_canonical_attrs(da)
+
+        # Expand time dimension if possible
+        t = self._parse_time(path)
+        if t is not None:
+            da = da.expand_dims(time=[t])
+            # assign track/direction/platform as coords along time
+            for coord in ("track", "direction", "platform"):
+                da = da.assign_coords({coord: ("time", [da.attrs.get(coord, "unknown")])})
+
+        return da
