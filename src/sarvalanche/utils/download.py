@@ -1,6 +1,7 @@
 """
 Utility functions for downloading files
 """
+import hashlib
 from pathlib import Path
 import time
 import gzip
@@ -13,6 +14,14 @@ from asf_search import download_url
 
 import logging
 log = logging.getLogger(__name__)
+
+def _compute_file_checksum(path: Path, algo="sha256") -> str:
+    h = hashlib.new(algo)
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
 
 def download_urls(urls, out_directory, reprocess=False, retries = 3):
     """

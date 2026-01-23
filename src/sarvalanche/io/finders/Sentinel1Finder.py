@@ -47,6 +47,12 @@ class Sentinel1Finder(BaseFinder):
                 urls,
                 extensions=("_VV.tif", "_VH.tif", "_mask.tif"),
             )
+        
+        if self.product_type == asf.PRODUCT_TYPE.CSLC:
+            urls = self.filter_by_extensions(
+                urls,
+                extensions=(".h5",),
+            )
 
         # TODO: other filtering for SLC or static products
 

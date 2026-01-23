@@ -1,4 +1,5 @@
 import pytest
+import asf_search as asf
 
 import sarvalanche.io as io
 from sarvalanche.io.finders.BaseFinder import BaseFinder
@@ -13,11 +14,11 @@ class DummyFinder(BaseFinder):
         ]
 
 
-def test_finder_deduplicates_and_sorts(aoi, start_date, end_date):
+def test_finder_deduplicates_and_sorts(aoi_wgs, start_date, end_date):
     finder = DummyFinder(
-        aoi=aoi,
+        aoi=aoi_wgs,
         start_date=start_date,
-        end_date=end_date,
+        stop_date=end_date,
     )
 
     urls = finder.find()
@@ -27,27 +28,27 @@ def test_finder_deduplicates_and_sorts(aoi, start_date, end_date):
         "https://example.com/b.zip",
     ]
 
-def test_finder_rejects_invalid_urls(aoi, start_date, end_date):
+def test_finder_rejects_invalid_urls(aoi_wgs, start_date, end_date):
     class BadFinder(BaseFinder):
         def query_provider(self):
             return ["not-a-url"]
 
     finder = BadFinder(
-        aoi=aoi,
+        aoi=aoi_wgs,
         start_date=start_date,
-        end_date=end_date,
+        stop_date=end_date,
     )
 
     with pytest.raises(ValueError, match="Invalid URL"):
         finder.find()
 
-def test_finder_rejects_invalid_date_range(aoi):
+def test_finder_rejects_invalid_date_range(aoi_wgs):
     from datetime import datetime
 
     finder = DummyFinder(
-        aoi=aoi,
+        aoi=aoi_wgs,
         start_date=datetime(2024, 2, 1),
-        end_date=datetime(2024, 1, 1),
+        stop_date=datetime(2024, 1, 1),
     )
 
     with pytest.raises(ValueError):
@@ -57,7 +58,7 @@ def test_normalize_results_strings_dicts_objects():
     class Obj:
         url = "http://example.com/obj.zip"
 
-    f = DummyFinder(aoi=None, start_date="2020-01-01", end_date="2020-01-02")
+    f = DummyFinder(aoi=None, start_date="2020-01-01", stop_date="2020-01-02")
     results = ["http://example.com/1.zip", {"url": "http://example.com/2.zip"}, Obj()]
     normalized = f.normalize_results(results)
     assert normalized == [
@@ -67,13 +68,13 @@ def test_normalize_results_strings_dicts_objects():
     ]
 
 def test_filter_results_deduplication():
-    f = DummyFinder(aoi=None, start_date="2020-01-01", end_date="2020-01-02")
+    f = DummyFinder(aoi=None, start_date="2020-01-01", stop_date="2020-01-02")
     urls = ["b", "a", "b"]
     filtered = f.filter_results(urls)
     assert filtered == ["a", "b"]
 
 def test_validate_urls_raises_on_bad():
-    f = DummyFinder(aoi=None, start_date="2020-01-01", end_date="2020-01-02")
+    f = DummyFinder(aoi=None, start_date="2020-01-01", stop_date="2020-01-02")
     with pytest.raises(ValueError):
         f.validate_urls(["ftp://bad.url"])
 
@@ -87,8 +88,8 @@ def urls():
     ]
 
 @pytest.fixture
-def dummy_finder(aoi, start_date, end_date):
-    return DummyFinder(aoi=aoi, start_date=start_date, end_date=end_date)
+def dummy_finder(aoi_wgs, start_date, end_date):
+    return DummyFinder(aoi=aoi_wgs, start_date=start_date, stop_date=end_date)
 
 
 def test_filter_by_extensions(urls, dummy_finder):
@@ -130,3 +131,106 @@ def test_filter_by_substring(urls, dummy_finder):
     filtered = dummy_finder.filter_by_substring(urls, ["foobar"])
     assert filtered == []
 
+import pytest
+from shapely.geometry import box
+
+from sarvalanche.io import find_data
+
+@pytest.mark.network
+@pytest.mark.slow
+def test_find_data_sentinel1_rtc_real_asf():
+    """
+    Real ASF network test for Sentinel-1 OPERA RTC products.
+
+    This test:
+    - Hits ASF directly
+    - Uses a small AOI + narrow time window
+    - Asserts known OPERA RTC outputs
+    """
+
+    aoi = box(-155.5, 19.9, -155.4, 20.0)
+    start_date = "2020-01-01"
+    end_date = "2020-01-04"
+
+    urls = find_data(
+        aoi=aoi,
+        start_date=start_date,
+        stop_date=end_date,
+        dataset="Sentinel-1",
+    )
+
+    # --- Basic sanity checks ---
+    assert isinstance(urls, list)
+    assert len(urls) == 6
+
+    # --- Assert expected file types ---
+    assert all(
+        u.endswith(("_VV.tif", "_VH.tif", "_mask.tif"))
+        for u in urls
+    )
+
+    # --- Assert OPERA RTC path ---
+    assert all(
+        "OPERA_L2_RTC-S1" in u
+        for u in urls
+    )
+
+    # --- Assert exact expected set (order-insensitive) ---
+    expected = {
+        "https://cumulus.asf.earthdatacloud.nasa.gov/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T087-185679-IW2_20200101T161622Z_20250911T203016Z_S1A_30_v1.0/OPERA_L2_RTC-S1_T087-185679-IW2_20200101T161622Z_20250911T203016Z_S1A_30_v1.0_VH.tif",
+        "https://cumulus.asf.earthdatacloud.nasa.gov/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T087-185679-IW2_20200101T161622Z_20250911T203016Z_S1A_30_v1.0/OPERA_L2_RTC-S1_T087-185679-IW2_20200101T161622Z_20250911T203016Z_S1A_30_v1.0_VV.tif",
+        "https://cumulus.asf.earthdatacloud.nasa.gov/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T087-185679-IW2_20200101T161622Z_20250911T203016Z_S1A_30_v1.0/OPERA_L2_RTC-S1_T087-185679-IW2_20200101T161622Z_20250911T203016Z_S1A_30_v1.0_mask.tif",
+        "https://cumulus.asf.earthdatacloud.nasa.gov/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T087-185680-IW2_20200101T161625Z_20250911T203016Z_S1A_30_v1.0/OPERA_L2_RTC-S1_T087-185680-IW2_20200101T161625Z_20250911T203016Z_S1A_30_v1.0_VH.tif",
+        "https://cumulus.asf.earthdatacloud.nasa.gov/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T087-185680-IW2_20200101T161625Z_20250911T203016Z_S1A_30_v1.0/OPERA_L2_RTC-S1_T087-185680-IW2_20200101T161625Z_20250911T203016Z_S1A_30_v1.0_VV.tif",
+        "https://cumulus.asf.earthdatacloud.nasa.gov/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T087-185680-IW2_20200101T161625Z_20250911T203016Z_S1A_30_v1.0/OPERA_L2_RTC-S1_T087-185680-IW2_20200101T161625Z_20250911T203016Z_S1A_30_v1.0_mask.tif",
+    }
+
+    assert set(urls) == expected
+
+@pytest.mark.network
+@pytest.mark.slow
+def test_find_data_sentinel1_cslc_real_asf():
+    """
+    Real ASF network test for Sentinel-1 OPERA RTC products.
+
+    This test:
+    - Hits ASF directly
+    - Uses a small AOI + narrow time window
+    - Asserts known OPERA RTC outputs
+    """
+
+    aoi = box(-155.5, 19.9, -155.4, 20.0)
+    start_date = "2020-01-01"
+    end_date = "2020-01-04"
+
+    urls = find_data(
+        aoi=aoi,
+        start_date=start_date,
+        stop_date=end_date,
+        dataset="Sentinel-1",
+        product_type = asf.PRODUCT_TYPE.CSLC,
+    )
+
+    # --- Basic sanity checks ---
+    assert isinstance(urls, list)
+    assert len(urls) == 2
+
+    # --- Assert expected file types ---
+    assert all(
+        u.endswith((".h5",))
+        for u in urls
+    )
+
+    # --- Assert OPERA RTC path ---
+    assert all(
+        "OPERA_L2_CSLC-S1" in u
+        for u in urls
+    )
+
+    # --- Assert exact expected set (order-insensitive) ---
+    expected = {
+    'https://datapool.asf.alaska.edu/CSLC/OPERA-S1/OPERA_L2_CSLC-S1_T087-185679-IW2_20200101T161622Z_20240429T185938Z_S1A_VV_v1.1.h5',
+    'https://datapool.asf.alaska.edu/CSLC/OPERA-S1/OPERA_L2_CSLC-S1_T087-185680-IW2_20200101T161625Z_20240429T185938Z_S1A_VV_v1.1.h5'
+    }
+
+    assert set(urls) == expected
