@@ -7,13 +7,15 @@ from pathlib import Path
 import xarray as xr
 import rioxarray
 import numpy as np
-import hashlib
 import re
 import warnings
 from collections import defaultdict
 from statistics import median
 from datetime import datetime
 from typing import Union
+from rasterio.warp import reproject, Resampling
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from sarvalanche.utils import download_urls_parallel, _compute_file_checksum, combine_close_images
 from sarvalanche.utils.constants import REQUIRED_ATTRS, CANONICAL_DIMS_2D, CANONICAL_DIMS_3D
@@ -55,13 +57,21 @@ class BaseLoader(ABC):
         self._validate_files(files)
 
         arrays = []
-        for f in sorted(files):
+
+        # Worker function for a single file
+        def process_file(f):
             da = self._open_file(f)
             da = self._normalize_dims(da)
             da = self._reproject(da)
             da = self._assign_time(da, f)
+            return da
 
-            arrays.append(da)
+        # Run loading files in parallel
+        # could speed up more with pre-allocation
+        with ThreadPoolExecutor() as executor:
+            futures = {executor.submit(process_file, f): f for f in sorted(files)}
+            for fut in as_completed(futures):
+                arrays.append(fut.result())
 
         out = self._stack(arrays)
         out = self._add_attrs(out, urls)
@@ -99,7 +109,7 @@ class BaseLoader(ABC):
         self,
         files: list[Path],
         *,
-        size_outlier_ratio: float = 0.2,
+        size_outlier_ratio: float = 0.4,
         group_regex: str | None = None,
         checksums: dict[str, str] | None = None,
     ):
