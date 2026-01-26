@@ -26,7 +26,7 @@ def test_parse_time_opera_rtc(tmp_path):
 @pytest.fixture
 def dummy_file(tmp_path):
     """Create a minimal netCDF file mimicking a downloaded file."""
-    path = tmp_path / "file.tif"
+    path = Path(tmp_path / "file_VV.tif")
     data = np.ones((2, 2))
     da = xr.DataArray(
         data,
@@ -42,14 +42,14 @@ def dummy_file(tmp_path):
         },
     )
     da.to_netcdf(path)
-    return str(path)
+    return path
 
 
 def test_open_file_sets_canonical_attrs(dummy_file):
     loader = Sentinel1RTCLoader()
-    
+
     with patch.object(loader, "_parse_time", return_value=pd.Timestamp("2020-01-01")):
-        da = loader._open_file(dummy_file)
+        da = loader._open_file(Path(dummy_file))
 
     # canonical attributes
     for attr in ["sensor", "product", "units", "backscatter_type", "band"]:
@@ -110,7 +110,7 @@ def test_parse_time_raises_when_unparseable(loader, tmp_path):
         loader._parse_time(f)
 
 def test_open_file_creates_time_dim(loader, tmp_path):
-    path = tmp_path / "file_20200101T010101Z.tif"
+    path = tmp_path / "file_20200101T010101Z_VV.tif"
     da = xr.DataArray(np.ones((2,2)), dims=("y","x"), attrs={
         "PROCESSING_INFORMATION_OUTPUT_BACKSCATTER_EXPRESSION_CONVENTION": "m2",
         "PROCESSING_INFORMATION_OUTPUT_BACKSCATTER_NORMALIZATION_CONVENTION": "Sigma0",
@@ -137,7 +137,7 @@ def test_open_file_creates_time_dim(loader, tmp_path):
         assert out.coords[coord].values[0] == out.attrs[coord]
 
 def test_open_file_skips_time_if_parse_none(loader, tmp_path):
-    path = tmp_path / "file.tif"
+    path = tmp_path / "file_VV.tif"
     da = xr.DataArray(np.ones((2,2)), dims=("y","x"))
     da = da.rio.write_crs("EPSG:4326")
     da.rio.to_raster(path)

@@ -22,7 +22,6 @@ def _compute_file_checksum(path: Path, algo="sha256") -> str:
             h.update(chunk)
     return h.hexdigest()
 
-
 def download_urls(urls, out_directory, reprocess=False, retries = 3):
     """
     Download a list of images from given URLs into the specified output directory.
@@ -123,4 +122,4 @@ def download_urls_parallel(
         for fut in tqdm(as_completed(futures), total=len(urls), desc="Downloading"):
             download_fps.append(fut.result())
 
-    return download_fps
+    return sorted(download_fps)

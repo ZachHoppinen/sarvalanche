@@ -379,16 +379,26 @@ def test_reproject_match_reference(sample_da_4326):
     # create a fake reference grid
     ref_grid = sample_da_4326.copy()
     loader.reference_grid = ref_grid.rio.write_crs('EPSG:4326')
+    loader._dst_crs = ref_grid.rio.crs
+    loader._dst_transform = ref_grid.rio.transform()
+    loader._dst_shape = ref_grid.shape
 
     out = loader._reproject(sample_da_4326)
     # rioxarray reproject_match returns a DataArray
     assert isinstance(out, xr.DataArray)
 
 def test_reproject_target_crs(sample_da_4326):
+    sample_da_4326 = sample_da_4326.rio.write_crs("EPSG:4326")
+
     loader = DummyLoader()
     loader.target_crs = "EPSG:3857"
 
+    # initialize reference grid
+    loader._reproject(sample_da_4326)
+
+    # second call triggers reprojection to target_crs
     out = loader._reproject(sample_da_4326)
+
     assert isinstance(out, xr.DataArray)
     assert out.rio.crs.to_string() == "EPSG:3857"
 
@@ -411,13 +421,14 @@ def test_reproject_skips_if_crs_matches(sample_da_4326):
     # Shape should be identical
     assert out.shape == sample_da_4326.shape
 
-def test_reference_grid_takes_precedence(sample_da_4326, sample_da_3857):
+def test_target_crs_takes_precedence(sample_da_4326, sample_da_3857):
     loader = DummyLoader()
     loader.reference_grid = sample_da_3857
     loader.target_crs = "EPSG:32633"  # different than reference grid
 
     out = loader._reproject(sample_da_4326)
-    # Should match reference grid, not target_crs
+
+    # Should match target_crs
     assert out.rio.crs == "EPSG:32633"
 
 @pytest.fixture

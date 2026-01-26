@@ -1,0 +1,13 @@
+name: sarvalanche
+channels:
+  - conda-forge
+dependencies:
+  - pyproj
+  - asf_search
+  - py3dep
+  - rioxarray
+  - ipykernel
+  - tqdm
+  - matplotlib
+  - pytest
+  - pytest-mock

@@ -2,6 +2,8 @@ from .BaseDataSource import BaseDataSource
 from sarvalanche.io.finders.Sentinel1Finder import Sentinel1Finder
 from sarvalanche.io.loaders.Sentinel1RTCLoader import Sentinel1RTCLoader
 
+from sarvalanche.utils.projections import get_aoi_utm_bounds
+
 class Sentinel1RTCSource(BaseDataSource):
     sensor = "Sentinel-1"
     product = "RTC"
@@ -36,4 +38,8 @@ class Sentinel1RTCSource(BaseDataSource):
             **loader_kwargs,
         )
 
-        return loader.load(urls)
+        da = loader.load(urls)
+        utm_bounds = get_aoi_utm_bounds(aoi, da.rio.crs)
+        print(utm_bounds)
+        da = da.rio.clip_box(*utm_bounds).rio.pad_box(*utm_bounds)
+        return da

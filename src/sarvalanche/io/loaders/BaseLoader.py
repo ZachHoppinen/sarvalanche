@@ -240,20 +240,23 @@ class BaseLoader(ABC):
         # Initialize reference grid once
         if self.reference_grid is None:
             self.reference_grid = da
-            self._dst_crs = da.rio.crs
-            self._dst_transform = da.rio.transform()
-            self._dst_shape = da.shape
-            return da
+
+        if not hasattr(self, "_dst_crs"):
+            ref = self.reference_grid
+            self._dst_crs = ref.rio.crs
+            self._dst_transform = ref.rio.transform()
+            self._dst_shape = ref.shape
 
         # Fast path: already aligned
         if (
-            da.rio.crs == self._dst_crs
+            self.target_crs is None
+            and da.rio.crs == self._dst_crs
             and da.rio.transform() == self._dst_transform
             and da.shape == self._dst_shape
         ):
             return da
 
-        # rioxarray fallback (generic & safe)
+        # rioxarray fallback
         da = da.rio.reproject_match(self.reference_grid)
 
         if self.target_crs is not None:

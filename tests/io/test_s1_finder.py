@@ -251,30 +251,35 @@ def test_find_data_sentinel1_cslc_real_asf():
         aoi=aoi,
         start_date=start_date,
         stop_date=end_date,
-        dataset="Sentinel-1",
-        product_type = asf.PRODUCT_TYPE.CSLC,
+        # dataset="Sentinel-1",
+        source = 'SENTINEL-1',
+        product = 'OPERA-RTC'
     )
 
     # --- Basic sanity checks ---
     assert isinstance(urls, list)
-    assert len(urls) == 2
+    assert len(urls) == 6
 
     # --- Assert expected file types ---
     assert all(
-        u.endswith((".h5",))
+        u.endswith((".tif",))
         for u in urls
     )
 
     # --- Assert OPERA RTC path ---
     assert all(
-        "OPERA_L2_CSLC-S1" in u
+        "OPERA_L2_RTC-S1" in u
         for u in urls
     )
 
     # --- Assert exact expected set (order-insensitive) ---
     expected = {
-    'https://datapool.asf.alaska.edu/CSLC/OPERA-S1/OPERA_L2_CSLC-S1_T087-185679-IW2_20200101T161622Z_20240429T185938Z_S1A_VV_v1.1.h5',
-    'https://datapool.asf.alaska.edu/CSLC/OPERA-S1/OPERA_L2_CSLC-S1_T087-185680-IW2_20200101T161625Z_20240429T185938Z_S1A_VV_v1.1.h5'
+    'https://cumulus.asf.earthdatacloud.nasa.gov/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T087-185679-IW2_20200101T161622Z_20250911T203016Z_S1A_30_v1.0/OPERA_L2_RTC-S1_T087-185679-IW2_20200101T161622Z_20250911T203016Z_S1A_30_v1.0_VH.tif',
+    'https://cumulus.asf.earthdatacloud.nasa.gov/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T087-185679-IW2_20200101T161622Z_20250911T203016Z_S1A_30_v1.0/OPERA_L2_RTC-S1_T087-185679-IW2_20200101T161622Z_20250911T203016Z_S1A_30_v1.0_VV.tif',
+    'https://cumulus.asf.earthdatacloud.nasa.gov/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T087-185679-IW2_20200101T161622Z_20250911T203016Z_S1A_30_v1.0/OPERA_L2_RTC-S1_T087-185679-IW2_20200101T161622Z_20250911T203016Z_S1A_30_v1.0_mask.tif',
+    'https://cumulus.asf.earthdatacloud.nasa.gov/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T087-185680-IW2_20200101T161625Z_20250911T203016Z_S1A_30_v1.0/OPERA_L2_RTC-S1_T087-185680-IW2_20200101T161625Z_20250911T203016Z_S1A_30_v1.0_VH.tif',
+    'https://cumulus.asf.earthdatacloud.nasa.gov/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T087-185680-IW2_20200101T161625Z_20250911T203016Z_S1A_30_v1.0/OPERA_L2_RTC-S1_T087-185680-IW2_20200101T161625Z_20250911T203016Z_S1A_30_v1.0_VV.tif',
+    'https://cumulus.asf.earthdatacloud.nasa.gov/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T087-185680-IW2_20200101T161625Z_20250911T203016Z_S1A_30_v1.0/OPERA_L2_RTC-S1_T087-185680-IW2_20200101T161625Z_20250911T203016Z_S1A_30_v1.0_mask.tif'
     }
 
     assert set(urls) == expected
