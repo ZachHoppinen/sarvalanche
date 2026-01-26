@@ -6,7 +6,8 @@ from tqdm import tqdm
 import py3dep
 import xarray as xr
 from shapely.geometry import Polygon
-from asf_search.constants import RTC
+import asf_search as asf
+from asf_search.constants import RTC, RTC_STATIC
 
 from sarvalanche.utils.validation import (
     validate_aoi,
@@ -94,6 +95,16 @@ def run_detection(
     # dataset of VV, VH, mask. We mask now
     ds['VV'] = ds['VV'].where(ds['mask'] == 0)
     ds['VH'] = ds['VH'].where(ds['mask'] == 0)
+    ds = ds.rename({'mask': 'lia_mask'})
+
+    # grab local incidence angle for each track
+    lia_urls = find_asf_urls(aoi, start_date = None, stop_date = None, product_type=asf.PRODUCT_TYPE.RTC_STATIC)
+    lia_fps = download_urls_parallel(lia_urls, cache_dir)
+    lia = load_reproject_concat_rtc(lia_fps, ref_grid, 'lia')
+    def combine_track(track_da):
+        # collapse the 'time' dimension using first non-NaN values
+        return track_da.max(dim="time")  # or .mean(dim="time") depending on logic
+    ds['lia'] = lia.groupby('track').apply(combine_track)
 
     # ------------- Load ancillary data ------------- #
     ds['dem'] = py3dep.get_dem(geometry = aoi, resolution = 10, crs = crs).rio.reproject_match(ref_grid)

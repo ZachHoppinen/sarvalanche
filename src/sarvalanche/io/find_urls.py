@@ -5,7 +5,6 @@ def find_asf_urls(aoi,
                 start_date,
                 stop_date,
                 product_type = asf.PRODUCT_TYPE.RTC,
-                platform = asf.PLATFORM.SENTINEL1,
                 path_number = None,
                 burst_id = None,
                 direction = None,
@@ -15,7 +14,6 @@ def find_asf_urls(aoi,
         intersectsWith=aoi.wkt,
         start=start_date,
         end=stop_date,
-        platform=platform,
         processingLevel=product_type,
         relativeOrbit=path_number,
         relativeBurstID=burst_id,
@@ -29,8 +27,12 @@ def find_asf_urls(aoi,
         extensions=("_VV.tif", "_VH.tif", "_mask.tif")
         urls = [u for u in urls if any(u.endswith(ext) for ext in extensions)]
 
-    if product_type == asf.PRODUCT_TYPE.CSLC:
+    elif product_type == asf.PRODUCT_TYPE.CSLC:
         extension = '.h5'
+        urls = [u for u in urls if u.endswith(extension)]
+
+    elif product_type == asf.PRODUCT_TYPE.RTC_STATIC:
+        extension = 'local_incidence_angle.tif'
         urls = [u for u in urls if u.endswith(extension)]
 
     return validate_urls(urls)
