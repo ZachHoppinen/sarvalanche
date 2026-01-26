@@ -2,22 +2,36 @@ from typing import Union
 from pathlib import Path
 from datetime import datetime
 
+from tqdm import tqdm
+import py3dep
 import xarray as xr
 from shapely.geometry import Polygon
+from asf_search.constants import RTC
 
-from io import find_data, load_data
-from preprocessing import preprocess_sar_data
-from features import get_sar_avalanche_features
-from detection import detect_avalanches
-from masks import apply_all_masks
-from products import generate_output_detections
+from sarvalanche.utils.validation import (
+    validate_aoi,
+    validate_dates,
+    validate_crs,
+    validate_resolution,
+    validate_canonical
+)
+
+from sarvalanche.utils.grid import make_reference_grid
+
+from sarvalanche.io.find_urls import find_asf_urls
+from sarvalanche.io.load_datatypes import load_reproject_concat_rtc
+from sarvalanche.utils import combine_close_images
+
+from sarvalanche.utils import download_urls_parallel
+from sarvalanche.utils.constants import RTC_FILETYPES
+from sarvalanche.utils import combine_close_images
 
 def run_detection(
     aoi: Polygon,
     start_date: datetime,
-    end_date: datetime,
+    stop_date: datetime,
     *,
-    sensor: str = "auto",
+    cache_dir: Path = Path('/Users/zmhoppinen/Documents/sarvalanche/local/data/opera'),
     masks: dict | None = None,
     dem: Path | None = None,
     detection_params: dict | None = None
@@ -49,70 +63,66 @@ def run_detection(
         and optionally intermediate features.
     """
 
-    # -------------------------------------------------------------
-    # 1️⃣ Find SAR data
-    # -------------------------------------------------------------
-    sar_files = find_data(aoi, start_date, end_date, sensor=sensor)
-    if not sar_files:
-        raise RuntimeError(f"No SAR data found for AOI {aoi.bounds} between {start_date} and {end_date}")
+    # ------------- Validate user inputs ------------- #
+    # return pandas datetimes
+    start_date, stop_date = validate_dates(start_date, stop_date)
+    # returns shapely polygon
+    aoi = validate_aoi(aoi)
+    # return PyProj CRS
+    crs = validate_crs(crs)
+    # return tuple of (xres, yres)
+    resolution = validate_resolution(resolution, crs = crs)
 
-    # -------------------------------------------------------------
-    # 2️⃣ Load SAR stack
-    # -------------------------------------------------------------
-    sar_stack = load_data(sar_files)
+    # ------------- Reference grid ------------- #
+    # make reference grid for all other data products
+    ref_grid = make_reference_grid(aoi = aoi, crs = crs, resolution = resolution)
 
-    # -------------------------------------------------------------
-    # 3️⃣ Preprocess SAR data
-    # -------------------------------------------------------------
-    preprocessed_stack = preprocess_sar_data(sar_stack)
+    # ------------- Load S1 Data ------------- #
+    urls = find_asf_urls(aoi, start_date, stop_date, product_type=RTC)
+    fps = download_urls_parallel(urls, cache_dir)
 
-    # -------------------------------------------------------------
-    # 4️⃣ Load DEM if not provided (for terrain masking)
-    # -------------------------------------------------------------
-    dem_data = dem
-    if dem is None:
-        dem_data = load_data(aoi, data_type="DEM")  # or custom DEM loader
 
-    # -------------------------------------------------------------
-    # 5️⃣ Compute SAR avalanche features
-    # -------------------------------------------------------------
-    # Returns a dict of features (backscatter, coherence, terrain masks)
-    features_dict = get_sar_avalanche_features(
-        preprocessed_stack,
-        dem=dem_data,
-        masks=masks
-    )
-    backscatter = features_dict["backscatter"]
-    coherence = features_dict["coherence"]
-    terrain_masks = features_dict.get("terrain_masks", None)
+    ds = xr.Dataset()
+    for filetype in RTC_FILETYPES:
+        subtype_files = [f for f in fps if f.stem.endswith(filetype)]
+        da = load_reproject_concat_rtc(subtype_files, ref_grid, filetype)
+        da = combine_close_images(da.sortby('time'))
+        ds[filetype] = da
 
-    # -------------------------------------------------------------
-    # 6️⃣ Apply masks (terrain, LIA, layover/shadow)
-    # -------------------------------------------------------------
-    masked_backscatter, masked_coherence = apply_all_masks(
-        backscatter,
-        coherence,
-        terrain_masks=terrain_masks,
-        additional_masks=masks
-    )
+    # validate canonical shape (time, y, x) with required attributes
+    validate_canonical(ds)
+    # dataset of VV, VH, mask. We mask now
+    ds['VV'] = ds['VV'].where(ds['mask'] == 0)
+    ds['VH'] = ds['VH'].where(ds['mask'] == 0)
+
+    # ------------- Load ancillary data ------------- #
+    ds['dem'] = py3dep.get_dem(geometry = aoi, resolution = 10, crs = crs).rio.reproject_match(ref_grid)
+
+    aspect = py3dep.get_map(layers = 'Aspect Degrees', resolution= 10, geometry = aoi)
+    aspect = aspect.where(aspect != aspect.rio.nodata)
+    ds['aspect'] = aspect.astype(float).rio.write_nodata(np.nan).rio.reproject_match(ds)
+
+    slope = py3dep.get_map(layers = 'Slope Degrees', resolution= 10, geometry = aoi)
+    slope = slope.where(slope != slope.rio.nodata)
+    ds['slope'] = slope.astype(float).rio.write_nodata(np.nan).rio.reproject_match(ds)
 
     # -------------------------------------------------------------
     # 7️⃣ Detect avalanches
     # -------------------------------------------------------------
-    debris_mask = detect_avalanches(
-        masked_backscatter,
-        masked_coherence,
-        detection_params=detection_params
-    )
+    # debris_mask = detect_avalanches(
+        # masked_backscatter,
+        # masked_coherence,
+        # detection_params=detection_params
+    # )
 
     # -------------------------------------------------------------
     # 8️⃣ Generate output products
     # -------------------------------------------------------------
-    ds = generate_output_detections(
-        debris_mask,
-        features_dict,
-        aoi=aoi
-    )
+    # ds = generate_output_detections(
+        # debris_mask,
+        # features_dict,
+        # aoi=aoi
+    # )
 
     # -------------------------------------------------------------
     # 9️⃣ Return canonical xarray dataset
