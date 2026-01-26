@@ -1,114 +1,77 @@
 # sarvalanche/io/loader/base.py
 
 from __future__ import annotations
-
 from abc import ABC, abstractmethod
 from pathlib import Path
-import time
+from typing import List
 import xarray as xr
-import rioxarray
-import numpy as np
-import re
 import warnings
 from collections import defaultdict
 from statistics import median
-from datetime import datetime
-from typing import Union
-from rasterio.warp import reproject, Resampling
+import re
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from sarvalanche.utils import (
+    download_urls_parallel,
+    _compute_file_checksum,
+)
 
-from sarvalanche.utils import download_urls_parallel, _compute_file_checksum, combine_close_images
-from sarvalanche.utils.constants import REQUIRED_ATTRS, CANONICAL_DIMS_2D, CANONICAL_DIMS_3D
 
 class BaseLoader(ABC):
     """
-    Base class to load native datsets into canonical format.
+    Base class for turning data fp into DataArrays.
 
-    Subclasses should at a minimum implement:
-      - _open_file()
-      - _parse_time()  (if time dimension exists)
-
-    reference_grid is set to first url if not manually set
-    target_crs overrides the reference grid is set.
+    Accepts fps -> DataArray
     """
 
     sensor: str | None = None
     product: str | None = None
 
-    def __init__(
-        self,
-        *,
-        cache_dir: Path | None = None,
-        reference_grid: xr.DataArray | None = None,
-        target_crs: str | None = None,
-        substring: str | None = None
-    ):
-        self.cache_dir = Path(cache_dir) if cache_dir else None
-        self.reference_grid = reference_grid
-        self.target_crs = target_crs
-        self.substring = substring
+    # ---------- public API ----------
 
-    def load(self, urls: list[str]) -> Union[xr.DataArray, xr.Dataset]:
-        # Filter by substring if requested
-        if self.substring is not None:
-            urls = [u for u in urls if self.substring in u]
+    def open(self, path: Path) -> xr.DataArray:
+        da = self._open_file(path)
+        return self._normalize_dims(da)
 
-        files = self._download(urls)
-        self._validate_files(files)
-
-        arrays = []
-
-        # Worker function for a single file
-        def process_file(f):
-            da = self._open_file(f)
-            da = self._normalize_dims(da)
-            da = self._reproject(da)
-            da = self._assign_time(da, f)
-            return da
-
-        # Run loading files in parallel
-        # could speed up more with pre-allocation
-        with ThreadPoolExecutor() as ex:
-            futures = [ex.submit(process_file, f) for f in sorted(files)]
-            for fut in as_completed(futures):
-                arrays.append(fut.result())
-
-        out = self._stack(arrays)
-        out = self._add_attrs(out, urls)
-        out = out.sortby('time')
-        out = combine_close_images(out, time_tol="2min")
-        self._validate_output(out)
-
-        return out
-
-    @abstractmethod
-    def _parse_time(self, path: Path) -> datetime:
-        ...
+    # ---------- subclass hooks ----------
 
     @abstractmethod
     def _open_file(self, path: Path) -> xr.DataArray:
-        """
-        Open a single file into a DataArray with spatial dims.
-
-    example:
-        # def _open_file(self, path):
-            # return (
-            #     rioxarray.open_rasterio(path, masked=True)
-            #     .squeeze("band", drop=True)
-            # )
-        """
+        """Open a single file into a DataArray"""
         ...
 
-    def _download(self, urls: list[str]) -> list[Path]:
-        if self.cache_dir is None:
-            raise ValueError("cache_dir must be set")
+    # ---------- helpers ----------
 
-        return download_urls_parallel(urls, out_directory = self.cache_dir)
+    def _normalize_dims(self, da: xr.DataArray) -> xr.DataArray:
+        dim_map = {
+            "latitude": "y",
+            "north": "y",
+            "y_coord": "y",
+            "longitude": "x",
+            "east": "x",
+            "x_coord": "x",
+            "datetime": "time",
+            "date": "time"
+        }
 
-    def _validate_files(
+        rename = {}
+        for dim in da.dims:
+            canonical = dim_map.get(dim.lower())
+            if canonical:
+                rename[dim] = canonical
+
+        if rename:
+            da = da.rename(rename)
+
+        if not {"y", "x"}.issubset(da.dims):
+            raise ValueError(f"Spatial dims missing: {da.dims}")
+
+        return da
+
+    # ---------- optional integrity checks ----------
+
+    def validate_files(
         self,
-        files: list[Path],
+        files: List[Path],
         *,
         size_outlier_ratio: float = 0.4,
         group_regex: str | None = None,
@@ -117,7 +80,6 @@ class BaseLoader(ABC):
         if not files:
             raise ValueError("No files downloaded")
 
-        # ---- basic integrity checks ----
         for f in files:
             if not f.exists():
                 raise FileNotFoundError(f)
@@ -127,14 +89,9 @@ class BaseLoader(ABC):
                 raise ValueError(f"Empty file: {f}")
 
             if size < 1024:
-                warnings.warn(
-                    f"File unusually small (<1KB): {f}",
-                    RuntimeWarning,
-                )
+                warnings.warn(f"File unusually small: {f}", RuntimeWarning)
 
-        # ---- grouping logic ----
         groups = defaultdict(list)
-
         if group_regex:
             pattern = re.compile(group_regex)
             for f in files:
@@ -145,156 +102,21 @@ class BaseLoader(ABC):
             for f in files:
                 groups[f.suffix].append(f)
 
-        # ---- size consistency checks ----
         for key, group in groups.items():
             if len(group) < 2:
                 continue
 
             sizes = [f.stat().st_size for f in group]
             med = median(sizes)
-
             for f, size in zip(group, sizes):
                 if abs(size - med) / med > size_outlier_ratio:
                     warnings.warn(
-                        f"Size outlier detected in group '{key}': "
-                        f"{f.name} ({size:,} bytes vs median {med:,})",
+                        f"Size outlier in group '{key}': {f.name}",
                         RuntimeWarning,
                     )
 
-        # ---- checksum validation ----
         if checksums:
             for f in files:
                 expected = checksums.get(f.name)
-                if not expected:
-                    continue
-
-                actual = _compute_file_checksum(f)
-                if actual != expected:
-                    raise ValueError(
-                        f"Checksum mismatch for {f.name}: "
-                        f"{actual} != {expected}"
-                    )
-
-    def _normalize_dims(self, da: xr.DataArray) -> xr.DataArray:
-            # Mapping of possible dim names to canonical dims
-        dim_map = {
-            "latitude": "y",
-            "north": "y",
-            "y_coord": "y",
-            "south": "y",
-            "longitude": "x",
-            "east": "x",
-            "x_coord": "x"
-        }
-
-        # Create rename mapping: match lowercase dim names
-        rename = {}
-        for dim in da.dims:
-            canonical = dim_map.get(dim.lower())
-            if canonical:
-                rename[dim] = canonical
-
-        # Only call rename if there's something to rename
-        if rename:
-            da = da.rename(rename)
-
-        if not set(("y", "x")).issubset(da.dims):
-            raise ValueError(f"Spatial dims missing: {da.dims}")
-
-        return da
-
-    def _assign_time(self, da: xr.DataArray, path: Path) -> xr.DataArray:
-        """
-        Ensure the DataArray has a time dimension.
-
-        If "time" is already in coords, do nothing.
-        Otherwise, use _parse_time(path) to assign a time coordinate.
-        If _parse_time returns None, return the array unchanged.
-        """
-        if "time" in da.coords:
-            return da
-
-        t = self._parse_time(path)
-        if t is None:
-            # No time used, skip
-            return da
-
-        # Expand dims with new time coordinate
-        return da.expand_dims(time=[t])
-
-    def _stack(self, arrays: list[xr.DataArray]) -> xr.DataArray:
-        if len(arrays) == 1:
-            return arrays[0]
-
-        if "time" in arrays[0].dims:
-            return xr.concat(arrays, dim="time")
-
-        raise ValueError("Multiple arrays but no time dimension")
-
-
-    def _reproject(self, da: xr.DataArray) -> xr.DataArray:
-        if da.rio.crs is None:
-            raise ValueError("dataarray must have a valid CRS")
-
-        # Initialize reference grid once
-        if self.reference_grid is None:
-            self.reference_grid = da
-
-        if not hasattr(self, "_dst_crs"):
-            ref = self.reference_grid
-            self._dst_crs = ref.rio.crs
-            self._dst_transform = ref.rio.transform()
-            self._dst_shape = ref.shape
-
-        # Fast path: already aligned
-        if (
-            self.target_crs is None
-            and da.rio.crs == self._dst_crs
-            and da.rio.transform() == self._dst_transform
-            and da.shape == self._dst_shape
-        ):
-            return da
-
-        # rioxarray fallback
-        da = da.rio.reproject_match(self.reference_grid)
-
-        if self.target_crs is not None:
-            da = da.rio.reproject(self.target_crs)
-
-        return da
-
-
-    def _add_attrs(self, da: xr.DataArray, urls: list[str]) -> xr.DataArray:
-        attrs = dict(da.attrs)
-
-        attrs.update(
-            sensor=self.sensor,
-            product=self.product,
-            source_urls=urls,
-            units = self.units if hasattr(self, 'units') else None
-        )
-
-        if da.rio.crs:
-            attrs["crs"] = str(da.rio.crs)
-
-        da.attrs = attrs
-        return da
-
-    def _validate_output(self, da: xr.DataArray):
-        if da.size == 0:
-            raise ValueError("DataArray is empty")
-
-        if not set(CANONICAL_DIMS_2D).issubset(da.dims):
-            raise ValueError("Output missing spatial dims. Got: {da.dims}")
-
-            # Check all-NaN data
-        if np.all(np.isnan(da.values)):
-            raise ValueError("DataArray contains only NaNs")
-
-        missing = [
-            k for k in REQUIRED_ATTRS
-            if k not in da.attrs
-        ]
-        if missing:
-            raise ValueError(f"Missing attrs: {missing}")
-
+                if expected and _compute_file_checksum(f) != expected:
+                    raise ValueError(f"Checksum mismatch: {f.name}")

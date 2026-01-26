@@ -6,9 +6,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-
-REQUIRED_ATTRS = {"crs", "sensor", "product", "units"}
-
+from .constants import REQUIRED_ATTRS
 
 def validate_canonical(
     da: xr.DataArray,

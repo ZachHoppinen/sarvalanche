@@ -15,6 +15,7 @@ class BaseFinder(ABC):
         self.aoi = aoi
         self.start_date = start_date
         self.stop_date = stop_date
+
     def find(self) -> list[str]:
         self.validate_inputs()
         results = self.query_provider()
@@ -95,7 +96,6 @@ class BaseFinder(ABC):
 
     def filter_by_substring(self, urls: list[str], substrings: list[str]) -> list[str]:
         return [u for u in urls if any(s in u for s in substrings)]
-
 
     def validate_urls(self, urls: list[str], *, require_http: bool = True) -> list[str]:
         """

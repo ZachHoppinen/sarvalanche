@@ -3,6 +3,7 @@
 from .finders.registry import FINDERS
 from .loaders.registry import LOADERS
 from .sources.registry import SOURCES
+import shapely
 
 __all__ = [
     "find_data",
@@ -20,7 +21,7 @@ def find_data(*, aoi, start_date, stop_date, source: str, product: str, **kwargs
     return finder.find()
 
 def load_data(
-    urls: list[str],
+    fps: list[str],
     *,
     source: str,
     product: str,
@@ -29,9 +30,10 @@ def load_data(
 ):
     loader_cls = LOADERS[(source, product)]
     loader = loader_cls(cache_dir=cache_dir, substring = substring)
-    return loader.load(urls)
+    return loader.open(fps)
 
 def load_source(
+    aoi: shapely.Polygon,
     *,
     source: str,
     product: str,
@@ -69,4 +71,4 @@ def load_source(
     source_cls = SOURCES[key]
     src = source_cls(cache_dir=cache_dir)
 
-    return src.load(**kwargs)
+    return src.load(aoi = aoi, **kwargs)

@@ -5,7 +5,7 @@ from rasterio.transform import from_bounds
 
 def make_reference_grid(
     *,
-    bounds,
+    aoi,
     crs,
     resolution,
     dtype="float32",
@@ -17,7 +17,7 @@ def make_reference_grid(
 
     Parameters
     ----------
-    bounds : tuple
+    aoi : shapely.Polygon
         (minx, miny, maxx, maxy) in target CRS
     crs : str or CRS
         Target CRS (e.g. "EPSG:32611")
@@ -25,7 +25,7 @@ def make_reference_grid(
         Pixel size in CRS units
     """
 
-    minx, miny, maxx, maxy = bounds
+    minx, miny, maxx, maxy = aoi.bounds
 
     if isinstance(resolution, (int, float)):
         xres = yres = float(resolution)
