@@ -23,7 +23,7 @@ from sarvalanche.utils.constants import REQUIRED_ATTRS, CANONICAL_DIMS_2D, CANON
 
 class BaseLoader(ABC):
     """
-    Base class for all data loaders.
+    Base class to load native datsets into canonical format.
 
     Subclasses should at a minimum implement:
       - _open_file()

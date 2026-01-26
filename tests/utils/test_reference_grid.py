@@ -4,7 +4,7 @@ import numpy as np
 import xarray as xr
 from rasterio.transform import Affine
 
-from sarvalanche.utils.grid import make_reference_grid
+from sarvalanche.grids.grid import make_reference_grid
 
 
 def test_make_reference_grid_basic():
