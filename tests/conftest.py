@@ -40,12 +40,6 @@ def crs():
 
 
 @pytest.fixture
-def grid_shape():
-    """Canonical raster shape (y, x)."""
-    return (100, 120)
-
-
-@pytest.fixture
 def time_coords():
     return np.array(
         ["2024-01-01", "2024-01-07"],
@@ -111,101 +105,6 @@ def dem_da(grid_shape, crs):
     return da
 
 
-@pytest.fixture
-def slope_mask(canonical_sar_da):
-    """Boolean slope mask aligned to SAR grid."""
-    mask = np.random.rand(
-        canonical_sar_da.sizes["y"],
-        canonical_sar_da.sizes["x"]
-    ) > 0.2
-
-    return xr.DataArray(
-        mask,
-        dims=("y", "x"),
-        name="slope_mask"
-    )
-
-
-@pytest.fixture
-def lia_mask(canonical_sar_da):
-    """Local incidence angle validity mask."""
-    mask = np.random.rand(
-        canonical_sar_da.sizes["y"],
-        canonical_sar_da.sizes["x"]
-    ) > 0.1
-
-    return xr.DataArray(
-        mask,
-        dims=("y", "x"),
-        name="lia_mask"
-    )
-
-
-@pytest.fixture
-def terrain_masks(slope_mask, lia_mask):
-    return {
-        "slope": slope_mask,
-        "lia": lia_mask,
-    }
-
-
-# -----------------------------------------------------------------------------
-# Feature outputs
-# -----------------------------------------------------------------------------
-
-@pytest.fixture
-def backscatter_change(canonical_sar_da):
-    """Δσ⁰ feature (time-1)."""
-    diff = canonical_sar_da.diff(dim="time")
-
-    diff.name = "delta_sigma0"
-    return diff
-
-
-@pytest.fixture
-def coherence_change(canonical_sar_da):
-    """Synthetic coherence drop feature."""
-    data = np.random.rand(
-        canonical_sar_da.sizes["time"] - 1,
-        canonical_sar_da.sizes["y"],
-        canonical_sar_da.sizes["x"]
-    )
-
-    return xr.DataArray(
-        data,
-        dims=("time", "y", "x"),
-        coords={"time": canonical_sar_da.time[1:]},
-        name="delta_coherence"
-    )
-
-
-@pytest.fixture
-def feature_ds(backscatter_change, coherence_change):
-    return xr.Dataset(
-        {
-            "delta_sigma0": backscatter_change,
-            "delta_coherence": coherence_change,
-        }
-    )
-
-
-# -----------------------------------------------------------------------------
-# Detection outputs
-# -----------------------------------------------------------------------------
-
-@pytest.fixture
-def detection_mask(backscatter_change):
-    """Binary avalanche detection mask."""
-    mask = backscatter_change > 0.8
-    mask.name = "avalanche_detection"
-    return mask
-
-
-@pytest.fixture
-def detection_ds(detection_mask):
-    return xr.Dataset({"detection": detection_mask})
-
-
 # -----------------------------------------------------------------------------
 # File-system fixtures (IO)
 # -----------------------------------------------------------------------------
@@ -223,3 +122,13 @@ def output_dir(tmp_path):
     out = tmp_path / "outputs"
     out.mkdir()
     return out
+
+@pytest.fixture
+# Mock URLs returned by ASF
+def mock_asf_urls():
+    return ["https://example.com/file_VV.tif",
+    "https://example.com/file_VH.tif",
+    "https://example.com/file_mask.tif",
+    "https://example.com/file.h5",
+    "https://example.com/file_other.tif"
+    ]

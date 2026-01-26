@@ -2,9 +2,11 @@
 
 import warnings
 from datetime import date
+from typing import Union, Tuple, Optional
 import numpy as np
 import pandas as pd
 import xarray as xr
+from pyproj import CRS
 
 from .constants import REQUIRED_ATTRS
 
@@ -211,3 +213,144 @@ def within_conus(aoi):
         or ymax < CONUS_YMIN
         or ymin > CONUS_YMAX
     )
+
+def validate_crs(crs_input) -> CRS:
+    """
+    Parse a CRS input into a pyproj.CRS object with validation.
+
+    Parameters
+    ----------
+    crs_input : str | int | pyproj.CRS
+        CRS specification. Can be:
+        - a pyproj.CRS object (returned as-is)
+        - a string, e.g. "EPSG:4326" or "CRS:84"
+        - an integer EPSG code, e.g. 4326
+
+    Returns
+    -------
+    pyproj.CRS
+        Validated CRS object.
+
+    Raises
+    ------
+    ValueError
+        If the input cannot be converted to a valid CRS.
+    """
+    # Already a pyproj CRS
+    if isinstance(crs_input, CRS):
+        return crs_input
+
+    # Try integer EPSG
+    if isinstance(crs_input, int):
+        try:
+            crs = CRS.from_epsg(crs_input)
+        except Exception as e:
+            raise ValueError(f"Invalid EPSG code {crs_input}: {e}")
+        return crs
+
+    # Try string
+    if isinstance(crs_input, str):
+        try:
+            crs = CRS.from_user_input(crs_input)
+        except Exception as e:
+            raise ValueError(f"Invalid CRS string '{crs_input}': {e}")
+        return crs
+
+    raise TypeError(
+        f"CRS must be a pyproj.CRS, string, or integer EPSG code, got {type(crs_input)}"
+    )
+
+from typing import Union, Tuple, Optional
+from pyproj import CRS
+
+def validate_resolution(
+    res: Union[float, Tuple[float, float]],
+    crs: Optional[CRS] = None
+) -> Tuple[float, float]:
+    """
+    Validate and normalize resolution input, optionally checking against a CRS.
+
+    Parameters
+    ----------
+    res : float or tuple of two floats
+        Desired resolution. If a single float is given, it is used for both axes.
+    crs : pyproj.CRS, optional
+        Coordinate reference system. If provided, the resolution will be checked
+        to avoid unrealistic values (e.g., a single-pixel size).
+
+    Returns
+    -------
+    (xres, yres) : tuple of floats
+        Resolution for x and y axes.
+
+    Raises
+    ------
+    TypeError
+        If input is not float or tuple of floats.
+    ValueError
+        If any resolution value is non-positive or obviously unreasonable for the CRS.
+    """
+    # Normalize input
+    if isinstance(res, (int, float)):
+        xres = yres = float(res)
+    elif isinstance(res, (tuple, list)):
+        if len(res) != 2:
+            raise ValueError(f"Resolution tuple/list must have length 2, got {len(res)}")
+        xres, yres = float(res[0]), float(res[1])
+    else:
+        raise TypeError(f"Resolution must be float or tuple of floats, got {type(res)}")
+
+    if xres <= 0 or yres <= 0:
+        raise ValueError(f"Resolution values must be positive, got {(xres, yres)}")
+
+    # Optional CRS-based sanity check
+    if crs is not None:
+        if not isinstance(crs, CRS):
+            raise TypeError(f"CRS must be a pyproj.CRS object, got {type(crs)}")
+
+        # Estimate approximate "size" of one degree in meters for geographic CRS
+        if crs.is_geographic:
+            # Degrees; assume ~111 km per degree at equator
+            deg_to_m = 111_000
+            if xres < 1e-5 or yres < 1e-5:
+                raise ValueError(f"Resolution {(xres, yres)} degrees is unrealistically small for CRS {crs.to_string()}")
+            if xres * deg_to_m < 0.1 or yres * deg_to_m < 0.1:
+                raise ValueError(f"Resolution {(xres, yres)} deg (~meters {xres*deg_to_m:.2f}, {yres*deg_to_m:.2f}) too small for CRS {crs.to_string()}")
+            if xres > 10 and yres > 10:
+                raise ValueError(f'Resoution  {(xres, yres)} degrees is unrealistically large for CRS {crs.to_string()}')
+
+        # For projected CRS, we assume units are meters
+        elif crs.is_projected:
+            if xres < 0.01 or yres < 0.01:
+                raise ValueError(f"Resolution {(xres, yres)} meters is unrealistically small for CRS {crs.to_string()}")
+
+    return xres, yres
+
+def validate_urls(urls: list[str], require_http: bool = True) -> list[str]:
+    """
+    Validate a list of URLs.
+
+    Args:
+        urls: List of strings
+        require_http: Enforce that URLs start with 'http' or 'https'
+
+    Returns:
+        Cleaned list of URLs
+
+    Raises:
+        ValueError: if any URL is invalid
+    """
+    valid_urls = []
+
+    for u in urls:
+        if not isinstance(u, str):
+            raise TypeError(f"URL must be a string, got {type(u)}: {u}")
+        url = u.strip()
+        if require_http and not (url.startswith("http://") or url.startswith("https://")):
+            raise ValueError(f"Invalid URL: {url}")
+        valid_urls.append(url)
+
+    if len(valid_urls) == 0:
+        raise ValueError(f'No urls found!')
+
+    return valid_urls

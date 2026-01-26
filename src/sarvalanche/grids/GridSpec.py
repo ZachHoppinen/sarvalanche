@@ -1,4 +1,4 @@
-from .grid import make_reference_grid
+from ..utils.grid import make_reference_grid
 from dataclasses import dataclass
 import xarray as xr
 import shapely
