@@ -21,12 +21,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from sarvalanche.utils import download_urls_parallel, _compute_file_checksum, combine_close_images
 from sarvalanche.utils.constants import REQUIRED_ATTRS, CANONICAL_DIMS_2D, CANONICAL_DIMS_3D
 
-def time_since(time, start_time): print(f'Time since: {time - start_time}')
 class BaseLoader(ABC):
     """
     Base class for all data loaders.
 
-    Subclasses should ONLY implement:
+    Subclasses should at a minimum implement:
       - _open_file()
       - _parse_time()  (if time dimension exists)
 

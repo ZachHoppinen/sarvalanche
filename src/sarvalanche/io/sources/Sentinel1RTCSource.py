@@ -39,7 +39,10 @@ class Sentinel1RTCSource(BaseDataSource):
         )
 
         da = loader.load(urls)
+        print(da.x)
+        print(da.y)
         utm_bounds = get_aoi_utm_bounds(aoi, da.rio.crs)
         print(utm_bounds)
-        da = da.rio.clip_box(*utm_bounds).rio.pad_box(*utm_bounds)
+        da = da.rio.clip_box(*utm_bounds)
+        da = da.rio.pad_box(*utm_bounds)
         return da
