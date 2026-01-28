@@ -31,29 +31,36 @@ def da_to01(da: xr.DataArray, old_min=0, old_max=100) -> xr.DataArray:
 def mosaic_group(sub: xr.DataArray) -> xr.DataArray:
     """
     Combine multiple time slices into a mosaic, preserving 'time' dimension
-    as the mean of the original times.
+    as the mean of the original times, and keep non-dimensional coordinates.
     """
+    from functools import reduce
+    import pandas as pd
+    import xarray as xr
+    import numpy as np
+
+    # combine time slices
     merged = reduce(lambda a, b: a.combine_first(b), [sub.isel(time=i) for i in range(sub.sizes['time'])])
 
     mean_time = pd.to_datetime(sub['time']).mean()
+
     # Add new axis for time
     merged_data = merged.data[np.newaxis, :, :]  # shape: (1, y, x)
 
+    # keep all coords except time
+    coords = {k: v for k, v in merged.coords.items() if 'time' not in v.dims}
+    coords['time'] = [mean_time]  # add the new time coordinate
 
-    # expand into new DataArray with explicit 'time' dimension
+    # rebuild DataArray
     merged = xr.DataArray(
         merged_data,
         dims=('time', 'y', 'x'),
-        coords={
-            'time': [mean_time],
-            'y': merged['y'],
-            'x': merged['x'],
-        },
+        coords=coords,
         attrs=merged.attrs
     )
 
     # drop fully NaN rows/cols
     merged = merged.dropna('x', how='all').dropna('y', how='all')
+
     return merged
 
 

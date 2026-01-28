@@ -92,3 +92,7 @@ Masks: boolean arrays with shape `(y, x)`
 Detection outputs: boolean debris masks `(y, x)`
 
 Sensor-specific handling is isolated to the `io/` module. All downstream algorithms assume canonical inputs.
+
+## Other packages used ##
+
+flowpy is repackaged to remove GUI and add a non-command line interface. Will open PR to remove in future.

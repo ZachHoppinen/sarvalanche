@@ -1,3 +1,5 @@
+
+import os
 from typing import Union
 from pathlib import Path
 from datetime import datetime
@@ -73,6 +75,8 @@ def run_detection(
     crs = validate_crs(crs)
     # return tuple of (xres, yres)
     resolution = validate_resolution(resolution, crs = crs)
+    os.environ["HYRIVER_CACHE_NAME"] = cache_dir.joinpath('/cache/aiohttp_cache.sqlite')
+
 
     # ------------- Reference grid ------------- #
     # make reference grid for all other data products

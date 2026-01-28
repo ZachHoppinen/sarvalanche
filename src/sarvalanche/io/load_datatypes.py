@@ -138,7 +138,7 @@ def load_reproject_concat_rtc(fps, ref_grid, pol):
                 src_crs=src.crs,
                 dst_transform=dst_transform,
                 dst_crs=dst_crs,
-                resampling=Resampling.average,
+                resampling=Resampling.bilinear,
                 src_nodata=nodata,
                 dst_nodata=np.nan
             )
@@ -151,7 +151,7 @@ def load_reproject_concat_rtc(fps, ref_grid, pol):
     with ThreadPoolExecutor(max_workers=4) as ex:
         for idx, dst in tqdm(ex.map(reproject_one, [(fp, i) for i, fp in enumerate(fps)]),
                              total=len(fps),
-                             desc=f"Reprojecting + inserting {pol}"):
+                             desc=f"Reprojecting + stacking {pol}"):
             out[idx, :, :] = dst
 
     return out
