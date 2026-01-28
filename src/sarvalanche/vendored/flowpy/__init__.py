@@ -1,4 +1,3 @@
-# from .Simulation import Simulation
-# from .flow_class import Cell
-# from .flow_core import flow_core
-# __all__ = ["Simulation", "Cell", "flow_core"]
+# sarvalanche/vendored/flowpy/__init__.py
+from sarvalanche.vendored.flowpy.main import run_flowpy
+__all__ = ["run_flowpy"]

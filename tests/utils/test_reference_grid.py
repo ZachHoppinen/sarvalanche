@@ -3,17 +3,18 @@ import pytest
 import numpy as np
 import xarray as xr
 from rasterio.transform import Affine
+from shapely.geometry import box
 
 from sarvalanche.utils.grid import make_reference_grid
 
 
 def test_make_reference_grid_basic():
-    bounds = (500_000, 4_500_000, 500_100, 4_500_100)
+    aoi = box(500_000, 4_500_000, 500_100, 4_500_100)
     crs = "EPSG:32611"
     resolution = 10
 
     da = make_reference_grid(
-        bounds=bounds,
+        aoi=aoi,
         crs=crs,
         resolution=resolution,
     )
@@ -29,11 +30,11 @@ def test_make_reference_grid_basic():
 
 
 def test_reference_grid_coordinates_centered_and_ordered():
-    bounds = (0, 0, 100, 100)
+    aoi = box(0, 0, 100, 100)
     resolution = 10
 
     da = make_reference_grid(
-        bounds=bounds,
+        aoi=aoi,
         crs="EPSG:3857",
         resolution=resolution,
     )
@@ -50,11 +51,11 @@ def test_reference_grid_coordinates_centered_and_ordered():
 
 
 def test_reference_grid_anisotropic_resolution():
-    bounds = (0, 0, 100, 50)
+    aoi = box(0, 0, 100, 50)
     resolution = (10, 5)
 
     da = make_reference_grid(
-        bounds=bounds,
+        aoi=aoi,
         crs="EPSG:3857",
         resolution=resolution,
     )
@@ -68,10 +69,10 @@ def test_reference_grid_anisotropic_resolution():
     assert yres == 5
 
 def test_reference_grid_fill_and_dtype():
-    bounds = (0, 0, 20, 20)
+    aoi = box(0, 0, 20, 20)
 
     da = make_reference_grid(
-        bounds=bounds,
+        aoi=aoi,
         crs="EPSG:4326",
         resolution=10,
         fill_value=-9999,
@@ -105,7 +106,7 @@ def test_reference_grid_reproject_match_roundtrip(sample_da_4326):
       - has transform
     """
     ref = make_reference_grid(
-        bounds=sample_da_4326.rio.bounds(),
+        aoi=box(*sample_da_4326.rio.bounds()),
         crs=sample_da_4326.rio.crs,
         resolution=abs(sample_da_4326.rio.resolution()[0]),
     )
@@ -117,10 +118,10 @@ def test_reference_grid_reproject_match_roundtrip(sample_da_4326):
     assert out.rio.crs == ref.rio.crs
 
 def test_reference_grid_is_deterministic():
-    bounds = (123, 456, 789, 1011)
+    aoi = box(123, 456, 789, 1011)
 
-    da1 = make_reference_grid(bounds=bounds, crs="EPSG:3857", resolution=30)
-    da2 = make_reference_grid(bounds=bounds, crs="EPSG:3857", resolution=30)
+    da1 = make_reference_grid(aoi=aoi, crs="EPSG:3857", resolution=30)
+    da2 = make_reference_grid(aoi=aoi, crs="EPSG:3857", resolution=30)
 
     assert np.array_equal(da1.x, da2.x)
     assert np.array_equal(da1.y, da2.y)

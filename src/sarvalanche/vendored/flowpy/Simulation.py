@@ -32,16 +32,11 @@ import logging
 
 log = logging.getLogger(__name__)
 
-# PyQt libraries
-from PyQt5.QtCore import QThread, pyqtSignal
 
 
-class Simulation(QThread):
-    value_changed = pyqtSignal(float)
-    finished = pyqtSignal(list, list, list, list, list, list, list)
+class Simulation():
 
     def __init__(self, dem, header, release, release_header, infra, calc_bool, alpha, exp, flux, max_z):
-        QThread.__init__(self)
         self.dem = dem
         self.header = header
         self.release = release
@@ -90,7 +85,7 @@ class Simulation(QThread):
             #results = pool.map(gc.calculation, iterable)
             results = pool.map(fc.calculation_effect,
                                [[self.dem, self.header, release_pixel,
-                                 self.alpha, self.exp, self.flux, self.max_z] 
+                                 self.alpha, self.exp, self.flux, self.max_z]
                                 for release_pixel in release_list])
             pool.close()
             pool.join()

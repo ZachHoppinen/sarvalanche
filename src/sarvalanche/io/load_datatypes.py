@@ -138,7 +138,7 @@ def load_reproject_concat_rtc(fps, ref_grid, pol):
                 src_crs=src.crs,
                 dst_transform=dst_transform,
                 dst_crs=dst_crs,
-                resampling=Resampling.bilinear,
+                resampling=Resampling.average,
                 src_nodata=nodata,
                 dst_nodata=np.nan
             )

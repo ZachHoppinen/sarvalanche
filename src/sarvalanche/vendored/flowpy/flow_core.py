@@ -3,12 +3,12 @@
 """
 Created on Mon Sep 16 15:15:37 2019
 
-This is the core function for Flow-Py, it handles: 
+This is the core function for Flow-Py, it handles:
 - Sorting release pixels by altitude(get_start_idx)
 - Splitting function of the release layer for multiprocessing(split_release)
 - Back calculation if infrastructure is hit
 - Calculation of run out, etc. (Creating the cell_list and iterating through
-the release pixels, erasing release pixels that were hit, stop at the border 
+the release pixels, erasing release pixels that were hit, stop at the border
 of DEM, return arrays)
 
 
@@ -39,13 +39,13 @@ log = logging.getLogger(__name__)
 
 
 def get_start_idx(dem, release):
-    """Sort Release Pixels by altitude and return the result as lists for the 
+    """Sort Release Pixels by altitude and return the result as lists for the
     Rows and Columns, starting with the highest altitude
-    
+
     Input parameters:
         dem         Digital Elevation Model to gain information about altitude
         release     The release layer, release pixels need int value > 0
-        
+
     Output parameters:
         row_list    Row index of release pixels sorted by altitude
         col_list    Column index of release pixels sorted by altitude
@@ -54,19 +54,19 @@ def get_start_idx(dem, release):
     if len(row_list) > 0:
         altitude_list = []
         for i in range(len(row_list)):
-            altitude_list.append(dem[row_list[i], col_list[i]])    
+            altitude_list.append(dem[row_list[i], col_list[i]])
         altitude_list, row_list, col_list = list(zip(*sorted(zip(altitude_list, row_list, col_list), reverse=True)))
         # Sort this lists by altitude
-    return row_list, col_list   
+    return row_list, col_list
 
 
 def back_calculation(back_cell):
     """Here the back calculation from a run out pixel that hits a infrastructure
     to the release pixel is performed.
-    
+
     Input parameters:
         hit_cell_list        All cells that hit a Infrastructure
-        
+
     Output parameters:
         Back_list   List of pixels that are on the way to the start cell
                     Maybe change it to array like DEM?
@@ -84,13 +84,13 @@ def back_calculation(back_cell):
             # Check if parent already in list
             if parent not in back_list:
                 back_list.append(parent)
-    #end = time.time()            
+    #end = time.time()
     #log.info('\n Backcalculation needed: ' + str(end - start) + ' seconds')
     return back_list
 
 
 def divide_chunks(l, n):
-    """Splitting release list in equivalent sub lists, was done before 
+    """Splitting release list in equivalent sub lists, was done before
     split_release, maybe don't needed anymore... """
     for i in range(0, len(l), n):
         yield l[i:i+n]
@@ -100,19 +100,19 @@ def split_release(release, header_release, pieces):
     """Split the release layer in several tiles, the number is depending on the
     available CPU Cores, so every Core gets one tile. The area is determined by
     the number of release pixels in it, so that every tile has the same amount
-    of release pixels in it. Splitting in x(Columns) direction. 
+    of release pixels in it. Splitting in x(Columns) direction.
     The release tiles have still the size of the original layer, so no split
     for the DEM is needed.
-    
-    Input parameters: 
+
+    Input parameters:
         release         the release layer with release pixels as int > 0
-        header_release  the header of the release layer to identify the 
+        header_release  the header of the release layer to identify the
                         noDataValue
-                        
+
     Output parameters:
         release_list    A list with the tiles(arrays) in it [array0, array1, ..]
         """
-        
+
     nodata = header_release["noDataValue"]
     if nodata:
         release[release == nodata] = 0
@@ -140,35 +140,35 @@ def split_release(release, header_release, pieces):
             release_list.append(c)
             log.debug("Release Split from {} to {}".format(breakpoint_x, i))
             breakpoint_x = i
-            
-        
+
+
     return release_list
 
-    
+
 def calculation(args):
     """This is the core function where all the data handling and calculation is
-    done. 
-    
+    done.
+
     Input parameters:
         dem         The digital elevation model
         header      The header of the elevation model
         forest      The forest layer
-        process     Which process to calculate (Avalanche, Rockfall, SoilSlides)     
+        process     Which process to calculate (Avalanche, Rockfall, SoilSlides)
         release     The list of release arrays
         alpha
         exp
         flux_threshold
         max_z_delta
-        
+
     Output parameters:
-        elh         Array like DEM with the max. Energy Line Height for every 
+        elh         Array like DEM with the max. Energy Line Height for every
                     pixel
         mass_array  Array with max. concentration factor saved
         count_array Array with the number of hits for every pixel
         elh_sum     Array with the sum of Energy Line Height
         back_calc   Array with back calculation, still to do!!!
         """
-    
+
     dem = args[0]
     header = args[1]
     infra = args[2]
@@ -178,7 +178,7 @@ def calculation(args):
     flux_threshold = args[6]
     max_z_delta = args[7]
     #log.info(len(args), max_z_delta)
-    
+
     z_delta_array = np.zeros_like(dem)
     z_delta_sum = np.zeros_like(dem)
     flux_array = np.zeros_like(dem)
@@ -197,7 +197,7 @@ def calculation(args):
 
     startcell_idx = 0
     while startcell_idx < len(row_list):
-        
+
         log.debug('\r' "Calculating Startcell: " + str(startcell_idx + 1) + " of " + str(len(row_list)) + " = " + str(
             round((startcell_idx + 1) / len(row_list) * 100, 2)) + "%" '\r')
 
@@ -220,7 +220,7 @@ def calculation(args):
 
             if len(flux) > 0:
                 # mass, row, col  = list(zip(*sorted(zip( mass, row, col), reverse=False)))
-                
+
                 z_delta, flux, row, col = list(zip(*sorted(zip(z_delta, flux, row, col), reverse=False)))
                 # Sort this lists by elh, to start with the highest cell
 
@@ -252,7 +252,7 @@ def calculation(args):
             z_delta_sum[cell.rowindex, cell.colindex] += cell.z_delta
             fp_travelangle_array[cell.rowindex, cell.colindex] = max(fp_travelangle_array[cell.rowindex, cell.colindex], cell.max_gamma)
             sl_travelangle_array[cell.rowindex, cell.colindex] = max(sl_travelangle_array[cell.rowindex, cell.colindex], cell.sl_gamma)
-            
+
         #Backcalculation
             if infra[cell.rowindex, cell.colindex] > 0:
                 #backlist = []
@@ -266,29 +266,29 @@ def calculation(args):
         row_list, col_list = get_start_idx(dem, release)
         startcell_idx += 1
     end = datetime.now().replace(microsecond=0)
-    #elh_multi[elh_multi == 1] = 0         
+    #elh_multi[elh_multi == 1] = 0
     log.debug('\n Time needed: ' + str(end - start))
     return z_delta_array, flux_array, count_array, z_delta_sum, backcalc, fp_travelangle_array, sl_travelangle_array
 
 def calculation_effect(args):
     """This is the core function where all the data handling and calculation is
-    done. 
-    
+    done.
+
     Input parameters:
         dem         The digital elevation model
         header      The header of the elevation model
-        process     Which process to calculate (Avalanche, Rockfall, SoilSlides)     
+        process     Which process to calculate (Avalanche, Rockfall, SoilSlides)
         release     The list of release arrays
-        
+
     Output parameters:
-        elh         Array like DEM with the max. Energy Line Height for every 
+        elh         Array like DEM with the max. Energy Line Height for every
                     pixel
         mass_array  Array with max. concentration factor saved
         count_array Array with the number of hits for every pixel
         elh_sum     Array with the sum of Energy Line Height
         back_calc   Array with back calculation, still to do!!!
         """
-    
+
     dem = args[0]
     header = args[1]
     release = args[2]
@@ -314,7 +314,7 @@ def calculation_effect(args):
 
     startcell_idx = 0
     while startcell_idx < len(row_list):
-        
+
         log.debug('\r' "Calculating Startcell: " + str(startcell_idx + 1) + " of " + str(len(row_list)) + " = " + str(
             round((startcell_idx + 1) / len(row_list) * 100, 2)) + "%" '\r')
         sys.stdout.flush()
@@ -374,6 +374,6 @@ def calculation_effect(args):
                                                                      cell.sl_gamma)
 
         startcell_idx += 1
-    end = datetime.now().replace(microsecond=0)        
+    end = datetime.now().replace(microsecond=0)
     log.info('\n Time needed: ' + str(end - start))
     return z_delta_array, flux_array, count_array, z_delta_sum, backcalc, fp_travelangle_array, sl_travelangle_array

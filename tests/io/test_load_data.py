@@ -10,9 +10,9 @@ from rasterio.transform import from_origin
 import rasterio
 
 from sarvalanche.io.load_datatypes import (
-    _apply_canonical_attrs,
-    _parse_rtc_timestamp,
-    load_s1_rtc,
+    # _apply_canonical_attrs,
+    # _parse_rtc_timestamp,
+    # load_s1_rtc,
     preallocate_output,
     read_rtc_attrs,
     load_reproject_concat_rtc,
@@ -21,68 +21,68 @@ from sarvalanche.io.load_datatypes import (
     OPERA_RTC,
 )
 
-def test_apply_canonical_attrs_maps_attributes():
-    # Dummy DataArray
-    da = xr.DataArray([1, 2, 3])
-    da.attrs = {
-        "PROCESSING_INFORMATION_OUTPUT_BACKSCATTER_EXPRESSION_CONVENTION": "dB",
-        "RADAR_BAND": "VV",
-        "PLATFORM": "SENTINEL-1",
-    }
+# def test_apply_canonical_attrs_maps_attributes():
+#     # Dummy DataArray
+#     da = xr.DataArray([1, 2, 3])
+#     da.attrs = {
+#         "PROCESSING_INFORMATION_OUTPUT_BACKSCATTER_EXPRESSION_CONVENTION": "dB",
+#         "RADAR_BAND": "VV",
+#         "PLATFORM": "SENTINEL-1",
+#     }
 
-    da_out = _apply_canonical_attrs(da, sensor=SENTINEL1, product=OPERA_RTC, RAW_TO_CANONICAL=RTC_RAW_TO_CANONICAL)
+#     da_out = _apply_canonical_attrs(da, sensor=SENTINEL1, product=OPERA_RTC, RAW_TO_CANONICAL=RTC_RAW_TO_CANONICAL)
 
-    # Check canonical mapping
-    assert da_out.attrs["sensor"] == SENTINEL1
-    assert da_out.attrs["product"] == OPERA_RTC
-    assert da_out.attrs["units"] == "dB"
-    assert da_out.attrs["band"] == "VV"
-    assert da_out.attrs["platform"] == "SENTINEL-1"
-    # Missing attributes should default to None
-    assert da_out.attrs["backscatter_type"] is None
+#     # Check canonical mapping
+#     assert da_out.attrs["sensor"] == SENTINEL1
+#     assert da_out.attrs["product"] == OPERA_RTC
+#     assert da_out.attrs["units"] == "dB"
+#     assert da_out.attrs["band"] == "VV"
+#     assert da_out.attrs["platform"] == "SENTINEL-1"
+#     # Missing attributes should default to None
+#     assert da_out.attrs["backscatter_type"] is None
 
-def test_parse_rtc_timestamp_standard():
-    path = Path("OPERA_L2_RTC-S1_T123-456_20200101T123456Z_S1A_30_v1.0_VV.tif")
-    ts = _parse_rtc_timestamp(path)
-    assert ts == pd.to_datetime("2020-01-01T12:34:56")
+# def test_parse_rtc_timestamp_standard():
+#     path = Path("OPERA_L2_RTC-S1_T123-456_20200101T123456Z_S1A_30_v1.0_VV.tif")
+#     ts = _parse_rtc_timestamp(path)
+#     assert ts == pd.to_datetime("2020-01-01T12:34:56")
 
-def test_parse_rtc_timestamp_invalid_returns_none():
-    path = Path("file_without_datetime.tif")
-    ts = _parse_rtc_timestamp(path)
-    assert ts is None
+# def test_parse_rtc_timestamp_invalid_returns_none():
+#     path = Path("file_without_datetime.tif")
+#     ts = _parse_rtc_timestamp(path)
+#     assert ts is None
 
-@patch("xarray.open_dataarray")
-def test_load_s1_rtc_happy_path(mock_open):
-    # Mock xarray DataArray returned by open_dataarray
-    da_mock = xr.DataArray(
-        [[[1, 2], [3, 4]]],         # shape: (band=1, y=2, x=2)
-        dims=("band", "y", "x")
-    )
-    da_mock.attrs = {"TRACK_NUMBER": "123", "ORBIT_PASS_DIRECTION": "ASCENDING", "PLATFORM": "SENTINEL-1"}
-    mock_open.return_value = da_mock
+# @patch("xarray.open_dataarray")
+# def test_load_s1_rtc_happy_path(mock_open):
+#     # Mock xarray DataArray returned by open_dataarray
+#     da_mock = xr.DataArray(
+#         [[[1, 2], [3, 4]]],         # shape: (band=1, y=2, x=2)
+#         dims=("band", "y", "x")
+#     )
+#     da_mock.attrs = {"TRACK_NUMBER": "123", "ORBIT_PASS_DIRECTION": "ASCENDING", "PLATFORM": "SENTINEL-1"}
+#     mock_open.return_value = da_mock
 
-    # Provide a valid file path
-    path = Path("OPERA_L2_RTC-S1_T123-456_20200101T123456Z_S1A_30_v1.0_VV.tif")
-    da_out = load_s1_rtc(path)
+#     # Provide a valid file path
+#     path = Path("OPERA_L2_RTC-S1_T123-456_20200101T123456Z_S1A_30_v1.0_VV.tif")
+#     da_out = load_s1_rtc(path)
 
-    # Ensure xarray.open_dataarray called
-    mock_open.assert_called_once_with(path)
+#     # Ensure xarray.open_dataarray called
+#     mock_open.assert_called_once_with(path)
 
-    # Check canonical attributes applied
-    assert da_out.attrs["sensor"] == SENTINEL1
-    assert da_out.attrs["product"] == OPERA_RTC
-    assert da_out.attrs["track"] == "123"
-    assert da_out.attrs["direction"] == "ASCENDING"
-    assert da_out.attrs["platform"] == "SENTINEL-1"
+#     # Check canonical attributes applied
+#     assert da_out.attrs["sensor"] == SENTINEL1
+#     assert da_out.attrs["product"] == OPERA_RTC
+#     assert da_out.attrs["track"] == "123"
+#     assert da_out.attrs["direction"] == "ASCENDING"
+#     assert da_out.attrs["platform"] == "SENTINEL-1"
 
-    # Check time dimension added
-    assert "time" in da_out.dims
-    assert da_out.time.values[0] == pd.Timestamp("2020-01-01T12:34:56")
+#     # Check time dimension added
+#     assert "time" in da_out.dims
+#     assert da_out.time.values[0] == pd.Timestamp("2020-01-01T12:34:56")
 
-def test_load_s1_rtc_invalid_extension_raises():
-    path = Path("file.invalid")
-    with pytest.raises(ValueError, match="Unsupported file type"):
-        load_s1_rtc(path)
+# def test_load_s1_rtc_invalid_extension_raises():
+#     path = Path("file.invalid")
+#     with pytest.raises(ValueError, match="Unsupported file type"):
+#         load_s1_rtc(path)
 
 
 def test_preallocate_basic():

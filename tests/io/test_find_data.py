@@ -61,7 +61,6 @@ def test_find_asf_urls_passes_parameters(mock_geo_search, mock_validate, mock_as
         aoi_wgs,
         "2020-01-01",
         "2020-01-31",
-        platform=asf.PLATFORM.SENTINEL1,
         path_number=5,
         burst_id=2,
         direction="ASCENDING",
@@ -74,7 +73,6 @@ def test_find_asf_urls_passes_parameters(mock_geo_search, mock_validate, mock_as
     assert kwargs["intersectsWith"] == aoi_wgs.wkt
     assert kwargs["start"] == "2020-01-01"
     assert kwargs["end"] == "2020-01-31"
-    assert kwargs["platform"] == asf.PLATFORM.SENTINEL1
     assert kwargs["processingLevel"] == asf.PRODUCT_TYPE.RTC
     assert kwargs["relativeOrbit"] == 5
     assert kwargs["relativeBurstID"] == 2
@@ -101,7 +99,6 @@ def test_find_data_sentinel1_opera_rtc_real_asf():
         aoi=aoi,
         start_date=start_date,
         stop_date=end_date,
-        platform=asf.PLATFORM.SENTINEL1,
         product_type= asf.PRODUCT_TYPE.RTC
     )
 
@@ -114,7 +111,7 @@ def test_find_data_sentinel1_opera_rtc_real_asf():
 
     # --- Assert OPERA RTC path ---
     assert all("OPERA_L2_RTC-S1" in u for u in urls)
-    
+
     # --- Assert exact expected set (order-insensitive) ---
     expected = {
         'https://cumulus.asf.earthdatacloud.nasa.gov/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T087-185679-IW2_20200101T161622Z_20250911T203016Z_S1A_30_v1.0/OPERA_L2_RTC-S1_T087-185679-IW2_20200101T161622Z_20250911T203016Z_S1A_30_v1.0_VH.tif',

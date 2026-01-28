@@ -27,6 +27,7 @@ import numpy as np
 from datetime import datetime
 from multiprocessing import cpu_count
 import multiprocessing as mp
+import concurrent.futures
 import logging
 from xml.etree import ElementTree as ET
 from tqdm import tqdm
@@ -35,10 +36,6 @@ from tqdm import tqdm
 # import raster_io as io
 from .Simulation import Simulation as Sim
 from . import flow_core as fc
-
-# Libraries for GUI, PyQt5
-from PyQt5.QtCore import pyqtSlot, QCoreApplication
-from PyQt5.QtWidgets import QFileDialog, QMessageBox, QMainWindow, QApplication
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +50,10 @@ def read_header(ds):
     header['ncols'] = ds.x.size
     header['nrows'] = ds.y.size
     header['xllcorner'] = (ds.rio.transform() * (0, 0))[0]
-    header['yllcorner'] = (ds.rio.transform() * (0, ds.y.size))[1]
+    # header['yllcorner'] = (ds.rio.transform() * (0, ds.y.size))[1]
+    # assumes north up convention
+    header['yllcorner'] = (ds.rio.transform() * (0, ds.y.size - 1))[1]  # lower-left corner
+    # assumes square pixels
     header['cellsize'] = ds.rio.transform()[0]
     header['noDataValue'] = ds.rio.nodata
     return header
@@ -111,6 +111,7 @@ def run_flowpy(
 
     max_number_procces = int(avaiable_memory / (needed_memory * 10))
 
+
     log.info(
         "There are {} Bytes of Memory avaiable and {} Bytes needed per process. \nMax. Nr. of Processes = {}".format(
             avaiable_memory, needed_memory*10, max_number_procces))
@@ -119,22 +120,11 @@ def run_flowpy(
     log.info('Multiprocessing starts, used cores: {}'.format(cpu_count()))
 
 
-    release_list = fc.split_release(release, release_header, min(mp.cpu_count() * 4, max_number_procces))
+    release_list = fc.split_release(release, release_header, min(mp.cpu_count() * 6, max_number_procces))
 
     log.info("{} Processes started.".format(len(release_list)))
-    n_tasks = len(release_list)
-    n_workers = min(
-        mp.cpu_count(),
-        max_number_procces,
-        n_tasks,
-    )
 
-    log.info(
-        "Starting flow calculation (%d tasks, %d workers)",
-        n_tasks,
-        n_workers,
-    )
-
+    # --- prepare arguments ---
     args = [
         (
             dem,
@@ -148,15 +138,21 @@ def run_flowpy(
         for release_pixel in release_list
     ]
 
-    with mp.Pool(processes=n_workers) as pool:
-        results = list(
-            tqdm(
-                pool.imap(_run_calculation, args),
-                total=n_tasks,
-                desc="FlowPy calculation",
-                unit="task",
-            )
-        )
+    n_tasks = len(args)
+    n_workers = min(mp.cpu_count(), max_number_procces, n_tasks)
+    log.info("Starting flow calculation (%d tasks, %d workers)", n_tasks, n_workers)
+
+    results = [None] * n_tasks  # placeholder
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
+        # submit all tasks
+        future_to_idx = {executor.submit(_run_calculation, arg): i for i, arg in enumerate(args)}
+
+        # update progress bar as tasks complete
+        for future in tqdm(concurrent.futures.as_completed(future_to_idx), total=n_tasks,
+                        desc="FlowPy calculation", unit="task"):
+            idx = future_to_idx[future]
+            results[idx] = future.result()  # store result in original order
 
     z_delta_list = []
     flux_list = []
@@ -193,6 +189,9 @@ def run_flowpy(
     end = datetime.now().replace(microsecond=0)
     log.info('Calculation needed: ' + str(end - start) + ' seconds')
 
+    # return z_delta, flux, cell_counts, z_delta_sum, backcalc, fp_ta, sl_ta
+    # only return cell_counts (number of start cells that converge to a pixel)
+    # fp_ta the flow path travel angle. small = long shallow runout, big = steep direct hit
     return cell_counts, fp_ta
 
 if __name__ == "__main__":
