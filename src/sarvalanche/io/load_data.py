@@ -5,11 +5,13 @@ import numpy as np
 import xarray as xr
 import rasterio
 from sarvalanche.utils.constants import SENTINEL1, OPERA_RTC
-
+import py3dep
+import pygeohydro as gh
 import rasterio
 from rasterio.warp import reproject, Resampling
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
+import geopandas as gpd
 
 ALLOWED_EXTENSIONS = (".tif", ".tiff")
 
@@ -156,40 +158,73 @@ def load_reproject_concat_rtc(fps, ref_grid, pol):
 
     return out
 
-# old slower code #
-# def _apply_canonical_attrs(da, sensor, product, RAW_TO_CANONICAL) -> xr.DataArray:
-#     """Map raw attributes to canonical form"""
-#     da.attrs["sensor"] = sensor
-#     da.attrs["product"] = product
+def _clean_and_match(
+    da,
+    ref_grid,
+    *,
+    to_radians=False,
+):
+    da = da.where(da != da.rio.nodata)
+    da = da.astype(float).rio.write_nodata(np.nan)
+    da = da.rio.reproject_match(ref_grid)
 
-#     for raw_attr, canonical in RAW_TO_CANONICAL.items():
-#         da.attrs[canonical] = da.attrs.get(raw_attr, None)
+    if to_radians:
+        da = np.deg2rad(da)
 
-#     return da
+    return da
 
-# def _parse_rtc_timestamp(path: Path) -> pd.Timestamp | None:
-#     """Try multiple ways to extract acquisition datetime"""
-#     stem = path.stem
+def _get_py3dep_map(
+    layer,
+    aoi,
+    aoi_crs,
+    ref_grid,
+    resolution,
+    *,
+    to_radians=False,
+):
+    da = py3dep.get_map(
+        layers=layer,
+        geometry=aoi,
+        crs=aoi_crs,
+        resolution=resolution,
+    )
+    return _clean_and_match(da, ref_grid, to_radians=to_radians)
 
-#     # 1. Standard filename split
-#     try:
-#         dt = stem.split("_")[4]
-#         return pd.to_datetime(dt, format="%Y%m%dT%H%M%SZ")
-#     except (IndexError, ValueError):
-#         pass
+def get_dem(aoi, aoi_crs, ref_grid = None, resolution=30):
+    dem = py3dep.get_dem(
+        geometry=aoi,
+        resolution=resolution,
+        crs=aoi_crs,
+    )
+    if ref_grid is not None: dem = dem.rio.reproject_match(ref_grid)
+    return dem.assign_attrs(units="m", source="py3dep", product = "elevation")
 
-# def load_s1_rtc(path):
-#     if path.suffix.lower() not in ALLOWED_EXTENSIONS:
-#         raise ValueError(f"Unsupported file type: {path}")
+def get_slope(aoi, aoi_crs, ref_grid = None, resolution=30):
+    slope = _get_py3dep_map(
+        layer="Slope Degrees",
+        aoi=aoi,
+        aoi_crs=aoi_crs,
+        ref_grid=ref_grid,
+        resolution=resolution,
+        to_radians=True,
+    )
+    if ref_grid is not None: slope = slope.rio.reproject_match(ref_grid)
+    return slope.assign_attrs(units="radians", source="py3dep", product = "slope")
 
-#     da = xr.open_dataarray(path).squeeze('band', drop = True)
+def get_aspect(aoi, aoi_crs, ref_grid = None, resolution=30):
+    aspect = _get_py3dep_map(
+        layer="Aspect Degrees",
+        aoi=aoi,
+        aoi_crs=aoi_crs,
+        ref_grid=ref_grid,
+        resolution=resolution,
+        to_radians=True,
+    )
+    if ref_grid is not None: aspect = aspect.rio.reproject_match(ref_grid)
+    return aspect.assign_attrs(units="radians", source="py3dep", product = "aspect")
 
-#     # Apply canonical attributes
-#     da = _apply_canonical_attrs(da, sensor = SENTINEL1, product= OPERA_RTC, RAW_TO_CANONICAL=RTC_RAW_TO_CANONICAL)
-
-#     t = _parse_rtc_timestamp(path)
-#     da = da.expand_dims(time=[t])
-#     for coord in ("track", "direction", "platform"):
-#         da = da.assign_coords({coord: ("time", [da.attrs.get(coord, "unknown")])})
-
-#     return da
+def get_forest_cover(aoi, aoi_crs, ref_grid = None):
+    g = gpd.GeoSeries([aoi], crs=aoi_crs)
+    fcf = gh.nlcd_bygeom(geometry=g)[0]["canopy_2021"]
+    if ref_grid is not None: fcf = fcf.rio.reproject_match(ref_grid)
+    return fcf.assign_attrs(units="percent", source="nlcd", product = "forest_cover")

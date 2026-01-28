@@ -1,6 +1,6 @@
 import asf_search as asf
 REQUIRED_ATTRS = {
-    "sensor",
+    "source",
     "product",
     "units"
 }
