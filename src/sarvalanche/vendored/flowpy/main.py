@@ -119,8 +119,7 @@ def run_flowpy(
     # Calculation
     log.info('Multiprocessing starts, used cores: {}'.format(cpu_count()))
 
-
-    release_list = fc.split_release(release, release_header, min(mp.cpu_count() * 6, max_number_procces))
+    release_list = fc.split_release(release, release_header, min(mp.cpu_count() * 5, max_number_procces))
 
     log.info("{} Processes started.".format(len(release_list)))
 

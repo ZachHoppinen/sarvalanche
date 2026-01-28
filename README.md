@@ -95,4 +95,5 @@ Sensor-specific handling is isolated to the `io/` module. All downstream algorit
 
 ## Other packages used ##
 
-flowpy is repackaged to remove GUI and add a non-command line interface. Will open PR to remove in future.
+flowpy is repackaged to remove GUI and add a non-command line interface, remove file IO, remove pyqt5 dependency.
+`Neuhauser, M., D'Amboise, C., Teich, M., Kofler, A., Huber, A., Fromm, R., and Fischer, J. T.: Flow-Py: routing and stopping of gravitational mass flows, Zenodo [code], https://doi.org/10.5281/zenodo.5027274, 2021`
