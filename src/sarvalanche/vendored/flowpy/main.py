@@ -191,7 +191,8 @@ def run_flowpy(
     # return z_delta, flux, cell_counts, z_delta_sum, backcalc, fp_ta, sl_ta
     # only return cell_counts (number of start cells that converge to a pixel)
     # fp_ta the flow path travel angle. small = long shallow runout, big = steep direct hit
-    return cell_counts, fp_ta
+    # backcalc is
+    return cell_counts, fp_ta, backcalc
 
 if __name__ == "__main__":
     run_flowpy()
