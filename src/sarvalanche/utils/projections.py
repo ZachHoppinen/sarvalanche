@@ -1,7 +1,7 @@
-from pyproj import Transformer
 
 from pyproj import CRS, Transformer
 import numpy as np
+import xarray as xr
 
 def resolution_to_meters(res, crs, lat=None):
     """
@@ -119,3 +119,32 @@ def resolution_to_degrees(res_m, crs, lat=None):
         return xres_deg, yres_deg
 
     raise ValueError("CRS is neither projected nor geographic")
+
+def area_m2_to_pixels(da: xr.DataArray, area_m2: float) -> int:
+    """
+    Convert an area in square meters to number of pixels based on raster resolution.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Reference raster with CRS and resolution (e.g., DEM, mask).
+    area_m2 : float
+        Area in square meters to convert.
+
+    Returns
+    -------
+    int
+        Minimum number of pixels covering the area.
+    """
+    # --- Get resolution ---
+    res_x, res_y = np.abs(da.rio.resolution())
+    # Ensure units are meters
+    crs = da.rio.crs
+    if crs is None:
+        raise ValueError("DataArray has no CRS defined")
+    if not crs.is_projected:
+        raise ValueError("CRS is not projected in meters. Cannot compute pixel area.")
+
+    pixel_area = res_x * res_y
+    n_pixels = int(np.ceil(area_m2 / pixel_area))
+    return n_pixels

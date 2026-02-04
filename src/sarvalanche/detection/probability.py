@@ -2,9 +2,223 @@
 import numpy as np
 import xarray as xr
 
+from sarvalanche.preprocessing.spatial import spatial_smooth
+from sarvalanche.features.backscatter_change import (
+    backscatter_changes_crossing_date,
+    backscatter_change_weighted_mean,
+)
+
+def calculate_backscatter_probability(
+    ds: xr.Dataset,
+    avalanche_date,
+    *,
+    polarizations=("VV", "VH"),
+    smooth_method="median",
+    tau_days=24,
+    tau_variability=20.0,
+    incidence_power=0.0,
+    combine_alpha=0.5,
+):
+    """
+    Compute avalanche debris probability from SAR backscatter changes.
+
+    For each (track, polarization) pair:
+      1. Convert backscatter to dB
+      2. Spatially smooth
+      3. Compute pre/post-avalanche backscatter changes
+      4. Aggregate changes using temporal, stability, and incidence weighting
+      5. Convert to probability
+
+    All per-track/pol probabilities are then fused using log-odds
+    combination with optional shrinkage toward 0.5.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Canonical SAR dataset containing:
+        - VV, VH backscatter (time, y, x)
+        - track (time)
+        - lia (static_track, y, x)
+    avalanche_date : str or datetime-like
+        Date separating pre/post-event acquisitions.
+    polarizations : tuple[str]
+        Polarizations to include (default: ("VV", "VH")).
+    smooth_method : str
+        Spatial smoothing method passed to `spatial_smooth`.
+    tau_days : float
+        Temporal decay scale (days) for weighting.
+    tau_variability : float
+        Variability decay scale for stability weighting.
+    incidence_power : float
+        Power applied to incidence angle weighting.
+    combine_alpha : float
+        Shrinkage factor toward 0.5 when combining probabilities
+        (0 = ignore, 1 = full strength).
+
+    Returns
+    -------
+    xr.DataArray
+        Combined backscatter-change probability in [0, 1].
+    """
+
+    tracks = np.unique(ds.track.values)
+    p_delta_list: list[xr.DataArray] = []
+
+    for track in tracks:
+        lia = ds["lia"].sel(static_track=track)
+
+        for pol in polarizations:
+            if pol not in ds:
+                continue
+
+            # --- 1. Select, convert to dB, smooth ---
+            da = ds[pol].sel(time=ds.track == track)
+            da_db = 10.0 * np.log10(da)
+            da_db = spatial_smooth(da_db, method=smooth_method)
+
+            # --- 2. Backscatter change across avalanche date ---
+            diffs = backscatter_changes_crossing_date(
+                da_db, avalanche_date
+            )
+
+            # --- 3. Weighted aggregation ---
+            weighted_mean = backscatter_change_weighted_mean(
+                diffs,
+                da_db,
+                tau_days=tau_days,
+                tau_variability=tau_variability,
+                local_incidence_angle=lia,
+                incidence_power=incidence_power,
+            )
+
+            # --- 4. Probability mapping ---
+            p_delta = probability_backscatter_change(weighted_mean)
+            p_delta_list.append(p_delta)
+
+    if not p_delta_list:
+        raise ValueError("No backscatter probabilities were computed")
+
+    # --- 5. Combine across tracks / pols ---
+    p_delta_combined = log_odds_combine(
+        p_delta_list,
+        alpha=combine_alpha,
+    )
+
+    return p_delta_combined
+
+def weighted_geometric_mean(
+    probs: list[xr.DataArray],
+    weights: list[float] = None,
+    eps: float = 1e-6,
+    normalize: bool = False
+) -> xr.DataArray:
+    """
+    Combine multiple probability DataArrays using a weighted geometric mean.
+
+    Parameters
+    ----------
+    probs : list of xr.DataArray
+        Probabilities in [0, 1] to combine. All must have the same shape/dims.
+    weights : list of float, optional
+        Weight for each probability array. Defaults to equal weighting.
+    eps : float
+        Small value to avoid log(0).
+    normalize : bool
+        If True, scales final probabilities to [0, 1].
+
+    Returns
+    -------
+    xr.DataArray
+        Combined probability array.
+    """
+    if weights is None:
+        weights = [1.0] * len(probs)
+    if len(weights) != len(probs):
+        raise ValueError("Length of weights must match number of probability arrays.")
+
+    # Convert probabilities to log space with numerical stability
+    log_probs = [w * np.log(np.clip(p, eps, 1.0)) for p, w in zip(probs, weights)]
+
+    # Sum weighted logs
+    log_total = sum(log_probs)
+
+    # Back to probability space
+    combined = np.exp(log_total)
+
+    # Optional normalization to [0,1]
+    if normalize:
+        combined = combined / combined.max()
+
+    # Preserve coords/dims from first array
+    out = xr.DataArray(
+        combined,
+        dims=probs[0].dims,
+        coords=probs[0].coords,
+        name="p_total_geomean"
+    )
+
+    return out
+
+def log_odds_combine(
+    probs,
+    dim=None,
+    weights=None,
+    alpha=1.0,
+    eps=1e-6,
+):
+    """
+    Combine probabilities by summing log-odds with optional shrinkage and weighting.
+
+    Parameters
+    ----------
+    probs : list[xr.DataArray] or xr.DataArray
+        Probabilities in [0, 1].
+        If a list, concatenated along new 'stack' dimension.
+    dim : str, optional
+        Dimension to combine over (required if probs is a DataArray).
+    weights : list[float], optional
+        Per-probability weights (applied in log-odds space). Must match number of probs.
+    alpha : float
+        Shrinkage factor toward 0.5 (0 = ignore, 1 = full strength).
+    eps : float
+        Numerical stability constant.
+
+    Returns
+    -------
+    xr.DataArray
+        Combined probability in [0, 1].
+    """
+
+    # --- concatenate list of DataArrays if needed ---
+    if isinstance(probs, list):
+        probs = xr.concat(probs, dim="stack")
+        dim = "stack"
+
+    # --- shrink toward 0.5 (confidence control) ---
+    if alpha is not None:
+        probs = 0.5 + alpha * (probs - 0.5)
+
+    # --- log-odds transform with optional weighting ---
+    if weights is None:
+        log_odds = np.log((probs + eps) / (1.0 - probs + eps))
+    else:
+        if len(weights) != probs.sizes[dim]:
+            raise ValueError(f"Length of weights ({len(weights)}) must match size of dim '{dim}' ({probs.sizes[dim]})")
+        # multiply each slice along dim by its weight
+        slices = [probs.isel({dim: i}) for i in range(probs.sizes[dim])]
+        log_odds_slices = [w * np.log((p + eps) / (1 - p + eps)) for p, w in zip(slices, weights)]
+        # stack back
+        log_odds = xr.concat(log_odds_slices, dim=dim)
+
+    # --- combine along dim ---
+    log_odds_sum = log_odds.sum(dim, skipna=True)
+
+    # --- back to probability ---
+    return 1.0 / (1.0 + np.exp(-log_odds_sum))
+
 def probability_backscatter_change(
     diff: xr.DataArray,
-    logistic_slope: float = 5.0,
+    logistic_slope: float = 3.0,
     logistic_midpoint: float = 0.5
 ) -> xr.DataArray:
     """
@@ -73,8 +287,8 @@ def probability_forest_cover(fcf: xr.DataArray,
 
 def probability_cell_counts(cell_counts: xr.DataArray,
                             midpoint: float = 200,
-                            slope: float = 0.01,
-                            use_log: bool = False) -> xr.DataArray:
+                            slope: float = 7,
+                            use_log: bool = True) -> xr.DataArray:
     """
     Convert avalanche model cell counts into probability of avalanche debris.
 
@@ -115,8 +329,8 @@ def probability_cell_counts(cell_counts: xr.DataArray,
     return prob_da
 
 def probability_slope_angle(slope_angle: xr.DataArray,
-                             midpoint: float = 30.0,
-                             slope: float = 0.5) -> xr.DataArray:
+                             midpoint: float = 25.0,
+                             slope: float = 1.0) -> xr.DataArray:
     """
     Convert slope in degrees (0-90) into probability of avalanche debris.
 

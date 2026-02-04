@@ -3,6 +3,8 @@
 import warnings
 from datetime import date
 from typing import Union, Tuple, Optional
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -10,13 +12,13 @@ from pyproj import CRS
 
 from .constants import REQUIRED_ATTRS
 
-def validate_canonical(
+def validate_canonical_da(
     da: xr.DataArray,
     *,
     require_time: bool | None = None,
 ) -> None:
     """
-    Validate that a DataArray conforms to sarvalanche's canonical data model.
+    Validate that a single DataArray conforms to sarvalanche's canonical model.
 
     Parameters
     ----------
@@ -39,21 +41,17 @@ def validate_canonical(
 
     # --- Dimensions ---
     if da.dims[-2:] != ("y", "x"):
-        raise ValueError(
-            f"Last two dimensions must be ('y', 'x'), got {da.dims}"
-        )
+        raise ValueError(f"Last two dimensions must be ('y', 'x'), got {da.dims}")
 
     if "time" in da.dims:
         if da.dims[0] != "time":
-            raise ValueError(
-                "If present, 'time' must be the first dimension"
-            )
-        if not np.issubdtype(da["time"].dtype, np.datetime64):
+            raise ValueError("If present, 'time' must be the first dimension")
+        time = da["time"]
+        if not (np.issubdtype(time.dtype, np.datetime64) or isinstance(time.to_index(), pd.DatetimeIndex)):
             raise ValueError("'time' coordinate must be datetime64")
 
     if require_time is True and "time" not in da.dims:
         raise ValueError("Time dimension is required but missing")
-
     if require_time is False and "time" in da.dims:
         raise ValueError("Time dimension is not allowed")
 
@@ -65,6 +63,35 @@ def validate_canonical(
     # --- Mask sanity ---
     if da.dtype == bool and da.ndim not in (2, 3):
         raise ValueError("Boolean masks must be 2D or time-stacked 3D arrays")
+
+
+def validate_canonical(
+    data: xr.DataArray | xr.Dataset,
+    *,
+    require_time: bool | None = None,
+) -> None:
+    """
+    Validate that input conforms to sarvalanche's canonical data model.
+    Works for either a single DataArray or a Dataset of variables.
+
+    Parameters
+    ----------
+    data : xr.DataArray or xr.Dataset
+        Input to validate.
+    require_time : bool | None
+        Passed to individual DataArrays.
+    """
+    if isinstance(data, xr.DataArray):
+        validate_canonical_da(data, require_time=require_time)
+    elif isinstance(data, xr.Dataset):
+        for name, da in data.data_vars.items():
+            try:
+                validate_canonical_da(da, require_time=require_time)
+            except Exception as e:
+                raise ValueError(f"Validation failed for variable '{name}': {e}") from e
+    else:
+        raise TypeError("Input must be either an xarray.DataArray or xr.Dataset")
+
 
 SENTINEL_1_LAUNCH = pd.Timestamp("2014-04-03")
 SENTINEL_1B_FAIL = pd.Timestamp("2021-12-23")
@@ -354,3 +381,60 @@ def validate_urls(urls: list[str], require_http: bool = True) -> list[str]:
         raise ValueError(f'No urls found!')
 
     return valid_urls
+
+def validate_path(
+    filepath,
+    *,
+    should_exist: bool | None = None,
+    make_directory: bool = False,
+) -> Path:
+    """
+    Validate and normalize a filesystem path.
+
+    Parameters
+    ----------
+    filepath : str | Path
+        Input path.
+    should_exist : bool | None, optional
+        - True  → path must already exist
+        - False → path must NOT exist
+        - None  → do not enforce existence
+    make_directory : bool, optional
+        If True, create the directory (and parents) if it does not exist.
+        Only applies when the path is intended to be a directory.
+
+    Returns
+    -------
+    Path
+        Normalized Path object.
+
+    Raises
+    ------
+    TypeError
+        If filepath cannot be interpreted as a path.
+    ValueError
+        If existence checks fail or directory creation is inconsistent.
+    """
+    try:
+        path = Path(filepath).expanduser()
+    except Exception as e:
+        raise TypeError(f"Invalid path input: {filepath!r}") from e
+
+    exists = path.exists()
+
+    # --- existence checks ---
+    if should_exist is True and not exists:
+        raise ValueError(f"Path does not exist: {path}")
+
+    if should_exist is False and exists:
+        raise ValueError(f"Path already exists: {path}")
+
+    # --- directory creation ---
+    if make_directory:
+        if exists and not path.is_dir():
+            raise ValueError(
+                f"Cannot create directory; path exists and is not a directory: {path}"
+            )
+        path.mkdir(parents=True, exist_ok=True)
+
+    return path

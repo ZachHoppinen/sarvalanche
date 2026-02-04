@@ -4,6 +4,9 @@ import argparse
 import numpy as np
 import subprocess
 from pathlib import Path
+import logging
+
+log = logging.getLogger(__name__)
 
 
 def run_spatial_crf_densecrf_py38(
@@ -33,15 +36,31 @@ def run_spatial_crf_densecrf_py38(
         "--iters", str(iters),
     ]
 
-    result = subprocess.run(
-        cmd,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    log.info(cmd)
 
-    return result
+    try:
 
+        result = subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        log.debug(f"Command stdout:\n{result.stdout}")
+        log.debug(f"Command stderr:\n{result.stderr}")
+        return result
+
+    except subprocess.CalledProcessError as e:
+        msg = (
+            f"Command failed with exit code {e.returncode}!\n"
+            f"Command: {' '.join(e.cmd)}\n"
+            f"stdout:\n{e.stdout}\n"
+            f"stderr:\n{e.stderr}"
+        )
+        # Optionally log as error too
+        log.error(msg)
+        # Raise a new exception to give more context
+        raise RuntimeError(msg) from e
 
 def parse_tuple(arg, type_=float):
     """
@@ -69,6 +88,9 @@ def run_crf(
     # Load unary energy
     U = np.load(U_path)
     _, H, W = U.shape
+
+    if not np.isfinite(U).all():
+        raise ValueError("Unary contains NaNs or Infs")
 
     # Flatten unary for DenseCRF
     U_flat = U.reshape((2, -1))

@@ -192,7 +192,7 @@ def run_flowpy(
     # only return cell_counts (number of start cells that converge to a pixel)
     # fp_ta the flow path travel angle. small = long shallow runout, big = steep direct hit
     # backcalc is
-    return cell_counts, fp_ta, backcalc
+    return cell_counts, fp_ta
 
 if __name__ == "__main__":
     run_flowpy()
