@@ -368,14 +368,13 @@ SARvalanche follows a sequential pipeline from raw sensor data to final products
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                           Raw Sensor Data                               │
-│  (Sentinel-1 SLC/GRD, NISAR RSLC, Optical imagery, DEM)                │
+│  (Sentinel-1 SLC/GRD, NISAR RSLC, Optical imagery, DEM)                 │
 └───────────────────────────────┬─────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                         Preprocessing                                   │
 │  • Coregistration and terrain correction                                │
-<!-- │  • Radiometric calibration (σ⁰)                                         │ -->
 │  • Coherence estimation                                                 │
 │  • Projection to common grid                                            │
 └───────────────────────────────┬─────────────────────────────────────────┘
@@ -392,7 +391,7 @@ SARvalanche follows a sequential pipeline from raw sensor data to final products
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                         Mask Generation                                  │
+│                         Mask Generation                                 │
 │  • Forest cover probability                                             │
 │  • Slope angle feasibility                                              │
 │  • FlowPy runout modeling → avalanche zone prior                        │
@@ -400,7 +399,7 @@ SARvalanche follows a sequential pipeline from raw sensor data to final products
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    Statistical Detection                                 │
+│                    Statistical Detection                                │
 │  • Likelihood computation (per orbit, polarization)                     │
 │  • Multi-temporal p-value combination → signed z-scores                 │
 │  • Bayesian integration of SAR + snow + terrain evidence                │
@@ -409,7 +408,7 @@ SARvalanche follows a sequential pipeline from raw sensor data to final products
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                   Spatial Regularization (CRF)                           │
+│                   Spatial Regularization (CRF)                          │
 │  • Dense CRF with Gaussian edge potentials                              │
 │  • Mean-field inference                                                 │
 │  • Output: Smoothed debris probability raster                           │
@@ -417,7 +416,7 @@ SARvalanche follows a sequential pipeline from raw sensor data to final products
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        Product Generation                                │
+│                        Product Generation                               │
 │  • Thresholding probability map                                         │
 │  • Connected component analysis                                         │
 │  • Vectorization to polygons (shapefiles)                               │
