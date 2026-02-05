@@ -15,5 +15,6 @@ OPERA_CSLC = 'OPERA-CSLC'
 OPERA_CSLC_STATIC = 'OPERA-CSLC-STATIC'
 
 RTC_FILETYPES = ['VV', 'VH', 'mask']
+pols = ["VV", "VH"]
 
 eps = 1e-6

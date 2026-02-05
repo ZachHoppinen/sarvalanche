@@ -1,5 +1,6 @@
 from pathlib import Path
 import numpy as np
+import pandas as pd
 import xarray as xr
 import logging
 
@@ -7,7 +8,7 @@ from sarvalanche.utils.validation import validate_dates, validate_aoi, validate_
 
 from sarvalanche.utils.grid import make_reference_grid
 
-from sarvalanche.io.find_data import find_asf_urls
+from sarvalanche.io.find_data import find_asf_urls, find_earthaccess_urls
 from sarvalanche.utils.download import download_urls_parallel
 
 from sarvalanche.utils.constants import RTC_FILETYPES, SENTINEL1
@@ -15,6 +16,8 @@ from asf_search.constants import RTC, RTC_STATIC
 
 from sarvalanche.io.load_data import load_reproject_concat_rtc, get_dem, get_forest_cover, get_slope
 from sarvalanche.utils.raster_utils import combine_close_images
+
+from sarvalanche.masks.debris_flow_modeling import generate_runcount_alpha_angle
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +85,10 @@ def assemble_dataset(
     ds["slope"] = get_slope(aoi, crs, ref_grid)
     log.info('Getting fcf')
     ds["fcf"] = get_forest_cover(aoi, crs, ref_grid)
+
+    ds = generate_runcount_alpha_angle(ds)
+
+    ds['time'] = pd.to_datetime(ds['time']).tz_localize(None)
 
     validate_canonical(ds, require_time= None)
 

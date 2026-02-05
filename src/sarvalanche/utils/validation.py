@@ -85,6 +85,7 @@ def validate_canonical(
         validate_canonical_da(data, require_time=require_time)
     elif isinstance(data, xr.Dataset):
         for name, da in data.data_vars.items():
+            if name == 'spatial_ref': continue
             try:
                 validate_canonical_da(da, require_time=require_time)
             except Exception as e:

@@ -3,17 +3,18 @@ import numpy as np
 import xarray as xr
 
 from sarvalanche.preprocessing.spatial import spatial_smooth
+from sarvalanche.preprocessing.radiometric import linear_to_dB
 from sarvalanche.features.backscatter_change import (
     backscatter_changes_crossing_date,
     backscatter_change_weighted_mean,
 )
 
-def calculate_backscatter_probability(
+def calculate_emperical_backscatter_probability(
     ds: xr.Dataset,
     avalanche_date,
     *,
     polarizations=("VV", "VH"),
-    smooth_method="median",
+    smooth_method=None,
     tau_days=24,
     tau_variability=20.0,
     incidence_power=0.0,
@@ -45,6 +46,7 @@ def calculate_backscatter_probability(
         Polarizations to include (default: ("VV", "VH")).
     smooth_method : str
         Spatial smoothing method passed to `spatial_smooth`.
+        (None = no smoothing)
     tau_days : float
         Temporal decay scale (days) for weighting.
     tau_variability : float
@@ -73,8 +75,9 @@ def calculate_backscatter_probability(
 
             # --- 1. Select, convert to dB, smooth ---
             da = ds[pol].sel(time=ds.track == track)
-            da_db = 10.0 * np.log10(da)
-            da_db = spatial_smooth(da_db, method=smooth_method)
+            da_db = linear_to_dB(da)
+            if smooth_method is not None:
+                da_db = spatial_smooth(da_db, method=smooth_method)
 
             # --- 2. Backscatter change across avalanche date ---
             diffs = backscatter_changes_crossing_date(

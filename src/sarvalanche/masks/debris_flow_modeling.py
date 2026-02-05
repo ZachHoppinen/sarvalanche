@@ -3,7 +3,41 @@ import xarray as xr
 
 from sarvalanche.masks.size_filter import filter_pixel_groups
 from sarvalanche.preprocessing.spatial import spatial_smooth
+from sarvalanche.utils.projections import area_m2_to_pixels
 from sarvalanche.vendored.flowpy import run_flowpy
+
+def generate_runcount_alpha_angle(ds):
+    # flowpy needs to run in projected coordinate system
+    dem_proj = ds['dem'].rio.reproject(ds['dem'].rio.estimate_utm_crs())
+
+    min_release_area_m2 = 300 *300 # meteers
+    min_release_pixels = area_m2_to_pixels(dem_proj, min_release_area_m2)
+
+    # generate start area
+    release_mask = generate_release_mask(
+        slope=ds['slope'],
+        forest_cover=ds['fcf'],
+        min_slope_deg=35,
+        max_slope_deg=45,
+        max_fcf=10,
+        min_group_size=min_release_pixels,
+        smooth=True,
+        reference=dem_proj
+    )
+
+    # run FlowPy
+    cell_counts_da, runout_angle_da = run_flowpy_on_mask(
+        dem=dem_proj,
+        release_mask=release_mask,
+        alpha=25,
+        reference=dem_proj
+    )
+
+    # Step 3: Attach to dataset
+    ds = attach_flowpy_outputs(ds, cell_counts_da, runout_angle_da)
+
+    return ds
+
 
 def attach_flowpy_outputs(ds, cell_counts, runout_angle):
     ds['cell_counts'] = cell_counts.rio.reproject_match(ds)
