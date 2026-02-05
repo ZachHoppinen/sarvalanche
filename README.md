@@ -18,6 +18,105 @@ A probabilistic avalanche debris detection system leveraging synthetic aperture 
 - [Contributing](#contributing)
 
 ---
+## Physical Basis: SAR Signatures of Avalanche Debris
+
+Understanding how avalanche debris affects SAR measurements is fundamental to the detection approach. The physical changes in surface properties create distinctive signatures in both backscatter intensity and interferometric coherence.
+
+### Backscatter Changes
+
+Avalanche debris typically **increases** radar backscatter compared to undisturbed snow surfaces. This brightening occurs through two primary mechanisms:
+
+#### 1. Surface Roughness Enhancement
+
+Fresh avalanche debris creates a much rougher surface texture than the smooth snow it disturbs. The chaotic deposition of snow blocks, ice fragments, and entrained material (rocks, vegetation, soil) increases surface scattering at C-band wavelengths (5.6 cm for Sentinel-1). This roughness effect has been consistently documented across multiple studies:
+
+- **Schlaffer & Schlogl (2024)** demonstrated backscatter increases in dual-polarimetric time series analysis, showing that the roughness-induced brightening is detectable in both VV and VH polarizations [1].
+
+- **Sartori & Dabiri (2023)** confirmed this signature in the Southern Tyrolean Alps, where debris deposits showed clear backscatter increases relative to pre-event conditions [2].
+
+- **Eckerstorfer et al. (2019)** leveraged this effect in their near-real-time avalanche monitoring system in Norway, using backscatter brightening as the primary detection criterion [3].
+
+#### 2. Volume Scattering (Dense Debris)
+
+For larger, denser avalanche deposits, increased **volume scattering** may contribute additional backscatter enhancement. The heterogeneous internal structure of compacted debris—with varying densities, air pockets, and ice lenses—can create multiple scattering paths within the deposit volume. While less studied than surface roughness effects, this mechanism likely contributes to the particularly strong signatures observed for large, dense avalanches.
+
+### Detection Performance and Size Limitations
+
+The detectability of avalanche debris depends critically on:
+- **Temporal revisit frequency**: Number of days between acquisitions
+- **Avalanche size**: Spatial extent and debris volume
+- **Regional snow climate**: Wet vs. dry snow conditions affect persistence
+
+**Norway (6-day revisit, Sentinel-1)**: Eckerstorfer et al. (2019) achieved near-real-time detection with high success rates, benefiting from frequent revisits and maritime snow conditions that preserve debris signatures [3].
+
+**Western United States (12-day revisit)**: Detection is more challenging with less frequent coverage. Keskinen et al. (2022) found that in transitional snow climates:
+- **D2 avalanches** (size 2 on the 5-point scale): ~50% detection rate
+- **D3+ avalanches** (size 3 and larger): Majority detected
+- **D1 avalanches** (size 1, small sluffs): Generally undetectable
+
+The 12-day repeat cycle in regions with single-satellite coverage means smaller avalanches may be obscured by subsequent snowfall, surface metamorphism, or wind redistribution before the next acquisition [4]. This temporal limitation emphasizes the importance of multi-orbit and multi-sensor integration to improve revisit frequency.
+
+### Coherence Loss
+
+Interferometric coherence measures the similarity of phase between two SAR acquisitions. Avalanche debris causes **coherence loss** (decorrelation) through the introduction of new scatterers and geometric changes between image pairs.
+
+#### Physical Mechanism
+
+Between two SAR acquisitions (e.g., 6 or 12 days apart), avalanche deposition fundamentally alters the scattering geometry:
+- New scatterers appear (debris blocks, exposed rocks, vegetation)
+- Previous scatterers are buried or displaced
+- Surface height changes disrupt phase relationships
+- Dielectric properties change (wet debris vs. dry snow)
+
+This disruption causes the phase to become incoherent, reducing correlation between acquisitions from typical snow values (γ ~ 0.4–0.7) to debris values (γ ~ 0.1–0.3).
+
+#### Empirical Evidence
+
+**Yang et al. (2020)** provided detailed quantitative analysis of coherence changes in C-band SAR data [5]:
+
+**VV Polarization:**
+- **Pre-event coherence**: γ = 0.41–0.65 (ascending and descending)
+- **Post-event coherence**: γ = 0.14–0.32
+- **Median drop**: ~0.30–0.40 (absolute decrease)
+
+**VH Polarization:**
+- **Pre-event coherence**: γ = 0.40–0.68
+- **Post-event coherence**: γ = 0.20–0.49
+- **Smaller decrease than VV**, but still substantial
+
+The coherence loss is particularly pronounced in VV polarization, likely because co-polarized returns are more sensitive to geometric phase disruption than cross-polarized volume scattering.
+
+### Polarimetric Decomposition Signatures
+
+Beyond simple backscatter and coherence, polarimetric decomposition parameters reveal additional information about scattering mechanism changes.
+
+#### Entropy (H) and Alpha Angle (α)
+
+**Yang et al. (2020)** analyzed Cloude-Pottier decomposition parameters, showing distinct patterns [5]:
+
+**Entropy (H) - Randomness of Scattering:**
+- **Ascending orbit**: H increased from 0.42–0.69 (undisturbed snow) to 0.84–0.91 (debris)
+- **Descending orbit**: H increased from 0.25–0.41 to 0.88–0.94 (even more dramatic)
+- **Interpretation**: Debris creates highly random, depolarized scattering due to heterogeneous surface structure
+
+**Alpha Angle (α) - Dominant Scattering Type:**
+- **Ascending orbit**: α decreased from 70°–74° to 57.5°–63°
+- **Descending orbit**: α decreased from 81°–86° to 54°–62° (larger change)
+- **Interpretation**: Shift from volume/multiple-bounce scattering (high α) toward surface scattering (lower α), consistent with roughness dominating the debris signature
+
+The particularly strong changes in the descending orbit suggest geometric effects (local incidence angle) modulate the sensitivity to debris detection, reinforcing the value of multi-orbit observations.
+
+### Implications for Detection Algorithm
+
+These physical signatures directly inform the SARvalanche detection strategy:
+
+1. **Backscatter brightening** is the primary detection criterion, validated across multiple studies and regions
+2. **Coherence loss** provides complementary evidence, particularly effective for wet, dense debris
+3. **Multi-polarization analysis** (VV + VH) captures both surface and volume scattering changes
+4. **Multi-orbit fusion** (ascending + descending) compensates for geometric sensitivities
+5. **Size-dependent detection** is expected, with focus on D2+ avalanches in 12-day revisit regions
+
+---
 
 ## Overview
 
@@ -63,7 +162,7 @@ When a new SAR acquisition arrives, we compute the likelihood (L) that the obser
 L = P(observation | historical_distribution)
 ```
 
-For significantly negative deviations in backscatter or coherence (typical of debris deposits that increase surface roughness and reduce coherence), we obtain low likelihoods, indicating potential debris presence.
+For significantly positive deviations in backscatter or drops in coherence (typical of debris deposits that increase surface roughness and reduce coherence), we obtain low likelihoods for the null hypothesis, indicating potential debris presence.
 
 These likelihoods are converted to p-values representing the probability of observing such extreme values under the null hypothesis. Small p-values (e.g., p < 0.05) suggest the null hypothesis should be rejected, indicating potential debris.
 
@@ -82,60 +181,130 @@ A robust detection system must integrate multiple sources of evidence beyond SAR
 #### 1. SAR Evidence (Primary)
 
 **Backscatter Changes (ΔVV, ΔVH):**
-- Debris deposits often decrease backscatter due to increased surface roughness and water content
+- Debris deposits often increase backscatter due to increased surface roughness and water content
 - Multiple orbit geometries (ascending/descending) provide independent looks at the same location
 - Each acquisition contributes a p-value based on its likelihood
+- Different polarizations are weighted seperately
+
+> Note: Coherence change not yet implemented
 
 **Coherence Changes (Δγ):**
 - Loss of coherence indicates decorrelation between acquisition pairs
-- Debris deposition disrupts phase relationships, causing coherence loss
+- Debris deposition adds new scatterers between scenes, causing coherence loss
 - Particularly effective for wet, dense avalanche debris
 
-#### 2. Snow Cover Evidence
+#### 2. SWE Reanalysis Context
+ - The UCLA SWE reanalysis is used in historical avalanche detection runs
+ - It provides two features: (1) the SWE change over the last 7 days
+ - and (2) the presence of absence of snow in start zones.
+
+#### 3. Snow Cover Evidence
+
+> Note: Since we are testing historical datasets currently this is implemented using the UCLA reanalysis product
+> but will be implemented for near-real time runs.
 
 Changes in optical snow cover indices (e.g., NDSI from Sentinel-2/Landsat) can corroborate debris detection:
 - Debris often exposes darker underlying material
 - Fresh avalanche debris may have different reflectance than surrounding snow
 - Provides independent validation when cloud-free optical imagery is available
 
-#### 3. Terrain Context
+#### 4. Terrain Context
 
 **Topographic Constraints:**
-- **Slope angle:** Debris deposits are constrained to feasible slopes (typically 25-55°)
+- **Slope angle:** Debris deposits are constrained to feasible slopes (typically <25°)
 - **Forest cover:** Dense forests prevent large avalanche formation and runout
-- Masks these areas to reduce false positives
+- While these areas are not "masked" a lower prior probability is used which
+- means larger increases in backscatter are neccessary to cause a "detection"
 
 **Avalanche Flow Modeling (FlowPy):**
 - Physics-based avalanche runout modeling identifies plausible debris deposition zones
 - Starting from defined release zones, FlowPy simulates gravitational mass flow paths
 - Provides a spatial prior (P_prior) indicating where debris is physically possible
+- The primary parameter used is "cell_count" incidicating the number of other pixels that flowed to that pixel.
+- Again this gives a probability layer that makes detections less likely but not impossible in lower flow pixels.
 
 #### Bayesian Integration Framework
 
-We combine these evidence sources using a Bayesian approach. The posterior probability of debris presence is proportional to the product of individual likelihoods weighted by confidence factors:
+We combine multiple evidence sources using a **weighted geometric mean** approach. Rather than a traditional Bayesian posterior, we compute an aggregate probability from independent probabilistic assessments:
+
+**Evidence Sources:**
+
+1. **p_empirical**: Probability based on weighted backscatter changes across observations
+2. **p_ecdf**: Probability derived from empirical cumulative distribution function (ECDF) of historical backscatter
+   - Measures how extreme the current observation is relative to the pre-event distribution
+3. **p_fcf**: Forest cover probability (forests inhibit avalanche formation/runout)
+   - Sigmoid function: high forest cover → low debris probability
+   - Parameters: midpoint = 50% cover, slope = 0.1
+4. **p_runout**: Avalanche runout model probability (from FlowPy cell counts)
+   - Higher cell counts (more simulated flow paths) → higher debris probability
+5. **p_slope**: Slope angle probability
+   - Debris deposits are constrained to physically feasible slope ranges
+   - Too flat (no runout) or too steep (no deposition) both reduce probability
+
+**Combination Formula:**
 
 ```
-P(debris | evidence) ∝ P_prior^w₀ × L_VV^w₁ × L_VH^w₂ × L_snow^w₃ × ...
+P_debris = (p_empirical^w₁ × p_ecdf^w₂ × p_fcf^w₃ × p_runout^w₄ × p_slope^w₅)^(1/Σwᵢ)
 ```
 
-Taking logarithms converts this to a weighted sum (computationally stable):
+**Current weights:**
+- w₁ = 0.5 (empirical backscatter changes)
+- w₂ = 0.5 (ECDF-based backscatter probability)
+- w₃ = 1.0 (forest cover constraint)
+- w₄ = 1.0 (runout model prior)
+- w₅ = 1.0 (slope angle constraint)
 
-```
-log P(debris | evidence) = w₀·log(P_prior) + w₁·log(L_VV) + w₂·log(L_VH) + w₃·log(L_snow) + ...
-```
+The weighted geometric mean has several advantages:
+- **Scale invariance**: Works consistently across probability ranges [0,1]
+- **Multiplicative influence**: Any very low probability (e.g., forest = 0.01) strongly suppresses the result
+- **Balanced contribution**: Weights control relative importance without dimensional issues
+- **Interpretability**: Output remains a valid probability in [0,1]
 
-The weights (w₀, w₁, w₂, w₃) reflect the relative reliability of each evidence source and can be learned from training data or set based on domain knowledge.
+Null values are replaced with 0 (zero probability) in the final pixel-wise probability map (`p_pixelwise`).
+
+**Key Distinction from Traditional Bayes:**
+
+This is not computing `P(debris | observations)` via Bayes' theorem, but rather combining multiple probabilistic assessments where each evidence source independently estimates debris likelihood. The geometric mean provides a principled way to aggregate these assessments while respecting their scale and allowing differential weighting.
 
 #### Signed Z-Score Combination
 
-For SAR observations across multiple orbit geometries and dates, we combine p-values using a meta-analysis approach:
+For SAR observations across multiple orbit geometries and dates, we combine p-values using a weighted meta-analysis approach that preserves directional information:
 
-1. Convert each p-value to a z-score (standard normal deviate)
-2. Weight by orbit geometry and polarization confidence
-3. Combine into a single signed z-score indicating change direction and significance
-4. This z-score represents the aggregate statistical evidence for debris
+**Step 1: Convert p-values to signed z-scores**
 
-This approach is more robust than simple p-value multiplication because it properly accounts for the expected distribution under the null hypothesis.
+For each observation channel (orbit geometry + polarization), we:
+
+1. Clip p-values to avoid numerical instability: `p ∈ [ε, 1-ε]` where ε is a small value (e.g., 10⁻¹⁰)
+2. Convert to z-scores using the inverse normal CDF: `z = Φ⁻¹(1 - p)`
+3. Apply sign from the observed change direction: `z_signed = z × sign(Δσ⁰)`
+
+The sign indicates whether backscatter increased (+) or decreased (-), with negative values typically indicating potential debris (darkening).
+
+**Step 2: Calculate observation weights**
+
+Each observation is weighted based on three quality factors:
+
+```
+w = (1/σ) × cos(θ)^α × q_pol
+```
+
+Where:
+- **1/σ**: Inverse of historical backscatter standard deviation (stable areas get higher weight)
+- **cos(θ)^α**: Geometric factor based on local incidence angle θ (α = 1.0)
+  - Observations near nadir (θ ≈ 0°) are more reliable than steep angles
+  - cos(θ) penalizes steep incidence angles where foreshortening/layover may occur
+- **q_pol**: Polarization quality factor
+  - VV polarization: q = 1.0 (primary, more sensitive to surface changes)
+  - VH polarization: q = 0.8 (secondary, more sensitive to volume scattering)
+
+**Step 3: Weighted combination**
+
+The signed z-scores are combined across all observation channels using their weights, producing an aggregate statistical measure of change significance that accounts for both observation quality and geometric viewing conditions.
+
+This approach is more robust than simple p-value multiplication because it:
+- Properly accounts for the expected distribution under the null hypothesis
+- Preserves directional information (increase vs. decrease in backscatter)
+- Down-weights unreliable observations (high variance, poor geometry, less sensitive polarization)
 
 ### Spatial Context with CRFs
 
@@ -152,7 +321,7 @@ A CRF models the joint probability of all pixel labels simultaneously, encouragi
 
 Following Krähenbühl & Koltun (NIPS 2011, ICML 2013), we use a fully connected CRF with Gaussian edge potentials. The energy function consists of:
 
-**Unary Potential (ψᵤ):** 
+**Unary Potential (ψᵤ):**
 The per-pixel debris probability from the multi-modal integration (previous section). This represents the likelihood of debris at each pixel independently.
 
 **Pairwise Potential (ψₚ):**
@@ -361,102 +530,6 @@ By the time data reaches processing modules, it has been normalized to this cano
 
 ---
 
-## Detection Algorithm Details
-
-### Current Detection Probability Logic
-
-The detection system uses a Bayesian model to predict the probability of debris at each pixel (y, x) at time t:
-
-```
-P(debris | SAR change, snow change, terrain context, ...)
-```
-
-#### Step 1: Compute Individual Likelihoods
-
-For each evidence source, calculate the likelihood that the observed data comes from a debris-present state:
-
-```python
-P_prior   = debris_zone_probability  # From FlowPy runout model
-L_vv      = vv_likelihood(ΔVV)       # From VV backscatter change
-L_vh      = vh_likelihood(ΔVH)       # From VH backscatter change
-L_snow    = snow_likelihood(Δsnow)   # From optical snow cover change
-```
-
-Each likelihood function evaluates how consistent the observation is with the presence of debris:
-- **Low backscatter change → high likelihood** (debris typically darkens surface)
-- **Low coherence → high likelihood** (debris disrupts phase)
-- **Snow cover decrease → moderate likelihood** (debris may expose darker material)
-
-#### Step 2: Weighted Log-Likelihood Combination
-
-Combine likelihoods in log space (numerically stable):
-
-```python
-log P_debris = (
-    w_prior * log(P_prior)     # Weight for terrain/runout prior
-  + w_vv * log(L_vv)           # Weight for VV polarization
-  + w_vh * log(L_vh)           # Weight for VH polarization
-  + w_snow * log(L_snow)       # Weight for snow evidence
-)
-```
-
-This is equivalent to the multiplicative Bayesian form but avoids numerical underflow.
-
-#### Step 3: Normalization
-
-Convert log-probability to a proper probability in [0, 1]:
-
-```python
-P_debris = sigmoid(log P_debris)
-```
-
-The sigmoid function ensures the output is bounded and interpretable as a probability.
-
-#### Alternative Formulation (Multiplicative)
-
-Equivalently, in non-log space:
-
-```python
-P_debris_unnormalized = (
-    P_prior**w_prior *
-    L_vv**w_vv *
-    L_vh**w_vh *
-    L_snow**w_snow
-)
-
-P_debris = normalize(P_debris_unnormalized)  # Scale to [0,1]
-```
-
-### Step 4: CRF Spatial Regularization
-
-The per-pixel probabilities from Step 3 form the **unary potential** input to the CRF. The CRF then:
-
-1. Constructs pairwise potentials based on spatial proximity and appearance similarity
-2. Runs mean-field inference to find a globally consistent labeling
-3. Outputs smoothed debris probabilities that respect spatial coherence
-
-**Penalties:**
-- **Single isolated pixels**: High-probability isolated pixels are downweighted (likely noise)
-- **Contiguous groups**: Spatially coherent regions of high probability are reinforced (likely real debris)
-
-### Weight Selection
-
-The weights (w_prior, w_vv, w_vh, w_snow) control the relative influence of each evidence source. They can be:
-
-- **Manually set** based on domain expertise (e.g., VV typically more reliable than VH for wet snow)
-- **Learned from data** via logistic regression or other supervised methods on labeled avalanche debris
-- **Adaptively adjusted** based on data quality metrics (e.g., downweight coherence in low-coherence regions)
-
-Typical values might be:
-```python
-w_prior = 2.0   # Strong terrain prior
-w_vv = 1.5      # Primary SAR evidence
-w_vh = 1.0      # Secondary SAR evidence
-w_snow = 0.5    # Supplementary optical evidence (often cloud-obscured)
-```
-
----
-
 ## Dependencies
 
 SARvalanche relies on several external packages and tools:
@@ -504,9 +577,12 @@ conda activate sarvalanche
 # Install package
 pip install -e .
 
-# Note: pydensecrf may require compilation
-# If installation fails, try:
-pip install git+https://github.com/lucasb-eyer/pydensecrf.git
+# Note: pydensecrf used in the dense CRF
+# uses python 3.8 at most.
+# You will need to run
+conda env create -f py38_environment.yml
+# this will create the conda environment used internally
+# to run the dense crf section.
 ```
 
 ### Verify Installation
@@ -523,69 +599,26 @@ print(sarvalanche.__version__)
 ### Basic Detection Workflow
 
 ```python
-import sarvalanche as sav
+from pathlib import Path
+from shapely.geometry import box
 import xarray as xr
+# aoi = box(-115.0, 43.58, -114.5, 44.13)
+# aoi = box(-115.02068191820455, 44.14529196659243,  -114.99119907695828, 44.16379687146455)
+# aoi = box(*total_bounds)
+aoi = box(-110.772, 43.734, -110.745, 43.756)
+crs= 'EPSG:4326'
 
-# 1. Load and preprocess SAR data
-# (assuming preprocessed data already in canonical format)
-sigma0_vv = xr.open_dataarray("sigma0_vv_timeseries.nc")
-sigma0_vh = xr.open_dataarray("sigma0_vh_timeseries.nc")
-coherence = xr.open_dataarray("coherence_timeseries.nc")
+# convert 30 meters to degrees
+from sarvalanche.utils.projections import resolution_to_degrees
+from sarvalanche.utils.validation import validate_crs
+resolution = resolution_to_degrees(20, validate_crs(crs))
 
-# 2. Load ancillary data
-dem = xr.open_dataarray("dem.nc")
-forest_mask = xr.open_dataarray("forest_mask.nc")  # True = forest
-slope = xr.open_dataarray("slope.nc")
-
-# 3. Generate avalanche zone prior with FlowPy
-from sarvalanche.models import flowpy_wrapper
-release_zones = xr.open_dataarray("release_zones.nc")  # Boolean mask
-debris_prior = flowpy_wrapper.run_runout_model(
-    dem=dem,
-    release_zones=release_zones,
-    terrain_roughness=0.1
-)
-
-# 4. Compute change detection likelihoods
-from sarvalanche.detection import change_detection
-likelihoods = change_detection.compute_likelihoods(
-    sigma0_vv=sigma0_vv,
-    sigma0_vh=sigma0_vh,
-    coherence=coherence,
-    reference_period=slice("2023-01-01", "2023-03-01"),  # Pre-event baseline
-    detection_date="2023-03-15"  # Event date
-)
-
-# 5. Combine evidence
-from sarvalanche.detection import bayesian_fusion
-unary_potential = bayesian_fusion.combine_evidence(
-    prior=debris_prior,
-    likelihood_vv=likelihoods['vv'],
-    likelihood_vh=likelihoods['vh'],
-    weights={'prior': 2.0, 'vv': 1.5, 'vh': 1.0}
-)
-
-# 6. Apply CRF spatial regularization
-from sarvalanche.detection import crf
-debris_probability = crf.apply_dense_crf(
-    unary=unary_potential,
-    reference_image=sigma0_vv.isel(time=-1),  # Use latest acquisition for appearance
-    spatial_kernel_size=10,
-    appearance_kernel_size=5,
-    n_iterations=10
-)
-
-# 7. Threshold and vectorize
-from sarvalanche.products import vectorize
-debris_polygons = vectorize.probability_to_polygons(
-    debris_probability,
-    threshold=0.5,
-    min_area_m2=500
-)
-
-# 8. Save outputs
-debris_probability.to_netcdf("debris_probability.nc")
-debris_polygons.to_file("debris_polygons.shp")
+start_date = "2019-10-01"
+stop_date = "2020-03-01"
+avalanche_date = '2020-01-11'
+from sarvalanche.detection.debris import detect_avalanche_debris
+cache_dir = Path('/Users/zmhoppinen/Documents/sarvalanche/local/data')
+ds = detect_avalanche_debris(aoi, crs, 20, start_date, stop_date, avalanche_date, cache_dir=cache_dir)
 ```
 
 ### Configuration
@@ -687,23 +720,46 @@ Submit pull requests with clear descriptions of changes and scientific justifica
 
 - (Add relevant citations for SAR avalanche detection methods, Sentinel-1 processing, etc.)
 
+## References
+
+### Conditional Random Fields
+
+- Krähenbühl, P., & Koltun, V. (2011). **Efficient Inference in Fully Connected CRFs with Gaussian Edge Potentials.** *Advances in Neural Information Processing Systems (NIPS)*, 24.
+- Krähenbühl, P., & Koltun, V. (2013). **Parameter Learning and Convergent Inference for Dense Random Fields.** *International Conference on Machine Learning (ICML)*.
+
+### Avalanche Runout Modeling
+
+- Neuhauser, M., D'Amboise, C., Teich, M., Kofler, A., Huber, A., Fromm, R., & Fischer, J. T. (2021). **Flow-Py: routing and stopping of gravitational mass flows.** Zenodo. https://doi.org/10.5281/zenodo.5027274
+
+### SAR-Based Avalanche Detection
+
+1. Schlaffer, S. & Schlogl, M. (2024). **Snow Avalanche Debris Analysis Using Time Series of Dual-Polarimetric Synthetic Aperture Radar Data.** *IEEE Journal of Selected Topics in Applied Earth Observations and Remote Sensing*, PP, 1–13. https://doi.org/10.1109/JSTARS.2024.XXXXXXX
+
+2. Sartori, M. & Dabiri, Z. (2023). **Assessing the Applicability of Sentinel-1 SAR Data for Semi-automatic Detection of Snow-avalanche Debris in the Southern Tyrolean Alps.** *GI_Forum*, 1, 59–68. https://doi.org/10.1553/giscience2023_01_s59
+
+3. Eckerstorfer, M., Vickers, H., Malnes, E. & Grahn, J. (2019). **Near-Real Time Automatic Snow Avalanche Activity Monitoring System Using Sentinel-1 SAR Data in Norway.** *Remote Sensing*, 11, 2863. https://doi.org/10.3390/rs11232863
+
+4. Keskinen, Z., Hendrikx, J., Eckerstorfer, M. & Birkeland, K. (2022). **Satellite detection of snow avalanches using Sentinel-1 in a transitional snow climate.** *Cold Regions Science and Technology*, 199, 103558. https://doi.org/10.1016/j.coldregions.2022.103558
+
+5. Yang, J. et al. (2020). **Automatic Detection of Regional Snow Avalanches with Scattering and Interference of C-band SAR Data.** *Remote Sensing*, 12, 2781. https://doi.org/10.3390/rs12172781
+
 ---
 
 ## License
 
-[Specify license here, e.g., MIT, Apache 2.0, GPL]
+> Todo: add license
 
 ---
 
 ## Contact
 
 For questions or collaboration inquiries, please contact:
-- **Author:** [Your Name]
-- **Email:** [Your Email]
-- **Institution:** [Your Institution]
+- **Author:** Zachary Hoppinen
+- **Email:** zmhoppinen@alaska.edu
+- **Institution:** University of Alaska Fairbanks
 
 ---
 
 ## Acknowledgments
 
-This work was supported by [funding sources]. SAR data provided by ESA Copernicus program (Sentinel-1). DEM data from [source]. We thank [contributors/collaborators].
+<!-- This work was supported by [funding sources]. SAR data provided by ESA Copernicus program (Sentinel-1). DEM data from [source]. We thank [contributors/collaborators]. -->
