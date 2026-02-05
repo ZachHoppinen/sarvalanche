@@ -280,7 +280,7 @@ For each observation channel (orbit geometry + polarization), we:
 2. Convert to z-scores using the inverse normal CDF: `z = Φ⁻¹(1 - p)`
 3. Apply sign from the observed change direction: `z_signed = z × sign(Δσ⁰)`
 
-The sign indicates whether backscatter increased (+) or decreased (-), with negative values typically indicating potential debris (darkening).
+The sign indicates whether backscatter increased (+) or decreased (-), with positive values typically indicating potential debris.
 
 **Step 2: Calculate observation weights**
 
@@ -293,11 +293,11 @@ w = (1/σ) × cos(θ)^α × q_pol
 Where:
 - **1/σ**: Inverse of historical backscatter standard deviation (stable areas get higher weight)
 - **cos(θ)^α**: Geometric factor based on local incidence angle θ (α = 1.0)
-  - Observations near nadir (θ ≈ 0°) are more reliable than steep angles
-  - cos(θ) penalizes steep incidence angles where foreshortening/layover may occur
+  - Observations near nadir (θ ≈ 0°) are less sensitive to surface roughness changes
+  - cos(θ) reduces the impact of these disparate sensitivities.
 - **q_pol**: Polarization quality factor
   - VV polarization: q = 1.0 (primary, more sensitive to surface changes)
-  - VH polarization: q = 0.8 (secondary, more sensitive to volume scattering)
+  - VH polarization: q = 0.8 (secondary, more sensitive to volume scattering, closer to noise floor)
 
 **Step 3: Weighted combination**
 
