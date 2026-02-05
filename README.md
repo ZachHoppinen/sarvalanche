@@ -367,32 +367,33 @@ SARvalanche follows a sequential pipeline from raw sensor data to final products
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                           Raw Sensor Data                                │
+│                           Raw Sensor Data                               │
 │  (Sentinel-1 SLC/GRD, NISAR RSLC, Optical imagery, DEM)                │
 └───────────────────────────────┬─────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                         Preprocessing                                    │
+│                         Preprocessing                                   │
 │  • Coregistration and terrain correction                                │
-│  • Radiometric calibration (σ⁰)                                         │
+<!-- │  • Radiometric calibration (σ⁰)                                         │ -->
 │  • Coherence estimation                                                 │
 │  • Projection to common grid                                            │
 └───────────────────────────────┬─────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                      Feature Extraction                                  │
+│                      Feature Extraction                                 │
 │  • Historical distribution modeling (μ, σ)                              │
 │  • Change detection (Δσ⁰, Δγ)                                           │
 │  • Snow cover indices (NDSI)                                            │
+│  • Snow water equiavelent change                                        │
 │  • Terrain attributes (slope, aspect, forest)                           │
 └───────────────────────────────┬─────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                         Mask Generation                                  │
-│  • Forest cover exclusion                                               │
+│  • Forest cover probability                                             │
 │  • Slope angle feasibility                                              │
 │  • FlowPy runout modeling → avalanche zone prior                        │
 └───────────────────────────────┬─────────────────────────────────────────┘
