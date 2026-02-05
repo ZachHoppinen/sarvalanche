@@ -40,6 +40,8 @@ Fresh avalanche debris creates a much rougher surface texture than the smooth sn
 
 For larger, denser avalanche deposits, increased **volume scattering** may contribute additional backscatter enhancement. The heterogeneous internal structure of compacted debris—with varying densities, air pockets, and ice lenses—can create multiple scattering paths within the deposit volume. While less studied than surface roughness effects, this mechanism likely contributes to the particularly strong signatures observed for large, dense avalanches.
 
+At lower wavelengths this will be less significant but at X and higher frequencies this will be a significant cause of incrased backscatter.
+
 ### Detection Performance and Size Limitations
 
 The detectability of avalanche debris depends critically on:
@@ -47,7 +49,7 @@ The detectability of avalanche debris depends critically on:
 - **Avalanche size**: Spatial extent and debris volume
 - **Regional snow climate**: Wet vs. dry snow conditions affect persistence
 
-**Norway (6-day revisit, Sentinel-1)**: Eckerstorfer et al. (2019) achieved near-real-time detection with high success rates, benefiting from frequent revisits and maritime snow conditions that preserve debris signatures [3].
+**Norway (6-day revisit, Sentinel-1)**: Eckerstorfer et al. (2019) achieved near-real-time detection with high success rates, benefiting from frequent revisits and maritime snow conditions with large dense debris signatures [3].
 
 **Western United States (12-day revisit)**: Detection is more challenging with less frequent coverage. Keskinen et al. (2022) found that in transitional snow climates:
 - **D2 avalanches** (size 2 on the 5-point scale): ~50% detection rate
