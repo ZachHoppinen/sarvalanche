@@ -33,7 +33,7 @@ P_debris = normalize(
 )
 ```
 
-Following that we use a Colditional Random Field (CRF) to penalize single points and emphasize groupings.
+Following that we use a Conditional Random Field (CRF) to penalize single points and emphasize groupings.
 
 ## Module workflow
 
