@@ -31,6 +31,7 @@ import concurrent.futures
 import logging
 from xml.etree import ElementTree as ET
 from tqdm.auto import tqdm
+import gc
 
 # Flow-Py Libraries
 # import raster_io as io
@@ -66,10 +67,13 @@ def run_flowpy(
     exp=8,
     flux_threshold=3e-4,
     max_z=270,
+    max_workers=4
 ):
 
+    # Force garbage collection before starting
+    gc.collect()
+
     log.info("Starting...")
-    log.info("...")
 
     start = datetime.now().replace(microsecond=0)
     calc_bool = False
@@ -93,8 +97,25 @@ def run_flowpy(
         raise ValueError("Error: Release Layer doesn't match DEM!")
 
     infra = np.zeros_like(dem)
-    if not isinstance(dem, np.ndarray): dem = dem.data
-    if not isinstance(release, np.ndarray): release = release.data
+    if not isinstance(dem, np.ndarray): dem = dem.compute().values
+    if not isinstance(release, np.ndarray): release = release.compute().values
+
+    # Check actual available memory
+    avaiable_memory = psutil.virtual_memory().available
+    needed_memory = dem.nbytes  # More accurate than sys.getsizeof
+
+    log.info(f"Available memory: {avaiable_memory / 1e9:.2f} GB")
+    log.info(f"DEM size: {needed_memory / 1e9:.2f} GB")
+    log.info(f"Estimated memory per worker: {needed_memory * 10 / 1e9:.2f} GB")
+
+    # Sanity check
+    total_needed = needed_memory * 10 * max_workers
+    if total_needed > avaiable_memory * 0.8:
+        log.warning(f"WARNING: May not have enough memory!")
+        log.warning(f"Needed: {total_needed / 1e9:.2f} GB, Available: {avaiable_memory / 1e9:.2f} GB")
+        # Reduce workers
+        max_workers = max(1, int(avaiable_memory * 0.8 / (needed_memory * 10)))
+        log.info(f"Reducing to {max_workers} workers")
 
     log.info('Files read in')
 
@@ -113,13 +134,13 @@ def run_flowpy(
 
 
     log.info(
-        "There are {} Bytes of Memory avaiable and {} Bytes needed per process. \nMax. Nr. of Processes = {}".format(
+        "There are {} Bytes of Memory avaiable and {} Bytes needed per process. Max. Nr. of Processes = {}".format(
             avaiable_memory, needed_memory*10, max_number_procces))
 
     # Calculation
-    log.info('Multiprocessing starts, used cores: {}'.format(cpu_count()))
+    log.info('Multiprocessing starts, available cores: %d', cpu_count())
 
-    release_list = fc.split_release(release, release_header, min(mp.cpu_count() * 5, max_number_procces))
+    release_list = fc.split_release(release, release_header, min(mp.cpu_count() * 10, max_number_procces))
 
     log.info("{} Processes started.".format(len(release_list)))
 
@@ -138,7 +159,9 @@ def run_flowpy(
     ]
 
     n_tasks = len(args)
-    n_workers = min(mp.cpu_count(), max_number_procces, n_tasks)
+    # n_workers = min(mp.cpu_count(), max_number_procces, n_tasks)
+    n_workers = min(max_workers, n_tasks)
+
     log.info("Starting flow calculation (%d tasks, %d workers)", n_tasks, n_workers)
 
     results = [None] * n_tasks  # placeholder

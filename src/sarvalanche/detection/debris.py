@@ -31,6 +31,16 @@ from sarvalanche.preprocessing.spatial import spatial_smooth
 
 from sarvalanche.utils.constants import eps
 
+import logging
+
+# Configure logging at the very top of your main script
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logging.getLogger('asf_search').setLevel(logging.WARNING)  # or logging.ERROR
+
 def detect_avalanche_debris(
         aoi,
         crs,

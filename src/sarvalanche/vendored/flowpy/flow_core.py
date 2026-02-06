@@ -121,7 +121,7 @@ def split_release(release, header_release, pieces):
         release[release < 0] = 0
     release[release > 1] = 1
     summ = np.sum(release) # Count number of release pixels
-    log.info("Number of release pixels: ", summ)
+    # log.info(f'Number of release pixels: {summ[0]}')
     sum_per_split = summ/pieces  # Divide the number by avaiable Cores
     release_list = []
     breakpoint_x = 0
