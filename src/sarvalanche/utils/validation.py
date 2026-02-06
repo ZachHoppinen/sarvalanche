@@ -55,6 +55,17 @@ def validate_canonical_da(
     if require_time is False and "time" in da.dims:
         raise ValueError("Time dimension is not allowed")
 
+    # --- Check for raw string coordinates ---
+    for coord_name in da.coords:
+        coord = da.coords[coord_name]
+        if coord.dtype.kind in ['U', 'S', 'O'] and coord.size == 1:
+            if isinstance(coord.data, (str, bytes, np.str_, np.bytes_)):
+                raise TypeError(
+                    f"Coordinate '{coord_name}' is a raw string (type: {type(coord.data).__name__}). "
+                    f"String coordinates must be wrapped in numpy arrays. "
+                    f"This typically happens when loading from NetCDF - use load_netcdf_to_dataset() instead of xr.open_dataset()."
+                )
+
     # --- Attributes ---
     missing = REQUIRED_ATTRS - set(da.attrs)
     if missing:

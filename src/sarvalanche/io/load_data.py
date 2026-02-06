@@ -13,6 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 import geopandas as gpd
 
+from sarvalanche.io.find_data import find_earthaccess_urls
+
 ALLOWED_EXTENSIONS = (".tif", ".tiff")
 
 RTC_RAW_TO_CANONICAL = {
@@ -228,3 +230,29 @@ def get_forest_cover(aoi, aoi_crs, ref_grid = None):
     fcf = gh.nlcd_bygeom(geometry=g)[0]["canopy_2021"]
     if ref_grid is not None: fcf = fcf.rio.reproject_match(ref_grid)
     return fcf.assign_attrs(units="percent", source="nlcd", product = "forest_cover")
+
+def open_ucla_snowmodel(fp):
+    da = xr.open_dataset(fp)['SWE_Post'].sel(Stats = 2) # SWE data var and median stat is 3rd (2nd with 0 index) (mean is 0)
+    da = da.rename({'Longitude': 'x', 'Latitude': 'y', 'Day':'snowmodel_time'}).transpose('snowmodel_time', 'y', 'x')
+    wy = int(Path(fp).stem.split('_')[9].strip('WY'))
+    days = da['snowmodel_time'].values  # 0,1,2,...
+    real_times = pd.to_datetime(f"{wy}-10-01") + pd.to_timedelta(days, unit='D')
+    da['snowmodel_time'] = real_times
+    da = da.rio.write_crs('EPSG:4326')
+    return da
+
+def get_snowmodel(swe_fps, start_date = None, stop_date = None, ref_grid = None):
+    dataarray_list= [open_ucla_snowmodel(fp) for fp in swe_fps]
+
+    swe = xr.combine_by_coords(dataarray_list)
+    if isinstance(swe, xr.Dataset):
+        swe = swe.to_array().squeeze()
+
+
+    if start_date is not None or stop_date is not None:
+        swe = swe.sel(snowmodel_time = slice(start_date, stop_date))
+    if ref_grid is not None: swe = swe.rio.reproject_match(ref_grid)
+
+    return swe.assign_attrs(units="m", source="ucla", product = "swe")
+
+

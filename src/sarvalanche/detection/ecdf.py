@@ -1,5 +1,7 @@
 
 from itertools import product
+import warnings
+import logging
 
 import numpy as np
 import xarray as xr
@@ -7,6 +9,8 @@ import xarray as xr
 from scipy.stats import norm
 
 from sarvalanche.utils.constants import pols, eps
+
+log = logging.getLogger(__name__)
 
 def ecdf_survival_1pixel(ref_vals, post_vals, min_ref):
     """
@@ -50,7 +54,7 @@ def channel_pvals_ufunc(
         vectorize=True,
         dask="parallelized",
         output_dtypes=[np.float32],
-        output_sizes={"time_post": time_post_len}
+        dask_gufunc_kwargs={'output_sizes': {'new_dim': time_post_len}}
     )
 
     p = p.transpose("time_post", "y", "x")
@@ -83,7 +87,23 @@ def compute_channel_stats(ds, pol, track, event_date, min_ref=4, n_ref=15):
     p = p.expand_dims(channel=[channel_name])
 
     # Pre-event std
-    sigma = da_ref.std('time').expand_dims(channel=[channel_name])
+    with warnings.catch_warnings():
+        # Check data quality before computing std
+        valid_count = da_ref.notnull().sum('time')
+        total_pixels = valid_count.size
+        insufficient_data = (valid_count <= 1).sum().item()
+        sufficient_pct = 100 * (1 - insufficient_data / total_pixels)
+
+        # Warn if too many pixels have insufficient data
+        if sufficient_pct < 50:
+            log.warning(
+                f"Channel {channel_name}: Only {sufficient_pct:.1f}% of pixels have sufficient data "
+                f"({insufficient_data}/{total_pixels} pixels with ≤1 observations)"
+            )
+
+        # some all nan slices in time.
+        warnings.filterwarnings('ignore', 'Degrees of freedom <= 0', RuntimeWarning)
+        sigma = da_ref.std('time').expand_dims(channel=[channel_name])
 
     # Sign of change
     median = da_ref.median('time')
@@ -92,7 +112,7 @@ def compute_channel_stats(ds, pol, track, event_date, min_ref=4, n_ref=15):
         da_post - median,
         dask="parallelized",
         output_dtypes=[np.int8],
-    ).astype(np.int8).drop(['direction', 'platform', 'track'])
+    ).drop(['direction', 'platform', 'track'])#.astype(np.int8)
     sign = sign.expand_dims(channel=[channel_name])
 
     # Local incidence angle
@@ -114,14 +134,16 @@ def get_orbit_pol_ecdf_pvals(ds, event_date="2020-01-11", min_ref=4, n_ref=15):
         lias.append(lia)
 
     # Concatenate and stack
-    p_channel = xr.concat(pvals, dim="channel").stack(obs=("channel", "time")).dropna("obs", how='all')
-    signs = xr.concat(diffs, dim="channel").stack(obs=("channel", "time")).dropna("obs", how='all')
+    p_channel = xr.concat(pvals, dim="channel", join='outer').stack(obs=("channel", "time")).dropna("obs", how='all')
+    signs = xr.concat(diffs, dim="channel", join='outer').stack(obs=("channel", "time")).dropna("obs", how='all')
 
-    sigmas = xr.concat(sigmas, dim="channel").stack(obs_channel=('channel',)).dropna('obs_channel', how='all')
-    sigmas['obs_channel'] = [i[0] for i in sigmas.obs_channel.values]
+    sigmas = xr.concat(sigmas, dim="channel", join='outer')
+    sigmas = sigmas.stack(obs_channel=('channel',)).dropna('obs_channel', how='all')
+    sigmas = sigmas.drop_vars(['obs_channel', 'channel']).assign_coords(obs_channel=[i[0] for i in sigmas.obs_channel.values])
 
-    lias   = xr.concat(lias, dim="channel").stack(obs_channel=('channel',)).dropna('obs_channel', how='all')
-    lias['obs_channel'] = [i[0] for i in lias.obs_channel.values]
+    lias = xr.concat(lias, dim="channel", join='outer', coords='different', compat='equals')
+    lias = lias.stack(obs_channel=('channel',)).dropna('obs_channel', how='all')
+    lias = lias.drop_vars(['obs_channel', 'channel']).assign_coords(obs_channel=[i[0] for i in lias.obs_channel.values])
 
     return lias, sigmas, signs, p_channel
 

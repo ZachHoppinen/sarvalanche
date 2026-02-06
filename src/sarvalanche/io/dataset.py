@@ -14,7 +14,7 @@ from sarvalanche.utils.download import download_urls_parallel
 from sarvalanche.utils.constants import RTC_FILETYPES, SENTINEL1
 from asf_search.constants import RTC, RTC_STATIC
 
-from sarvalanche.io.load_data import load_reproject_concat_rtc, get_dem, get_forest_cover, get_slope
+from sarvalanche.io.load_data import load_reproject_concat_rtc, get_dem, get_forest_cover, get_slope, get_snowmodel
 from sarvalanche.utils.raster_utils import combine_close_images
 
 from sarvalanche.masks.debris_flow_modeling import generate_runcount_alpha_angle
@@ -86,10 +86,29 @@ def assemble_dataset(
     log.info('Getting fcf')
     ds["fcf"] = get_forest_cover(aoi, crs, ref_grid)
 
+    # get snowmodel
+    swe_urls = find_earthaccess_urls(aoi, start_date, stop_date)
+    swe_fps = download_urls_parallel(swe_urls, cache_dir.joinpath('snowmodel'))
+    ds['swe'] = get_snowmodel(swe_fps, start_date, stop_date, ref_grid)
+
     ds = generate_runcount_alpha_angle(ds)
 
     ds['time'] = pd.to_datetime(ds['time']).tz_localize(None)
 
     validate_canonical(ds, require_time= None)
+
+    return ds
+
+def load_netcdf_to_dataset(filepath, decode_times=True):
+    assert filepath.suffix == '.nc'
+
+    # Load with chunks but allow normal decoding
+    ds = xr.open_dataset(
+        filepath,
+        decode_times=decode_times
+    )
+
+    if 'crs' in ds.attrs:
+        ds = ds.rio.write_crs(ds.attrs['crs'], inplace=True)
 
     return ds

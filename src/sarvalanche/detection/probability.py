@@ -1,5 +1,6 @@
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 from sarvalanche.preprocessing.spatial import spatial_smooth
@@ -360,5 +361,77 @@ def probability_slope_angle(slope_angle: xr.DataArray,
     prob = prob.clip(0, 1)
 
     prob_da = xr.DataArray(prob, dims=slope_angle.dims, coords=slope_angle.coords, name="p_avalanche_slope")
+
+    return prob_da
+
+def probability_swe_accumulation(
+    swe: xr.Dataset,
+    avalanche_date: str,
+    accumulation_days: int = 7,
+    midpoint: float = 100.0,
+    slope: float = 0.05
+) -> xr.DataArray:
+    """
+    Calculate probability of avalanche based on SWE accumulation over recent days.
+
+    Parameters
+    ----------
+    swe : xr.Dataarray
+        Dataarray of SWE model results, dims=(time, y, x)
+    avalanche_date : str
+        Date of avalanche (or date to evaluate), format 'YYYY-MM-DD'
+    accumulation_days : int
+        Number of days to look back (5-7 typical), default=7
+    midpoint : float
+        SWE accumulation (mm) at which probability = 0.5
+        Typical values: 50-150 mm depending on region
+    slope : float
+        Controls how fast probability increases with accumulation
+        Higher = steeper transition
+
+    Returns
+    -------
+    xr.DataArray
+        Probability of avalanche based on SWE accumulation, dims=(y, x)
+    """
+
+    # Convert avalanche_date to datetime
+    aval_date = pd.to_datetime(avalanche_date)
+
+    # Calculate start date for accumulation period
+    start_date = aval_date - pd.Timedelta(days=accumulation_days)
+
+    # Get SWE at avalanche date and at start of accumulation period
+    swe_end = swe.sel(snowmodel_time=aval_date, method='nearest')
+    swe_start = swe.sel(snowmodel_time=start_date, method='nearest')
+
+    # Calculate accumulation (change in SWE)
+    swe_accumulation = swe_end - swe_start
+
+    # Handle negative accumulation (melt) - set to 0
+    swe_accumulation = swe_accumulation.clip(min=0)
+
+    # Convert accumulation to probability using logistic function
+    # High accumulation = high probability
+    prob = 1 / (1 + np.exp(-slope * (swe_accumulation - midpoint)))
+
+    # Clip to [0,1] just in case
+    prob = prob.clip(0, 1)
+
+    # Create DataArray with metadata
+    prob_da = xr.DataArray(
+        prob,
+        dims=swe_accumulation.dims,
+        coords=swe_accumulation.coords,
+        name="p_avalanche_swe",
+        attrs={
+            'long_name': 'Avalanche probability based on SWE accumulation',
+            'units': 'probability',
+            'avalanche_date': avalanche_date,
+            'accumulation_days': accumulation_days,
+            'midpoint_mm': midpoint,
+            'slope': slope
+        }
+    )
 
     return prob_da

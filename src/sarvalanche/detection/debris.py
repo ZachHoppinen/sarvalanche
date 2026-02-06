@@ -1,12 +1,14 @@
 
 from pathlib import Path
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 # io functions
 from sarvalanche.utils.projections import resolution_to_degrees
 from sarvalanche.utils.validation import validate_crs, validate_path, validate_canonical
-from sarvalanche.io.dataset import assemble_dataset
+from sarvalanche.io.dataset import assemble_dataset, load_netcdf_to_dataset
+from sarvalanche.io.export import export_netcdf
 
 # backscatter based probabilities
 from sarvalanche.detection.probability import calculate_emperical_backscatter_probability
@@ -16,6 +18,7 @@ from sarvalanche.detection.ecdf import calculate_ecdf_backscatter_probability
 from sarvalanche.detection.probability import probability_slope_angle
 from sarvalanche.detection.probability import probability_cell_counts
 from sarvalanche.detection.probability import probability_forest_cover
+from sarvalanche.detection.probability import probability_swe_accumulation
 from sarvalanche.detection.probability import weighted_geometric_mean
 
 # dense CRF processing
@@ -37,7 +40,6 @@ def detect_avalanche_debris(
         avalanche_date,
         cache_dir,
         overwrite = False):
-    #TODO pull all IO/mask generation to different function and just give dataset with datavars to run
 
     crs = validate_crs(crs)
     # this should be generalized to any CRS and renamed
@@ -47,7 +49,7 @@ def detect_avalanche_debris(
     cache_dir.joinpath('opera').mkdir(exist_ok = True)
     cache_dir.joinpath('arrays').mkdir(exist_ok = True)
 
-    ds_nc = cache_dir.joinpath(f'{avalanche_date}.zarr')
+    ds_nc = cache_dir.joinpath(f'{avalanche_date}.nc')
 
     if not ds_nc.exists() or ds_nc.stat().st_size == 0 or overwrite:
 
@@ -59,11 +61,9 @@ def detect_avalanche_debris(
             crs=crs,
             cache_dir=cache_dir
         )
-        ds.attrs['crs'] = str(ds.rio.crs)
-        ds.to_netcdf(ds_nc)
+        export_netcdf(ds, ds_nc)
     else:
-        ds = xr.open_dataset(ds_nc)
-        if 'crs' in ds.attrs: ds.rio.write_crs(ds.attrs['crs'])
+        ds = load_netcdf_to_dataset(ds_nc)
 
     validate_canonical(ds)
 
@@ -82,14 +82,17 @@ def detect_avalanche_debris(
     # --- 8. Compute slope angle probability of debris ---
     ds['p_slope'] = probability_slope_angle(ds['slope'])
 
-    factors = [ds['p_emperical'], ds['p_ecdf'], ds['p_fcf'], ds['p_runout'], ds['p_slope']]
-    weights = [0.5, 0.5, 1.0, 1.0, 1.0]
+    # --- 9. Compute swe accumulation probability of debris ---
+    ds['p_swe'] = probability_swe_accumulation(ds['swe'], avalanche_date, midpoint = 0.0, slope = 100.0)
+
+    factors = [ds['p_emperical'], ds['p_ecdf'], ds['p_fcf'], ds['p_runout'], ds['p_slope'], ds['p_swe']]
+    weights = [0.5, 0.5, 1.0, 1.0, 1.0, 1.0]
 
     p_total = weighted_geometric_mean(factors, weights)
     p_total = p_total.where(~p_total.isnull(), 0)
 
     ds['p_pixelwise'] = p_total
-    for d in ['p_slope', 'p_runout', 'p_fcf', 'p_ecdf', 'p_emperical', 'p_pixelwise']:
+    for d in ['p_slope', 'p_runout', 'p_fcf', 'p_ecdf', 'p_emperical', 'p_pixelwise', 'p_swe']:
         ds[d].attrs = {'source': 'sarvalance', 'units': 'percentage', 'product': 'pixel_wise_probability'}
 
     # generate U from p_total for dense CRF
