@@ -285,19 +285,28 @@ The sign indicates whether backscatter increased (+) or decreased (-), with posi
 **Step 2: Calculate observation weights**
 
 Each observation is weighted based on three quality factors:
-
 ```
-w = (1/σ) × cos(θ)^α × q_pol
+w = (1/σ) × f(θ) × q_pol
 ```
 
 Where:
-- **1/σ**: Inverse of historical backscatter standard deviation (stable areas get higher weight)
-- **cos(θ)^α**: Geometric factor based on local incidence angle θ (α = 1.0)
-  - Observations near nadir (θ ≈ 0°) are less sensitive to surface roughness changes
-  - cos(θ) reduces the impact of these disparate sensitivities.
+- **1/σ**: Inverse of historical backscatter standard deviation (stable areas with low natural variability get higher weight)
+- **f(θ)**: Geometric weighting based on local incidence angle θ
+  - Avalanches appear brightest at local incidence angles of 55° ± 20° (Bühler et al., 2021)
+  - Implemented as Gaussian: `f(θ) = exp(-(θ - 55°)² / (2 × 25²))`
+  - Observations outside the optimal 35-75° range are strongly downweighted
+  - This accounts for varying backscatter sensitivity across the swath
 - **q_pol**: Polarization quality factor
-  - VV polarization: q = 1.0 (primary, more sensitive to surface changes)
+  - VV polarization: q = 1.0 (primary, more sensitive to surface roughness changes)
   - VH polarization: q = 0.8 (secondary, more sensitive to volume scattering, closer to noise floor)
+
+This weighting scheme emphasizes observations with:
+1. Low temporal noise (stable baseline)
+2. Optimal viewing geometry (35-75° local incidence angles)
+3. Reliable polarization characteristics
+
+**Reference:**
+Bühler, Y., Hafner, E. D., Zweifel, B., Zesiger, M., & Heisig, H. (2021). Where are the avalanches? Rapid SPOT6 satellite data acquisition to map an extreme avalanche period over the Swiss Alps. *The Cryosphere*, 15(1), 83-98. https://doi.org/10.5194/tc-15-83-2021
 
 **Step 3: Weighted combination**
 
@@ -719,21 +728,6 @@ Submit pull requests with clear descriptions of changes and scientific justifica
 
 - Neuhauser, M., D'Amboise, C., Teich, M., Kofler, A., Huber, A., Fromm, R., & Fischer, J. T. (2021). **Flow-Py: routing and stopping of gravitational mass flows.** Zenodo. https://doi.org/10.5281/zenodo.5027274
 
-### SAR Remote Sensing
-
-- (Add relevant citations for SAR avalanche detection methods, Sentinel-1 processing, etc.)
-
-## References
-
-### Conditional Random Fields
-
-- Krähenbühl, P., & Koltun, V. (2011). **Efficient Inference in Fully Connected CRFs with Gaussian Edge Potentials.** *Advances in Neural Information Processing Systems (NIPS)*, 24.
-- Krähenbühl, P., & Koltun, V. (2013). **Parameter Learning and Convergent Inference for Dense Random Fields.** *International Conference on Machine Learning (ICML)*.
-
-### Avalanche Runout Modeling
-
-- Neuhauser, M., D'Amboise, C., Teich, M., Kofler, A., Huber, A., Fromm, R., & Fischer, J. T. (2021). **Flow-Py: routing and stopping of gravitational mass flows.** Zenodo. https://doi.org/10.5281/zenodo.5027274
-
 ### SAR-Based Avalanche Detection
 
 1. Schlaffer, S. & Schlogl, M. (2024). **Snow Avalanche Debris Analysis Using Time Series of Dual-Polarimetric Synthetic Aperture Radar Data.** *IEEE Journal of Selected Topics in Applied Earth Observations and Remote Sensing*, PP, 1–13. https://doi.org/10.1109/JSTARS.2024.3423403
@@ -745,6 +739,8 @@ Submit pull requests with clear descriptions of changes and scientific justifica
 4. Keskinen, Z., Hendrikx, J., Eckerstorfer, M. & Birkeland, K. (2022). **Satellite detection of snow avalanches using Sentinel-1 in a transitional snow climate.** *Cold Regions Science and Technology*, 199, 103558. https://doi.org/10.1016/j.coldregions.2022.103558
 
 5. Yang, J. et al. (2020). **Automatic Detection of Regional Snow Avalanches with Scattering and Interference of C-band SAR Data.** *Remote Sensing*, 12, 2781. https://doi.org/10.3390/rs12172781
+
+6. Bühler, Y., Hafner, E. D., Zweifel, B., Zesiger, M., & Heisig, H. (2021). Where are the avalanches? Rapid SPOT6 satellite data acquisition to map an extreme avalanche period over the Swiss Alps. *The Cryosphere*, 15(1), 83-98. https://doi.org/10.5194/tc-15-83-2021
 
 ---
 

@@ -12,6 +12,86 @@ from pyproj import CRS
 
 from .constants import REQUIRED_ATTRS
 
+def check_db_linear(da: xr.DataArray):
+    """
+    Quick heuristic check if data is in dB or linear units.
+
+    Returns
+    -------
+    str : 'dB' or 'linear'
+
+    Notes
+    -----
+    - dB backscatter typically ranges from -30 to +10 dB
+    - Linear backscatter typically ranges from 0 to 1 (often 0 to 0.5)
+    """
+    if 'units' in da.attrs:
+        units = da.attrs['units'].lower()
+        if 'db' in units or 'decibel' in units:
+            return 'dB'
+        if 'linear' in units or units == '1' or units == '':
+            return 'linear'
+
+    vmin = float(da.min())
+    vmax = float(da.max())
+
+    # If we see negative values, almost certainly dB
+    if vmin < 0:
+        return 'dB'
+
+    # If max value is small (< 2), likely linear
+    if vmax < 2:
+        return 'linear'
+
+    # If values span a large range (> 10), likely dB
+    if vmax - vmin > 10:
+        return 'dB'
+
+    # Default guess: if all values < 5, probably linear
+    return 'linear' if vmax < 5 else 'dB'
+
+
+def check_rad_degrees(da: xr.DataArray):
+    """
+    Quick heuristic check if angles are in radians or degrees.
+
+    Returns
+    -------
+    str : 'radians' or 'degrees'
+
+    Notes
+    -----
+    - Radians typically range from 0 to π (3.14) or -π to π
+    - Degrees typically range from 0 to 360 or -180 to 180
+    - Incidence angles specifically range 0-90° or 0-1.57 rad
+    """
+    if 'units' in da.attrs:
+        units = da.attrs['units'].lower()
+        if 'rad' in units:
+            return 'radians'
+        if 'deg' in units:
+            return 'degrees'
+
+
+    vmax = float(da.max())
+    vmin = float(da.min())
+
+    # If max > π (3.15), almost certainly degrees
+    if vmax > 3.15:
+        return 'degrees'
+
+    # If max < π and min >= 0, likely radians (especially if max ≈ 1.57 for incidence)
+    if vmax <= 3.15 and vmin >= 0:
+        return 'radians'
+
+    # If we see values > 6.3 (2π), definitely degrees
+    if vmax > 6.3:
+        return 'degrees'
+
+    # Ambiguous range (e.g., 0-3), guess based on typical incidence angle range
+    # Most SAR incidence angles are 20-50°, so if max < 2, probably radians
+    return 'radians' if vmax < 2 else 'degrees'
+
 def validate_canonical_da(
     da: xr.DataArray,
     *,

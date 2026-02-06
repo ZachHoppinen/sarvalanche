@@ -1,23 +1,26 @@
 
-import numpy as np
 import xarray as xr
 
-def pixel_stability_weight(
-    da: xr.DataArray,
-    tau_variability: float,
-    avalanche_date=None,
+def pixel_sigma_weighting(
+        sigma: xr.DataArray,
+        sigma_threshold: float = 2.0,
+        normalize: bool = True
 ) -> xr.DataArray:
     """
-    Weight pixels by temporal stability using MAD.
-    More variable pixels receive lower weight.
+    Weight pixels by temporal stability with saturation.
+
+    Parameters
+    ----------
+    sigma : xr.DataArray
+        Temporal std of backscatter in dB
+    sigma_threshold : float, default=2.0
+        Sigma value (dB) where weight = 0.5
+        Below this: high weight, above this: low weight
     """
-    da_stable = da
-    if avalanche_date is not None:
-        da_stable = da.sel(time=da.time < avalanche_date)
+    # Logistic decay: smooth transition, bounded [0, 1]
+    weights = 1.0 / (1.0 + (sigma / sigma_threshold) ** 2)
 
-    median_pixel = da_stable.median(dim="time")
-    mad_pixel = np.abs(da_stable - median_pixel).median(dim="time")
+    if normalize:
+        weights = (weights - weights.min()) / (weights.max() - weights.min() + 1e-6)
 
-    w_stability = np.exp(-mad_pixel / tau_variability)
-
-    return w_stability.fillna(0).rename("w_stability")
+    return weights.rename('w_sigma')

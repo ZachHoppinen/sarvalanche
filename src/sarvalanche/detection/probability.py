@@ -3,113 +3,6 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from sarvalanche.preprocessing.spatial import spatial_smooth
-from sarvalanche.preprocessing.radiometric import linear_to_dB
-from sarvalanche.features.backscatter_change import (
-    backscatter_changes_crossing_date,
-    backscatter_change_weighted_mean,
-)
-
-def calculate_emperical_backscatter_probability(
-    ds: xr.Dataset,
-    avalanche_date,
-    *,
-    polarizations=("VV", "VH"),
-    smooth_method=None,
-    tau_days=24,
-    tau_variability=20.0,
-    incidence_power=0.0,
-    combine_alpha=0.5,
-):
-    """
-    Compute avalanche debris probability from SAR backscatter changes.
-
-    For each (track, polarization) pair:
-      1. Convert backscatter to dB
-      2. Spatially smooth
-      3. Compute pre/post-avalanche backscatter changes
-      4. Aggregate changes using temporal, stability, and incidence weighting
-      5. Convert to probability
-
-    All per-track/pol probabilities are then fused using log-odds
-    combination with optional shrinkage toward 0.5.
-
-    Parameters
-    ----------
-    ds : xr.Dataset
-        Canonical SAR dataset containing:
-        - VV, VH backscatter (time, y, x)
-        - track (time)
-        - lia (static_track, y, x)
-    avalanche_date : str or datetime-like
-        Date separating pre/post-event acquisitions.
-    polarizations : tuple[str]
-        Polarizations to include (default: ("VV", "VH")).
-    smooth_method : str
-        Spatial smoothing method passed to `spatial_smooth`.
-        (None = no smoothing)
-    tau_days : float
-        Temporal decay scale (days) for weighting.
-    tau_variability : float
-        Variability decay scale for stability weighting.
-    incidence_power : float
-        Power applied to incidence angle weighting.
-    combine_alpha : float
-        Shrinkage factor toward 0.5 when combining probabilities
-        (0 = ignore, 1 = full strength).
-
-    Returns
-    -------
-    xr.DataArray
-        Combined backscatter-change probability in [0, 1].
-    """
-
-    tracks = np.unique(ds.track.values)
-    p_delta_list: list[xr.DataArray] = []
-
-    for track in tracks:
-        lia = ds["lia"].sel(static_track=track)
-
-        for pol in polarizations:
-            if pol not in ds:
-                continue
-
-            # --- 1. Select, convert to dB, smooth ---
-            da = ds[pol].sel(time=ds.track == track)
-            da_db = linear_to_dB(da)
-            if smooth_method is not None:
-                da_db = spatial_smooth(da_db, method=smooth_method)
-
-            # --- 2. Backscatter change across avalanche date ---
-            diffs = backscatter_changes_crossing_date(
-                da_db, avalanche_date
-            )
-
-            # --- 3. Weighted aggregation ---
-            weighted_mean = backscatter_change_weighted_mean(
-                diffs,
-                da_db,
-                tau_days=tau_days,
-                tau_variability=tau_variability,
-                local_incidence_angle=lia,
-                incidence_power=incidence_power,
-            )
-
-            # --- 4. Probability mapping ---
-            p_delta = probability_backscatter_change(weighted_mean)
-            p_delta_list.append(p_delta)
-
-    if not p_delta_list:
-        raise ValueError("No backscatter probabilities were computed")
-
-    # --- 5. Combine across tracks / pols ---
-    p_delta_combined = log_odds_combine(
-        p_delta_list,
-        alpha=combine_alpha,
-    )
-
-    return p_delta_combined
-
 def weighted_geometric_mean(
     probs: list[xr.DataArray],
     weights: list[float] = None,
@@ -254,6 +147,7 @@ def probability_backscatter_change(
     prob_da = xr.DataArray(prob, dims=diff.dims, coords=diff.coords, name="p_avalanche")
 
     return prob_da
+
 
 def probability_forest_cover(fcf: xr.DataArray,
                              midpoint: float = 30.0,
@@ -432,3 +326,8 @@ def probability_swe_accumulation(
     )
 
     return prob_da
+
+def _z_to_probability(Z_norm: xr.DataArray, beta: float, z_pivot: float) -> xr.DataArray:
+    """Convert normalized z-score to probability using sigmoid."""
+    P_change = 1 / (1 + np.exp(-beta * (Z_norm - z_pivot)))
+    return P_change

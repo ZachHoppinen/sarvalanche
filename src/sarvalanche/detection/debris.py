@@ -11,7 +11,7 @@ from sarvalanche.io.dataset import assemble_dataset, load_netcdf_to_dataset
 from sarvalanche.io.export import export_netcdf
 
 # backscatter based probabilities
-from sarvalanche.detection.probability import calculate_emperical_backscatter_probability
+from sarvalanche.detection.emperical import calculate_empirical_backscatter_probability
 from sarvalanche.detection.ecdf import calculate_ecdf_backscatter_probability
 
 # probability functions
@@ -86,7 +86,7 @@ def detect_avalanche_debris(
 
     # one method based on weighted backscatter changes
     log.info('Calculating emperical backscatter change probability')
-    ds['p_emperical'] = calculate_emperical_backscatter_probability(ds, avalanche_date, smooth_method=None)
+    ds['p_emperical'] = calculate_empirical_backscatter_probability(ds, avalanche_date, smooth_method=None)
 
     # method based on probability of change from pre-event distribution
     log.info('Calculating distribution based probability')
