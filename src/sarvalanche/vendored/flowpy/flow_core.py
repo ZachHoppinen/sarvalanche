@@ -144,6 +144,38 @@ def split_release(release, header_release, pieces):
 
     return release_list
 
+def split_release_by_points_shuffled(release, header_release, pieces):
+    """Split with shuffling to avoid spatial clustering in one worker"""
+
+    nodata = header_release.get("noDataValue")
+    if nodata:
+        release[release == nodata] = 0
+    else:
+        release[release < 0] = 0
+    release[release > 1] = 1
+
+    row_list, col_list = np.where(release > 0)
+    total_points = len(row_list)
+
+    if total_points == 0:
+        return [release]
+
+    # Shuffle to distribute spatially clustered points across workers
+    indices = np.arange(total_points)
+    np.random.shuffle(indices)
+    row_list = row_list[indices]
+    col_list = col_list[indices]
+
+    release_list = []
+    chunk_indices = np.array_split(np.arange(total_points), pieces)
+
+    for chunk in chunk_indices:
+        new_release = np.zeros_like(release)
+        new_release[row_list[chunk], col_list[chunk]] = 1
+        release_list.append(new_release)
+        log.debug(f"Release split: {len(chunk)} points")
+
+    return release_list
 
 def calculation(args):
     """This is the core function where all the data handling and calculation is

@@ -555,7 +555,8 @@ SARvalanche relies on several external packages and tools:
   - Removed GUI and PyQt5 dependency
   - Removed file I/O (replaced with xarray interface)
   - Added programmatic API for embedding in detection pipeline
-- Citation: 
+  - updated release zone split for multiprocessing to better balance process loads
+- Citation:
   > Neuhauser, M., D'Amboise, C., Teich, M., Kofler, A., Huber, A., Fromm, R., and Fischer, J. T.: Flow-Py: routing and stopping of gravitational mass flows, Zenodo [code], https://doi.org/10.5281/zenodo.5027274, 2021
 
 ### External Tools
@@ -635,14 +636,14 @@ detection:
     vv: 1.5
     vh: 1.0
     snow: 0.5
-  
+
   crf:
     spatial_stddev: 10  # meters
     appearance_stddev: 0.5  # normalized units
     smoothness_weight: 1.0
     appearance_weight: 3.0
     n_iterations: 10
-  
+
   thresholds:
     probability: 0.5
     min_area_m2: 500
@@ -735,7 +736,7 @@ Submit pull requests with clear descriptions of changes and scientific justifica
 
 ### SAR-Based Avalanche Detection
 
-1. Schlaffer, S. & Schlogl, M. (2024). **Snow Avalanche Debris Analysis Using Time Series of Dual-Polarimetric Synthetic Aperture Radar Data.** *IEEE Journal of Selected Topics in Applied Earth Observations and Remote Sensing*, PP, 1–13. https://doi.org/10.1109/JSTARS.2024.XXXXXXX
+1. Schlaffer, S. & Schlogl, M. (2024). **Snow Avalanche Debris Analysis Using Time Series of Dual-Polarimetric Synthetic Aperture Radar Data.** *IEEE Journal of Selected Topics in Applied Earth Observations and Remote Sensing*, PP, 1–13. https://doi.org/10.1109/JSTARS.2024.3423403
 
 2. Sartori, M. & Dabiri, Z. (2023). **Assessing the Applicability of Sentinel-1 SAR Data for Semi-automatic Detection of Snow-avalanche Debris in the Southern Tyrolean Alps.** *GI_Forum*, 1, 59–68. https://doi.org/10.1553/giscience2023_01_s59
 

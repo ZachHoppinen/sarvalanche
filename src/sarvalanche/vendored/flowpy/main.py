@@ -67,7 +67,7 @@ def run_flowpy(
     exp=8,
     flux_threshold=3e-4,
     max_z=270,
-    max_workers=4
+    max_workers=12
 ):
 
     # Force garbage collection before starting
@@ -127,20 +127,23 @@ def run_flowpy(
     fp_ta = np.zeros_like(dem)
     sl_ta = np.zeros_like(dem)
 
-    avaiable_memory = psutil.virtual_memory()[1]
-    needed_memory = sys.getsizeof(dem)
+    # avaiable_memory = psutil.virtual_memory()[1]
+    # needed_memory = sys.getsizeof(dem)
 
-    max_number_procces = int(avaiable_memory / (needed_memory * 10))
+    # max_number_procces = int(avaiable_memory / (needed_memory * 10))
 
 
     log.info(
         "There are {} Bytes of Memory avaiable and {} Bytes needed per process. Max. Nr. of Processes = {}".format(
-            avaiable_memory, needed_memory*10, max_number_procces))
+            avaiable_memory, needed_memory*10, max_workers))
 
     # Calculation
     log.info('Multiprocessing starts, available cores: %d', cpu_count())
 
-    release_list = fc.split_release(release, release_header, min(mp.cpu_count() * 10, max_number_procces))
+    # split so we have 10 tasks per processes
+    # release_list = fc.split_release(release, release_header, max_workers * 10)
+    # use a shuffled version to reduce processing itme.
+    release_list = fc.split_release_by_points_shuffled(release, release_header, max_workers * 10)
 
     log.info("{} Processes started.".format(len(release_list)))
 
