@@ -16,6 +16,7 @@ import logging
 log = logging.getLogger(__name__)
 
 def _compute_file_checksum(path: Path, algo="sha256") -> str:
+    """Needed"""
     h = hashlib.new(algo)
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
@@ -72,6 +73,7 @@ def download_urls_parallel(
     retries=3,
     max_workers=10,
     timeout=20,
+    description = None,
 ):
     """
     Faster parallel downloader using a shared requests.Session,
@@ -119,7 +121,8 @@ def download_urls_parallel(
     download_fps = []
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = {ex.submit(download_one, url): url for url in urls}
-        for fut in tqdm(as_completed(futures), total=len(urls), desc="Downloading"):
+        if description is None: description = 'Downloading'
+        for fut in tqdm(as_completed(futures), total=len(urls), desc=description):
             download_fps.append(fut.result())
 
     return sorted(download_fps)

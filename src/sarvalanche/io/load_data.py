@@ -10,7 +10,7 @@ import pygeohydro as gh
 import rasterio
 from rasterio.warp import reproject, Resampling
 from concurrent.futures import ThreadPoolExecutor
-from tqdm import tqdm
+from tqdm.auto import tqdm
 import geopandas as gpd
 
 from sarvalanche.io.find_data import find_earthaccess_urls

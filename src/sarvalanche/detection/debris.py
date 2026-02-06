@@ -129,4 +129,6 @@ def detect_avalanche_debris(
 
     validate_canonical(ds)
 
+    export_netcdf(ds, ds_nc, overwrite = True)
+
     return ds

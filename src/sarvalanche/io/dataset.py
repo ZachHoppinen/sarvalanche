@@ -28,9 +28,20 @@ def assemble_dataset(
     crs=None,
     resolution=None,
     cache_dir=Path("/tmp/sarvalanche_cache"),
+    chunks = {
+    'time': 5,      # 5 time steps at once
+    'x': 256,       # 256x256 spatial tiles
+    'y': 256}
+
 ) -> xr.Dataset:
     """
     Assemble SAR + auxiliary datasets for avalanche detection.
+
+    Parameters
+    ----------
+    chunks : dict, optional
+        Dask chunking strategy. Default: {'time': 10, 'x': 512, 'y': 512}
+        Adjust based on your dataset size and available memory.
 
     Returns
     -------
@@ -48,7 +59,7 @@ def assemble_dataset(
 
     # --- 3. Find and download ASF RTC data ---
     urls = find_asf_urls(aoi, start_date, stop_date, product_type=RTC)
-    fps = download_urls_parallel(urls, cache_dir.joinpath('opera'))
+    fps = download_urls_parallel(urls, cache_dir.joinpath('opera'), description='Downloading S1 RTC')
 
     # --- 4. Load & merge backscatter by file type ---
     ds = xr.Dataset()
@@ -66,7 +77,7 @@ def assemble_dataset(
 
     # --- 6. Load static LIA ---
     lia_urls = find_asf_urls(aoi, start_date = None, stop_date = None, product_type=RTC_STATIC)
-    lia_fps = download_urls_parallel(lia_urls, cache_dir.joinpath('opera'))
+    lia_fps = download_urls_parallel(lia_urls, cache_dir.joinpath('opera'), description='Downloading S1 local incidence angles')
     lia = load_reproject_concat_rtc(lia_fps, ref_grid, "lia")
 
     def combine_track(track_da):
@@ -88,7 +99,7 @@ def assemble_dataset(
 
     # get snowmodel
     swe_urls = find_earthaccess_urls(aoi, start_date, stop_date)
-    swe_fps = download_urls_parallel(swe_urls, cache_dir.joinpath('snowmodel'))
+    swe_fps = download_urls_parallel(swe_urls, cache_dir.joinpath('snowmodel'), description='Downloading UCLA Snowmodel')
     ds['swe'] = get_snowmodel(swe_fps, start_date, stop_date, ref_grid)
 
     ds = generate_runcount_alpha_angle(ds)

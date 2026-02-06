@@ -30,7 +30,7 @@ import multiprocessing as mp
 import concurrent.futures
 import logging
 from xml.etree import ElementTree as ET
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 # Flow-Py Libraries
 # import raster_io as io
