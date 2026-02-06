@@ -223,37 +223,34 @@ def log_odds_combine(
 def probability_backscatter_change(
     diff: xr.DataArray,
     logistic_slope: float = 3.0,
-    logistic_midpoint: float = 0.5
+    threshold_db: float = 0.75  # dB change where p=0.5
 ) -> xr.DataArray:
     """
-    Convert weighted backscatter change into a per-pixel probability of avalanche debris
-    using a logistic (sigmoid) function.
+    Convert backscatter change into probability using absolute dB thresholds.
 
     Parameters
     ----------
     diff : xr.DataArray
-        Weighted backscatter change (Δσ⁰), dims=(y,x) or (pair,y,x)
+        Backscatter change in dB, dims=(y,x) or (pair,y,x)
     logistic_slope : float
-        Steepness of the sigmoid function. Larger values → sharper transition.
-    logistic_midpoint : float
-        Normalized Δσ⁰ value (0-1) where probability = 0.5.
+        Steepness of the sigmoid. Default 3.0 means:
+        - at threshold_db: p = 0.5
+        - at threshold_db + 1dB: p ≈ 0.95
+    threshold_db : float
+        dB change where probability = 0.5 (default 3.0 dB)
 
     Returns
     -------
     xr.DataArray
         Per-pixel probability of avalanche debris, dims same as `diff`.
     """
+    # --- Logistic probability directly on dB values ---
+    prob = 1 / (1 + np.exp(-logistic_slope * (diff - threshold_db)))
 
-    # --- 1. Normalize delta to 0-1 ---
-    delta_norm = (diff - diff.min()) / (diff.max() - diff.min() + 1e-6)
-
-    # --- 2. Logistic probability ---
-    prob = 1 / (1 + np.exp(-logistic_slope * (delta_norm - logistic_midpoint)))
-
-    # --- 3. Clip to valid probability range ---
+    # --- Clip to valid probability range ---
     prob = prob.clip(0, 1)
 
-    # --- 4. Wrap as DataArray ---
+    # --- Wrap as DataArray ---
     prob_da = xr.DataArray(prob, dims=diff.dims, coords=diff.coords, name="p_avalanche")
 
     return prob_da

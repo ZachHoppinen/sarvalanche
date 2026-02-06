@@ -42,6 +42,9 @@ def backscatter_changes_crossing_date(
         `t_start`, `t_end`.
     """
 
+    # Drop platform since we will be combining 1A, 1B, ... if from same orbit
+    da = da.drop_vars('platform') if 'platform' in da.coords else da
+
     t0 = pd.to_datetime(timestamp)
     times = pd.to_datetime(da[time_dim].values)
 
@@ -49,7 +52,8 @@ def backscatter_changes_crossing_date(
     t_start = []
     t_end = []
 
-    for i, j in combinations(range(len(times)), 2):
+    combos = list(combinations(range(len(times)), 2))
+    for i, j in combos:
         ti, tj = times[i], times[j]
 
         if not (ti <= t0 < tj):

@@ -6,6 +6,7 @@ def filter_pixel_groups(
     da: xr.DataArray,
     min_size: int = 1,
     max_size: int = None,
+    return_nlabels: bool = False,
 ) -> xr.DataArray:
     """
     Remove connected groups of pixels in a boolean mask that are too small or too large.
@@ -51,4 +52,9 @@ def filter_pixel_groups(
         coords=da.coords,
         name=f"{da.name}_filtered"
     )
+
+    if return_nlabels:
+        n_labels_post = np.sum(~remove_labels) - 1  # subtract 1 for background
+        return out, n_labels_post
+
     return out

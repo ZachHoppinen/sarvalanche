@@ -40,6 +40,7 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logging.getLogger('asf_search').setLevel(logging.WARNING)  # or logging.ERROR
+log = logging.getLogger(__name__)
 
 def detect_avalanche_debris(
         aoi,
@@ -51,6 +52,8 @@ def detect_avalanche_debris(
         cache_dir,
         overwrite = False):
 
+    log.info(f"Arguments: {locals()}")
+
     crs = validate_crs(crs)
     # this should be generalized to any CRS and renamed
     resolution_deg = resolution_to_degrees(resolution, crs)
@@ -61,8 +64,10 @@ def detect_avalanche_debris(
 
     ds_nc = cache_dir.joinpath(f'{avalanche_date}.nc')
 
-    if not ds_nc.exists() or ds_nc.stat().st_size == 0 or overwrite:
+    log.info(f'Initial validations checked')
 
+    if not ds_nc.exists() or ds_nc.stat().st_size == 0 or overwrite:
+        log.info('Netcdf not found. Assembling dataset now.')
         ds = assemble_dataset(
             aoi=aoi,
             start_date=start_date,
@@ -71,33 +76,43 @@ def detect_avalanche_debris(
             crs=crs,
             cache_dir=cache_dir
         )
+        log.info(f'Saving netcdf to {ds_nc}')
         export_netcdf(ds, ds_nc)
     else:
+        log.info(f'Found netcdf at {ds_nc}. Loading...')
         ds = load_netcdf_to_dataset(ds_nc)
 
     validate_canonical(ds)
 
     # one method based on weighted backscatter changes
+    log.info('Calculating emperical backscatter change probability')
     ds['p_emperical'] = calculate_emperical_backscatter_probability(ds, avalanche_date, smooth_method=None)
 
     # method based on probability of change from pre-event distribution
+    log.info('Calculating distribution based probability')
     ds['p_ecdf'] = calculate_ecdf_backscatter_probability(ds, avalanche_date)
 
     # --- 6. Compute forest cover probability ---
+    log.info('Calculating forest cover probability')
     ds['p_fcf'] = probability_forest_cover(ds['fcf'], midpoint=50, slope = 0.1)
 
     # --- 7. Compute avalanche model cell counts probability ---
+    log.info('Calculating runout cell based probability')
     ds['p_runout'] = probability_cell_counts(ds['cell_counts'])
 
     # --- 8. Compute slope angle probability of debris ---
+    log.info('Calculating slope-angle based probability')
     ds['p_slope'] = probability_slope_angle(ds['slope'])
 
     # --- 9. Compute swe accumulation probability of debris ---
+    log.info('Calculating swe accumulation based probability')
     ds['p_swe'] = probability_swe_accumulation(ds['swe'], avalanche_date, midpoint = 0.0, slope = 100.0)
 
     factors = [ds['p_emperical'], ds['p_ecdf'], ds['p_fcf'], ds['p_runout'], ds['p_slope'], ds['p_swe']]
-    weights = [0.5, 0.5, 1.0, 1.0, 1.0, 1.0]
+    weights = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
+    log.info('Running weighted geometric mean')
+    log.debug(f'Weighing with {weights} for backscatter change, distribution, fcf, runout, slope, swe change')
     p_total = weighted_geometric_mean(factors, weights)
     p_total = p_total.where(~p_total.isnull(), 0)
 
@@ -105,6 +120,7 @@ def detect_avalanche_debris(
     for d in ['p_slope', 'p_runout', 'p_fcf', 'p_ecdf', 'p_emperical', 'p_pixelwise', 'p_swe']:
         ds[d].attrs = {'source': 'sarvalance', 'units': 'percentage', 'product': 'pixel_wise_probability'}
 
+    log.info('Running dense CRF processing')
     # generate U from p_total for dense CRF
     arr = spatial_smooth(p_total)
     arr = np.asarray(arr, dtype='<f4')
@@ -125,8 +141,10 @@ def detect_avalanche_debris(
     U_fp = cache_dir.joinpath('arrays', 'U.npy')
     np.save(U_fp, U)
     Q_fp = cache_dir.joinpath('arrays', 'Q.npy')
+    log.debug(f'Using output array locations {U_fp} and {Q_fp}')
 
     dense_crf_script_path = Path(dense_crf.__file__)
+    log.debug(f'Dense CRF script found at {dense_crf_script_path}')
     run_spatial_crf_densecrf_py38(U_fp, Q_fp, dense_crf_script_path, iters = 5)
 
     p_crf = np.load(Q_fp)[1]
@@ -134,11 +152,13 @@ def detect_avalanche_debris(
     mask_da = xr.zeros_like(ds['dem'])
     mask_da.data = mask
 
-    ds['detections'] = filter_pixel_groups(mask_da, min_size=8)
+    ds['detections'], n_labels = filter_pixel_groups(mask_da, min_size=8, return_nlabels=True)
+    log.info(f'N labels found in detections: {n_labels}')
     ds['detections'].attrs = {'source': 'sarvalance', 'units': 'binary', 'product': 'detection_map'}
 
     validate_canonical(ds)
 
+    log.info(f'Saving final results to {ds_nc}')
     export_netcdf(ds, ds_nc, overwrite = True)
 
     return ds

@@ -145,7 +145,7 @@ def run_flowpy(
     # use a shuffled version to reduce processing itme.
     release_list = fc.split_release_by_points_shuffled(release, release_header, max_workers * 10)
 
-    log.info("{} Processes started.".format(len(release_list)))
+    log.info("{} Processes started.".format(max_workers))
 
     # --- prepare arguments ---
     args = [
