@@ -250,8 +250,8 @@ P_debris = (p_empirical^w₁ × p_ecdf^w₂ × p_fcf^w₃ × p_runout^w₄ × p_
 ```
 
 **Current weights:**
-- w₁ = 0.5 (empirical backscatter changes)
-- w₂ = 0.5 (ECDF-based backscatter probability)
+- w₁ = 1.0 (empirical backscatter changes)
+- w₂ = 1.0 (ECDF-based backscatter probability)
 - w₃ = 1.0 (forest cover constraint)
 - w₄ = 1.0 (runout model prior)
 - w₅ = 1.0 (slope angle constraint)

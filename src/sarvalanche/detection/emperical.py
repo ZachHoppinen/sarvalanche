@@ -23,6 +23,7 @@ from sarvalanche.features.stability import pixel_sigma_weighting
 from sarvalanche.features.temporal import temporal_pair_weights
 from sarvalanche.features.weighting import combine_weights, weighted_mean
 from sarvalanche.detection.probability import log_odds_combine, probability_backscatter_change
+from sarvalanche.detection.combine import combine_probabilities_weighted
 
 log = logging.getLogger(__name__)
 
@@ -154,12 +155,17 @@ def calculate_empirical_backscatter_probability(
             "Check that dataset contains requested polarizations and valid data."
         )
 
-    log.info(f"Combining {len(p_delta_list)} probability maps with alpha={combine_alpha}")
+    if isinstance(probs, list):
+        probs = xr.concat(probs, dim="stack")
+        dim = "stack"
 
     # --- 5. Combine across tracks / pols ---
-    p_delta_combined = log_odds_combine(
-        p_delta_list,
-        alpha=combine_alpha,
+    p_combined = combine_probabilities_weighted(
+        probs,           # (pair, y, x)
+        weights=None,           # (pair, y, x)
+        dim='stack',
+        method='log_odds'
     )
+
 
     return p_delta_combined
