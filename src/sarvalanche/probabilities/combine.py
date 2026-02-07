@@ -1,30 +1,20 @@
-import numpy as np
+"""
+Probability combination utilities for fusing track/polarization results.
+"""
+
+import logging
 import xarray as xr
+import numpy as np
+from typing import Literal
+
 from scipy.stats import norm
 
-"""
-Probability combination utilities for fusing track/polarization results.
-"""
-
-import logging
-import xarray as xr
-import numpy as np
-from typing import Literal
+from sarvalanche.utils.constants import eps
 
 log = logging.getLogger(__name__)
 
-"""
-Probability combination utilities for fusing track/polarization results.
-"""
 
-import logging
-import xarray as xr
-import numpy as np
-from typing import Literal
-
-log = logging.getLogger(__name__)
-
-def combine_temporal_probabilities(
+def combine_probabilities(
     probs: xr.DataArray,
     dim: str,
     method: Literal['log_odds', 'stouffer', 'mean', 'product', 'max'] = 'log_odds',
@@ -150,27 +140,3 @@ def _combine_stouffer(
         dask="parallelized",
         output_dtypes=[float]
     )
-
-def combine_z_to_probability(
-    z_signed: xr.DataArray,
-    weights: xr.DataArray,
-    dim: str,
-) -> xr.DataArray:
-    """Combine z-scores using Stouffer's method, convert to probability."""
-    valid = xr.where(np.isfinite(z_signed), 1.0, 0.0)
-    w_eff = weights * valid
-
-    # Weighted Stouffer's method
-    num = (w_eff * z_signed).sum(dim, skipna=True)
-    den = np.sqrt((w_eff ** 2).sum(dim, skipna=True))
-    z_combined = num / (den + eps)
-
-    # Convert to probability
-    p = xr.apply_ufunc(
-        norm.cdf,
-        z_combined,
-        dask="parallelized",
-        output_dtypes=[float],
-    )
-
-    return p.clip(0, 1)

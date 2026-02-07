@@ -4,6 +4,11 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+import warnings
+
+# Turn warnings into errors
+warnings.filterwarnings('error', category=RuntimeWarning, message='overflow encountered in exp')
+
 # io functions
 from sarvalanche.utils.projections import resolution_to_degrees
 from sarvalanche.utils.validation import validate_crs, validate_path, validate_canonical
@@ -11,15 +16,15 @@ from sarvalanche.io.dataset import assemble_dataset, load_netcdf_to_dataset
 from sarvalanche.io.export import export_netcdf
 
 # backscatter based probabilities
-from sarvalanche.detection.empirical import calculate_empirical_backscatter_probability
-from sarvalanche.detection.ecdf import calculate_ecdf_backscatter_probability
+from sarvalanche.detection.backscatter_detections import calculate_empirical_backscatter_probability
+# from sarvalanche.detection.backscatter_detections import calculate_ecdf_backscatter_probability
 
 # probability functions
-from sarvalanche.detection.probability import probability_slope_angle
-from sarvalanche.detection.probability import probability_cell_counts
-from sarvalanche.detection.probability import probability_forest_cover
-from sarvalanche.detection.probability import probability_swe_accumulation
-from sarvalanche.detection.probability import weighted_geometric_mean
+from sarvalanche.probabilities.static import probability_slope_angle
+from sarvalanche.probabilities.static import probability_cell_counts
+from sarvalanche.probabilities.static import probability_forest_cover
+from sarvalanche.probabilities.static import probability_swe_accumulation
+from sarvalanche.probabilities.combine import combine_probabilities
 
 # dense CRF processing
 from sarvalanche.detection import dense_crf
@@ -64,7 +69,7 @@ def detect_avalanche_debris(
 
     ds_nc = cache_dir.joinpath(f'{avalanche_date}.nc')
 
-    log.info(f'Initial validations checked')
+    log.info(f'Initial validation checks passed')
 
     if not ds_nc.exists() or ds_nc.stat().st_size == 0 or overwrite:
         log.info('Netcdf not found. Assembling dataset now.')
@@ -89,8 +94,8 @@ def detect_avalanche_debris(
     ds['p_emperical'] = calculate_empirical_backscatter_probability(ds, avalanche_date, smooth_method=None)
 
     # method based on probability of change from pre-event distribution
-    log.info('Calculating distribution based probability')
-    ds['p_ecdf'] = calculate_ecdf_backscatter_probability(ds, avalanche_date)
+    # log.info('Calculating distribution based probability')
+    # ds['p_ecdf'] = calculate_ecdf_backscatter_probability(ds, avalanche_date)
 
     # --- 6. Compute forest cover probability ---
     log.info('Calculating forest cover probability')
@@ -108,12 +113,21 @@ def detect_avalanche_debris(
     log.info('Calculating swe accumulation based probability')
     ds['p_swe'] = probability_swe_accumulation(ds['swe'], avalanche_date, midpoint = 0.0, slope = 100.0)
 
-    factors = [ds['p_emperical'], ds['p_ecdf'], ds['p_fcf'], ds['p_runout'], ds['p_slope'], ds['p_swe']]
-    weights = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    factors = [ds['p_emperical'], ds['p_fcf'], ds['p_runout'], ds['p_slope'], ds['p_swe']]
+    weights = [1.0, 1.0, 1.0, 1.0, 1.0]
 
     log.info('Running weighted geometric mean')
     log.debug(f'Weighing with {weights} for backscatter change, distribution, fcf, runout, slope, swe change')
-    p_total = weighted_geometric_mean(factors, weights)
+
+    factors_stacked = xr.concat(factors, dim='factor')  # Stack the list
+    weights = xr.concat(weights, dim = 'factor')
+    p_total = combine_probabilities(
+        factors_stacked,
+        dim='factor',
+        method='product',  # Geometric mean
+        weights=weights
+    )
+
     p_total = p_total.where(~p_total.isnull(), 0)
 
     ds['p_pixelwise'] = p_total

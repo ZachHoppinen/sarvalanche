@@ -3,151 +3,26 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-def weighted_geometric_mean(
-    probs: list[xr.DataArray],
-    weights: list[float] = None,
-    eps: float = 1e-6,
-    normalize: bool = False
-) -> xr.DataArray:
-    """
-    Combine multiple probability DataArrays using a weighted geometric mean.
-
-    Parameters
-    ----------
-    probs : list of xr.DataArray
-        Probabilities in [0, 1] to combine. All must have the same shape/dims.
-    weights : list of float, optional
-        Weight for each probability array. Defaults to equal weighting.
-    eps : float
-        Small value to avoid log(0).
-    normalize : bool
-        If True, scales final probabilities to [0, 1].
-
-    Returns
-    -------
-    xr.DataArray
-        Combined probability array.
-    """
-    if weights is None:
-        weights = [1.0] * len(probs)
-    if len(weights) != len(probs):
-        raise ValueError("Length of weights must match number of probability arrays.")
-
-    # Convert probabilities to log space with numerical stability
-    log_probs = [w * np.log(np.clip(p, eps, 1.0)) for p, w in zip(probs, weights)]
-
-    # Sum weighted logs
-    log_total = sum(log_probs)
-
-    # Back to probability space
-    combined = np.exp(log_total)
-
-    # Optional normalization to [0,1]
-    if normalize:
-        combined = combined / combined.max()
-
-    # Preserve coords/dims from first array
-    out = xr.DataArray(
-        combined,
-        dims=probs[0].dims,
-        coords=probs[0].coords,
-        name="p_total_geomean"
-    )
-
-    return out
-
-def log_odds_combine(
-    probs,
-    dim=None,
-    weights=None,
-    alpha=1.0,
-    eps=1e-6,
-):
-    """
-    Combine probabilities by summing log-odds with optional shrinkage and weighting.
-
-    Parameters
-    ----------
-    probs : list[xr.DataArray] or xr.DataArray
-        Probabilities in [0, 1].
-        If a list, concatenated along new 'stack' dimension.
-    dim : str, optional
-        Dimension to combine over (required if probs is a DataArray).
-    weights : list[float], optional
-        Per-probability weights (applied in log-odds space). Must match number of probs.
-    alpha : float
-        Shrinkage factor toward 0.5 (0 = ignore, 1 = full strength).
-    eps : float
-        Numerical stability constant.
-
-    Returns
-    -------
-    xr.DataArray
-        Combined probability in [0, 1].
-    """
-
-    # --- concatenate list of DataArrays if needed ---
-    if isinstance(probs, list):
-        probs = xr.concat(probs, dim="stack")
-        dim = "stack"
-
-    # --- shrink toward 0.5 (confidence control) ---
-    if alpha is not None:
-        probs = 0.5 + alpha * (probs - 0.5)
-
-    # --- log-odds transform with optional weighting ---
-    if weights is None:
-        log_odds = np.log((probs + eps) / (1.0 - probs + eps))
-    else:
-        if len(weights) != probs.sizes[dim]:
-            raise ValueError(f"Length of weights ({len(weights)}) must match size of dim '{dim}' ({probs.sizes[dim]})")
-        # multiply each slice along dim by its weight
-        slices = [probs.isel({dim: i}) for i in range(probs.sizes[dim])]
-        log_odds_slices = [w * np.log((p + eps) / (1 - p + eps)) for p, w in zip(slices, weights)]
-        # stack back
-        log_odds = xr.concat(log_odds_slices, dim=dim)
-
-    # --- combine along dim ---
-    log_odds_sum = log_odds.sum(dim, skipna=True)
-
-    # --- back to probability ---
-    return 1.0 / (1.0 + np.exp(-log_odds_sum))
+from scipy.special import expit
 
 def probability_backscatter_change(
     diff: xr.DataArray,
     logistic_slope: float = 3.0,
-    threshold_db: float = 0.75  # dB change where p=0.5
+    threshold_db: float = 0.75
 ) -> xr.DataArray:
-    """
-    Convert backscatter change into probability using absolute dB thresholds.
+    """Convert backscatter change to probability using stable sigmoid."""
 
-    Parameters
-    ----------
-    diff : xr.DataArray
-        Backscatter change in dB, dims=(y,x) or (pair,y,x)
-    logistic_slope : float
-        Steepness of the sigmoid. Default 3.0 means:
-        - at threshold_db: p = 0.5
-        - at threshold_db + 1dB: p ≈ 0.95
-    threshold_db : float
-        dB change where probability = 0.5 (default 3.0 dB)
+    # expit(x) = 1 / (1 + exp(-x)) but numerically stable
+    prob = xr.apply_ufunc(
+        expit,
+        logistic_slope * (diff - threshold_db),
+        dask="parallelized",
+        output_dtypes=[float],
+    )
 
-    Returns
-    -------
-    xr.DataArray
-        Per-pixel probability of avalanche debris, dims same as `diff`.
-    """
-    # --- Logistic probability directly on dB values ---
-    prob = 1 / (1 + np.exp(-logistic_slope * (diff - threshold_db)))
-
-    # --- Clip to valid probability range ---
     prob = prob.clip(0, 1)
 
-    # --- Wrap as DataArray ---
-    prob_da = xr.DataArray(prob, dims=diff.dims, coords=diff.coords, name="p_avalanche")
-
-    return prob_da
-
+    return xr.DataArray(prob, dims=diff.dims, coords=diff.coords, name="p_avalanche")
 
 def probability_forest_cover(fcf: xr.DataArray,
                              midpoint: float = 30.0,
@@ -326,8 +201,3 @@ def probability_swe_accumulation(
     )
 
     return prob_da
-
-def _z_to_probability(Z_norm: xr.DataArray, beta: float, z_pivot: float) -> xr.DataArray:
-    """Convert normalized z-score to probability using sigmoid."""
-    P_change = 1 / (1 + np.exp(-beta * (Z_norm - z_pivot)))
-    return P_change

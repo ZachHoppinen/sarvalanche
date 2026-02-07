@@ -5,17 +5,18 @@ Computes probability based on magnitude of backscatter change across an avalanch
 """
 
 import logging
+import warnings
 import xarray as xr
 
 from sarvalanche.utils.validation import check_db_linear
 from sarvalanche.preprocessing.radiometric import linear_to_dB
 from sarvalanche.preprocessing.spatial import spatial_smooth
 from sarvalanche.features.backscatter_change import backscatter_changes_crossing_date
-from sarvalanche.features.temporal import temporal_pair_weights
 from sarvalanche.features.stability import pixel_sigma_weighting
 from sarvalanche.features.incidence_angle import incidence_angle_weight
+from sarvalanche.features.temporal import temporal_weights
 from sarvalanche.features.weighting import combine_weights, weighted_mean
-from sarvalanche.detection.probability import probability_backscatter_change
+from sarvalanche.probabilities.static import probability_backscatter_change
 
 log = logging.getLogger(__name__)
 
@@ -75,10 +76,14 @@ def compute_track_empirical_probability(
     diffs = backscatter_changes_crossing_date(da, avalanche_date, pair_dim=pair_dim)
 
     # --- Temporal weighting ---
-    w_temporal = temporal_pair_weights(diffs, tau_days=tau_days, pair_dim=pair_dim)
+    w_temporal = temporal_weights(diffs, tau_days=tau_days, pair_dim=pair_dim)
 
     # --- Stability weighting ---
-    sigma_db = da.sel(time=slice(None, avalanche_date)).std(dim='time')
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', 'Degrees of freedom <= 0', RuntimeWarning)
+        warnings.filterwarnings('ignore', 'invalid value encountered in subtract', RuntimeWarning)
+        warnings.filterwarnings('ignore', 'divide by zero encountered in log10', RuntimeWarning)
+        sigma_db = da.sel(time=slice(None, avalanche_date)).std(dim='time')
     w_stability = pixel_sigma_weighting(sigma_db)
 
     # --- Incidence angle weighting ---
