@@ -52,13 +52,14 @@ def incidence_angle_weight(
     extreme avalanche period over the Swiss Alps. The Cryosphere, 15(1), 83-98.
     https://doi.org/10.5194/tc-15-83-2021
     """
-    # weight by local_incidence_angle
-    units = check_rad_degrees(local_incidence_angle)
-    if units != 'degrees':
-        local_incidence_angle = np.rad2deg(local_incidence_angle)
-
     if local_incidence_angle is None:
         return 1.0
+
+    # weight by local_incidence_angle
+    units = check_rad_degrees(local_incidence_angle)
+
+    if units == 'radians':
+        local_incidence_angle = np.rad2deg(local_incidence_angle)
 
     # Gaussian weighting centered at optimal angle
     w_inc = np.exp(-((local_incidence_angle - optimal_angle) ** 2) /

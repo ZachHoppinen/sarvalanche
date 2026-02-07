@@ -4,7 +4,6 @@ import xarray as xr
 def pixel_sigma_weighting(
         sigma: xr.DataArray,
         sigma_threshold: float = 2.0,
-        normalize: bool = True
 ) -> xr.DataArray:
     """
     Weight pixels by temporal stability with saturation.
@@ -19,8 +18,5 @@ def pixel_sigma_weighting(
     """
     # Logistic decay: smooth transition, bounded [0, 1]
     weights = 1.0 / (1.0 + (sigma / sigma_threshold) ** 2)
-
-    if normalize:
-        weights = (weights - weights.min()) / (weights.max() - weights.min() + 1e-6)
 
     return weights.rename('w_sigma')

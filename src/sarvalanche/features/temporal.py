@@ -2,7 +2,7 @@
 import numpy as np
 import xarray as xr
 
-def temporal_pair_weights(
+def temporal_weights(
     diffs: xr.DataArray,
     tau_days: float,
     pair_dim: str = "pair",

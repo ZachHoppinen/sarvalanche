@@ -11,7 +11,7 @@ from sarvalanche.io.dataset import assemble_dataset, load_netcdf_to_dataset
 from sarvalanche.io.export import export_netcdf
 
 # backscatter based probabilities
-from sarvalanche.detection.emperical import calculate_empirical_backscatter_probability
+from sarvalanche.detection.empirical import calculate_empirical_backscatter_probability
 from sarvalanche.detection.ecdf import calculate_ecdf_backscatter_probability
 
 # probability functions
