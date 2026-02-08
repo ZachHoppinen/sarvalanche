@@ -1,6 +1,6 @@
 import xarray as xr
 
-def local_resolution_weights(
+def get_local_resolution_weights(
         local_resolution : xr.Dataarray,
         resolution_threshold: float = 10):
 

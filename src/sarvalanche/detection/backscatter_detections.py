@@ -15,8 +15,8 @@ def calculate_empirical_backscatter_probability(ds, avalanche_date, **kwargs):
     """
     results = []
 
-    for track, pol, da, lia in iter_track_pol_combinations(ds):
-        p = compute_track_empirical_probability(da, lia, avalanche_date)
+    for track, pol, da, lia, anf in iter_track_pol_combinations(ds):
+        p = compute_track_empirical_probability(da, anf, avalanche_date)
         ds[f'p_{track}_{pol}_empirical'] = p
         results.append(p)
 

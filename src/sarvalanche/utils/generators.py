@@ -10,8 +10,9 @@ def iter_track_pol_combinations(
     polarizations: Sequence[str] = ("VV", "VH"),
     track_var: str = "track",
     lia_var: str = "lia",
-    lia_dim: str = "static_track",
-    include_lia: bool = True,
+    anf_var: str = "anf",
+    static_dim: str = "static_track",
+    include_static: bool = True,
     skip_missing: bool = True,
 ) -> Iterator[tuple[Any, str, xr.DataArray, xr.DataArray | None]]:
     """
@@ -32,9 +33,9 @@ def iter_track_pol_combinations(
         Name of the local incidence angle variable.
     lia_dim : str, default="static_track"
         Dimension name used to index the LIA by track.
-    include_lia : bool, default=True
-        Whether to include local incidence angle in output.
-        If False, yields None for LIA.
+    include_static : bool, default=True
+        Whether to include local incidence angle and local resolution in output.
+        If False, yields None for LIA and ANF.
     skip_missing : bool, default=True
         If True, skip polarizations not present in dataset.
         If False, raise KeyError for missing polarizations.
@@ -74,10 +75,15 @@ def iter_track_pol_combinations(
     for track in tracks:
         # Get LIA for this track if requested
         lia = None
-        if include_lia:
+        anf = None
+        if include_static:
             if lia_var in ds:
                 try:
-                    lia = ds[lia_var].sel({lia_dim: track})
+                    lia = ds[lia_var].sel({static_dim: track})
+                except (KeyError, ValueError) as e:
+                    log.warning(f"Could not select LIA for track {track}: {e}")
+                try:
+                    anf = ds[anf_var].sel({static_dim: track})
                 except (KeyError, ValueError) as e:
                     log.warning(f"Could not select LIA for track {track}: {e}")
             else:
@@ -101,4 +107,4 @@ def iter_track_pol_combinations(
                     raise ValueError(f"Empty data for track {track}, pol {pol}")
                 continue
 
-            yield track, pol, da, lia
+            yield track, pol, da, lia, anf

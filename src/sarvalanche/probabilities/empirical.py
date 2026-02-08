@@ -12,10 +12,9 @@ from sarvalanche.utils.validation import check_db_linear
 from sarvalanche.preprocessing.radiometric import linear_to_dB
 from sarvalanche.preprocessing.spatial import spatial_smooth
 from sarvalanche.features.backscatter_change import backscatter_changes_crossing_date
-from sarvalanche.features.stability import pixel_sigma_weighting
-from sarvalanche.features.incidence_angle import incidence_angle_weight
-from sarvalanche.features.temporal import temporal_weights
-from sarvalanche.features.weighting import combine_weights, weighted_mean
+from sarvalanche.weights.temporal import get_temporal_weights
+from sarvalanche.weights.local_resolution import get_local_resolution_weights
+from sarvalanche.weights.combinations import combine_weights, weighted_mean
 from sarvalanche.probabilities.static import probability_backscatter_change
 
 log = logging.getLogger(__name__)
@@ -23,7 +22,7 @@ log = logging.getLogger(__name__)
 
 def compute_track_empirical_probability(
     da: xr.DataArray,
-    lia: xr.DataArray,
+    local_resolution: xr.DataArray,
     avalanche_date,
     *,
     smooth_method: str | None = None,
@@ -70,21 +69,21 @@ def compute_track_empirical_probability(
     diffs = backscatter_changes_crossing_date(da, avalanche_date, pair_dim=pair_dim)
 
     # --- Temporal weighting ---
-    w_temporal = temporal_weights(diffs, tau_days=tau_days, pair_dim=pair_dim)
+    w_temporal = get_temporal_weights(diffs['t_start'], diffs['t_end'], tau_days=tau_days)
 
     # --- Stability weighting ---
-    with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', 'Degrees of freedom <= 0 for slice', RuntimeWarning)
-        warnings.filterwarnings('ignore', 'invalid value encountered in subtract', RuntimeWarning)
-        warnings.filterwarnings('ignore', 'divide by zero encountered in log10', RuntimeWarning)
-        sigma_db = da.sel(time=slice(None, avalanche_date)).std(dim='time')
-    w_stability = pixel_sigma_weighting(sigma_db)
+    # with warnings.catch_warnings():
+    #     warnings.filterwarnings('ignore', 'Degrees of freedom <= 0 for slice', RuntimeWarning)
+    #     warnings.filterwarnings('ignore', 'invalid value encountered in subtract', RuntimeWarning)
+    #     warnings.filterwarnings('ignore', 'divide by zero encountered in log10', RuntimeWarning)
+    #     sigma_db = da.sel(time=slice(None, avalanche_date)).std(dim='time')
+    # w_stability = pixel_sigma_weighting(sigma_db)
 
     # --- Incidence angle weighting ---
-    w_incidence = incidence_angle_weight(lia)
+    w_resolution = get_local_resolution_weights(local_resolution)
 
     # --- Combine weights ---
-    w_total = combine_weights(w_temporal, w_stability, w_incidence)
+    w_total = combine_weights(w_temporal, w_resolution)
 
     # --- Weighted mean change ---
     mean_change = weighted_mean(diffs, w_total, dim=pair_dim)

@@ -38,11 +38,11 @@ def combine_weights(*weights: xr.DataArray | float) -> xr.DataArray:
     return w_total
 
 def weighted_mean(
-    diffs: xr.DataArray,
+    da: xr.DataArray,
     weights: xr.DataArray,
     dim: str,
 ) -> xr.DataArray:
     """
     Compute weighted mean over xarray dimension.
     """
-    return diffs.weighted(weights).mean(dim)
+    return da.weighted(weights).mean(dim)
