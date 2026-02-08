@@ -131,10 +131,10 @@ def detect_avalanche_debris(
         -np.log(P_debris)       # label 1
     ], axis=0).astype(np.float32)
 
-    assert U.dtype == np.float32
-    assert U.ndim == 3
-    assert np.isfinite(U).all()
-    assert U.shape[0] == 2
+    assert U.dtype == np.float32, f'U dtype is {U.dtype} not float32'
+    assert U.ndim == 3, f'U has {U.ndim} instead of expected 3 (label, y, x)'
+    assert np.isfinite(U).all(), f'U has {(~np.isfinite(U)).sum()} non-finite values'
+    assert U.shape[0] == 2, f'U has {U.shape[0]} labels instead of expected 2 of background, debris'
 
     U_fp = cache_dir.joinpath('arrays', 'U.npy')
     np.save(U_fp, U)

@@ -18,4 +18,4 @@ if __name__ == '__main__':
 
     cache_dir = Path('/Users/zmhoppinen/Documents/sarvalanche/local/data')
     # ds = assemble_dataset(aoi, start_date, stop_date, crs, resolution, cache_dir)
-    ds = detect_avalanche_debris(aoi, crs, 20, start_date, stop_date, avalanche_date, cache_dir=cache_dir, overwrite=False)
+    ds = detect_avalanche_debris(aoi, crs, 20, start_date, stop_date, avalanche_date, cache_dir=cache_dir, overwrite=True)

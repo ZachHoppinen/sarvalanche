@@ -19,7 +19,6 @@ def get_static_weights(ds, avalanche_date):
     for d in ['w_resolution', 'w_temporal']:
         ds[d].attrs = {'source': 'sarvalance', 'units': '1', 'product': 'weight'}
 
-
     return ds
 
 

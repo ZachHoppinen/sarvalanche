@@ -18,7 +18,6 @@ from sarvalanche.utils.constants import eps
 
 log = logging.getLogger(__name__)
 
-
 def get_static_probabilities(ds, avalanche_date):
     # --- 6. Compute forest cover probability ---
     log.info('Calculating forest cover probability')
@@ -38,6 +37,8 @@ def get_static_probabilities(ds, avalanche_date):
 
     for d in ['p_fcf', 'p_runout', 'p_slope', 'p_swe']:
         ds[d].attrs = {'source': 'sarvalance', 'units': 'percentage', 'product': 'pixel_wise_probability'}
+
+    return ds
 
 
 def combine_probabilities(
