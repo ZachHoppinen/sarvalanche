@@ -17,6 +17,7 @@ def calculate_empirical_backscatter_probability(ds, avalanche_date, **kwargs):
 
     for track, pol, da, lia in iter_track_pol_combinations(ds):
         p = compute_track_empirical_probability(da, lia, avalanche_date)
+        ds[f'p_{track}_{pol}_empirical'] = p
         results.append(p)
 
     if not results:
@@ -24,7 +25,7 @@ def calculate_empirical_backscatter_probability(ds, avalanche_date, **kwargs):
 
     probs = xr.concat(results, dim="track_pol")
 
-    return combine_probabilities(probs, dim='track_pol', method='log_odds', alpha=0.5)
+    return combine_probabilities(probs, dim='track_pol', method='log_odds', alpha=None)
 
 
 # # ECDF pipeline - FULL SCENE

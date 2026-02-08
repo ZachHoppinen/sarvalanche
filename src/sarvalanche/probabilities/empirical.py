@@ -29,9 +29,7 @@ def compute_track_empirical_probability(
     smooth_method: str | None = None,
     tau_days: float = 24.0,
     pair_dim: str = "pair",
-    lia_optimal: float = 55.0,
-    lia_width: float = 20.0,
-    threshold_db: float = 0.75,
+    threshold_db: float = 0.1,
     logistic_slope: float = 3.0,
 ) -> xr.DataArray:
     """
@@ -51,10 +49,6 @@ def compute_track_empirical_probability(
         Temporal decay scale for weighting observation pairs
     pair_dim : str, default="pair"
         Dimension name for observation pairs
-    lia_optimal : float, default=55.0
-        Optimal local incidence angle (degrees)
-    lia_width : float, default=20.0
-        Width of optimal angle range (degrees)
     threshold_db : float, default=0.75
         Backscatter change (dB) where probability = 0.5
     logistic_slope : float, default=3.0
@@ -80,14 +74,14 @@ def compute_track_empirical_probability(
 
     # --- Stability weighting ---
     with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', 'Degrees of freedom <= 0', RuntimeWarning)
+        warnings.filterwarnings('ignore', 'Degrees of freedom <= 0 for slice', RuntimeWarning)
         warnings.filterwarnings('ignore', 'invalid value encountered in subtract', RuntimeWarning)
         warnings.filterwarnings('ignore', 'divide by zero encountered in log10', RuntimeWarning)
         sigma_db = da.sel(time=slice(None, avalanche_date)).std(dim='time')
     w_stability = pixel_sigma_weighting(sigma_db)
 
     # --- Incidence angle weighting ---
-    w_incidence = incidence_angle_weight(lia, lia_optimal, lia_width)
+    w_incidence = incidence_angle_weight(lia)
 
     # --- Combine weights ---
     w_total = combine_weights(w_temporal, w_stability, w_incidence)

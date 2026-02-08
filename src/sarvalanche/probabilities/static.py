@@ -15,7 +15,7 @@ def probability_backscatter_change(
     # expit(x) = 1 / (1 + exp(-x)) but numerically stable
     prob = xr.apply_ufunc(
         expit,
-        logistic_slope * (diff - threshold_db),
+        (diff - threshold_db)* logistic_slope,
         dask="parallelized",
         output_dtypes=[float],
     )

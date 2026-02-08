@@ -76,18 +76,20 @@ def assemble_dataset(
     ds = ds.rename({"mask": "lia_mask"})
 
     # --- 6. Load static LIA ---
-    lia_urls = find_asf_urls(aoi, start_date = None, stop_date = None, product_type=RTC_STATIC)
-    lia_fps = download_urls_parallel(lia_urls, cache_dir.joinpath('opera'), description='Downloading S1 local incidence angles')
+    static_urls = find_asf_urls(aoi, start_date = None, stop_date = None, product_type=RTC_STATIC)
+    static_fps = download_urls_parallel(static_urls, cache_dir.joinpath('opera'), description='Downloading S1 static RTC files')
+    lia_fps, anf_fps = [f for f in static_fps if str(f).endswith('local_incidence_angle.tif')], [f for f in static_fps if str(f).endswith('rtc_anf_gamma0_to_beta0.tif')]
     lia = load_reproject_concat_rtc(lia_fps, ref_grid, "lia")
+    anf = load_reproject_concat_rtc(anf_fps, ref_grid, "anf")
 
     def combine_track(track_da):
         return track_da.max(dim="time")  # or mean if desired
 
-    ds["lia"] = np.deg2rad(
-        lia.groupby("track").apply(combine_track)
-    ).rename({"track": "static_track"})
+    ds["lia"] = np.deg2rad(lia.groupby("track").apply(combine_track)).rename({"track": "static_track"})
+    ds["anf"] = anf.groupby("track").apply(combine_track).rename({"track": "static_track"})
 
     ds['lia'].attrs = {'units': 'radians', 'source': SENTINEL1, 'product': RTC_STATIC}
+    ds['anf'].attrs = {'units': 'meters', 'source': SENTINEL1, 'product': RTC_STATIC}
 
     # --- 7. Load auxiliary layers ---
     log.info('Getting DEM')

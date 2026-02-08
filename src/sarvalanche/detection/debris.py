@@ -4,11 +4,6 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-import warnings
-
-# Turn warnings into errors
-warnings.filterwarnings('error', category=RuntimeWarning, message='overflow encountered in exp')
-
 # io functions
 from sarvalanche.utils.projections import resolution_to_degrees
 from sarvalanche.utils.validation import validate_crs, validate_path, validate_canonical
@@ -120,18 +115,18 @@ def detect_avalanche_debris(
     log.debug(f'Weighing with {weights} for backscatter change, distribution, fcf, runout, slope, swe change')
 
     factors_stacked = xr.concat(factors, dim='factor')  # Stack the list
-    weights = xr.concat(weights, dim = 'factor')
+    weights_da = xr.DataArray(weights, dims='factor')
     p_total = combine_probabilities(
         factors_stacked,
         dim='factor',
         method='product',  # Geometric mean
-        weights=weights
+        weights=weights_da
     )
 
     p_total = p_total.where(~p_total.isnull(), 0)
 
     ds['p_pixelwise'] = p_total
-    for d in ['p_slope', 'p_runout', 'p_fcf', 'p_ecdf', 'p_emperical', 'p_pixelwise', 'p_swe']:
+    for d in ['p_slope', 'p_runout', 'p_fcf', 'p_emperical', 'p_pixelwise', 'p_swe']:
         ds[d].attrs = {'source': 'sarvalance', 'units': 'percentage', 'product': 'pixel_wise_probability'}
 
     log.info('Running dense CRF processing')

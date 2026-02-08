@@ -25,15 +25,14 @@ def find_asf_urls(aoi,
     if product_type == asf.PRODUCT_TYPE.RTC:
         # Apply extension filtering only for RTC products
         extensions=("_VV.tif", "_VH.tif", "_mask.tif")
-        urls = [u for u in urls if any(u.endswith(ext) for ext in extensions)]
 
     elif product_type == asf.PRODUCT_TYPE.CSLC:
-        extension = '.h5'
-        urls = [u for u in urls if u.endswith(extension)]
+        extensions = ('.h5')
 
     elif product_type == asf.PRODUCT_TYPE.RTC_STATIC:
-        extension = 'local_incidence_angle.tif'
-        urls = [u for u in urls if u.endswith(extension)]
+        extensions = ('local_incidence_angle.tif', 'rtc_anf_gamma0_to_beta0.tif')
+
+    urls = [u for u in urls if any(u.endswith(ext) for ext in extensions)]
 
     return validate_urls(urls)
 

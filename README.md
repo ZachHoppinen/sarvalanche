@@ -227,6 +227,15 @@ Changes in optical snow cover indices (e.g., NDSI from Sentinel-2/Landsat) can c
 
 #### Bayesian Integration Framework
 
+> Currently being revised. We need a way to combine information from multiple orbit and polarizations that:
+> 1. Correctly accounts for the relative trustworthiness of each source (local resolution weighting vv has higher SNR)
+> 2. Appropriately weight detections vs no-detections from 2+ sources
+> considering use a resolution weight approach between orbits and a polarization variability weighting
+> also need to consider information from multiple times in the same orbit. i.e. the 3 passes after the avalnache date.
+> inverse distance weighting? But if we see a change 3 pass after relative to before that should actually care more weight!
+> tricky. Need to start with a calculate weights step that provides weights for every pixel, orbit, time, polarization.
+> then we can do the detections
+
 We combine multiple evidence sources using a **weighted geometric mean** approach. Rather than a traditional Bayesian posterior, we compute an aggregate probability from independent probabilistic assessments:
 
 **Evidence Sources:**
