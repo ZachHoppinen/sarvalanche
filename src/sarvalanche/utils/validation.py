@@ -4,13 +4,14 @@ import warnings
 from datetime import date
 from typing import Union, Tuple, Optional
 from pathlib import Path
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 from pyproj import CRS
 
-from .constants import REQUIRED_ATTRS
+from .constants import REQUIRED_ATTRS, temporal_only_vars
 
 def check_db_linear(da: xr.DataArray):
     """
@@ -96,6 +97,7 @@ def validate_canonical_da(
     da: xr.DataArray,
     *,
     require_time: bool | None = None,
+    only_time: bool = False,
 ) -> None:
     """
     Validate that a single DataArray conforms to sarvalanche's canonical model.
@@ -120,7 +122,7 @@ def validate_canonical_da(
         raise TypeError("Input must be an xarray.DataArray")
 
     # --- Dimensions ---
-    if da.dims[-2:] != ("y", "x"):
+    if da.dims[-2:] != ("y", "x") and not only_time:
         raise ValueError(f"Last two dimensions must be ('y', 'x'), got {da.dims}")
 
     if "time" in da.dims:
@@ -176,9 +178,9 @@ def validate_canonical(
         validate_canonical_da(data, require_time=require_time)
     elif isinstance(data, xr.Dataset):
         for name, da in data.data_vars.items():
-            if name == 'spatial_ref': continue
+            only_time = True if name in temporal_only_vars else False
             try:
-                validate_canonical_da(da, require_time=require_time)
+                validate_canonical_da(da, require_time=require_time, only_time=only_time)
             except Exception as e:
                 raise ValueError(f"Validation failed for variable '{name}': {e}") from e
     else:
@@ -189,8 +191,116 @@ SENTINEL_1_LAUNCH = pd.Timestamp("2014-04-03")
 SENTINEL_1B_FAIL = pd.Timestamp("2021-12-23")
 SENTINEL_1C_START = pd.Timestamp("2025-05-20")
 
+def validate_date(
+    date: str | pd.Timestamp | np.datetime64 | datetime,
+    strip_timezone: bool = True,
+    timezone: str | None = None,
+    allow_future: bool = False,
+    param_name: str = "date",
+) -> pd.Timestamp:
+    """
+    Validate and normalize a date input.
 
-def validate_dates(start_date, end_date, *, sensor: str = "Sentinel-1"):
+    Parameters
+    ----------
+    date : str | pd.Timestamp | np.datetime64 | datetime
+        Date to validate. Can be string (ISO format), pandas Timestamp,
+        numpy datetime64, or Python datetime.
+    strip_timezone : bool, default=True
+        If True, remove timezone information from the result.
+        If False and timezone is None, preserve original timezone.
+    timezone : str | None, default=None
+        If provided, localize naive datetime or convert aware datetime
+        to this timezone (e.g., 'UTC', 'US/Pacific').
+        Ignored if strip_timezone is True.
+    allow_future : bool, default=False
+        If True, allow dates in the future. If False, raise error
+        for dates after the current time.
+    param_name : str, default='date'
+        Name of parameter for error messages.
+
+    Returns
+    -------
+    pd.Timestamp
+        Validated and normalized timestamp.
+
+    Raises
+    ------
+    ValueError
+        If date cannot be parsed, is in the future (when allow_future=False),
+        or is invalid.
+    TypeError
+        If date is of unsupported type.
+
+    Examples
+    --------
+    >>> # Basic validation
+    >>> validate_date('2024-03-15')
+    Timestamp('2024-03-15 00:00:00')
+
+    >>> # With timezone
+    >>> validate_date('2024-03-15', strip_timezone=False, timezone='UTC')
+    Timestamp('2024-03-15 00:00:00+0000', tz='UTC')
+
+    >>> # Future date check
+    >>> validate_date('2030-01-01')  # Raises ValueError
+
+    >>> # Allow future dates
+    >>> validate_date('2030-01-01', allow_future=True)
+    Timestamp('2030-01-01 00:00:00')
+    """
+
+    # Try to convert to pandas Timestamp
+    try:
+        if isinstance(date, pd.Timestamp):
+            ts = date
+        elif isinstance(date, np.datetime64):
+            ts = pd.Timestamp(date)
+        elif isinstance(date, datetime):
+            ts = pd.Timestamp(date)
+        elif isinstance(date, str):
+            ts = pd.to_datetime(date)
+        else:
+            raise TypeError(
+                f"{param_name} must be string, pd.Timestamp, np.datetime64, "
+                f"or datetime, got {type(date)}"
+            )
+    except (ValueError, pd.errors.ParserError) as e:
+        raise ValueError(
+            f"Could not parse {param_name}='{date}' as a valid date. "
+            f"Error: {e}"
+        ) from e
+
+    # Check for NaT (Not a Time)
+    if pd.isna(ts):
+        raise ValueError(f"{param_name} is NaT (Not a Time)")
+
+    # Handle timezone
+    if strip_timezone:
+        # Remove timezone info
+        ts = ts.tz_localize(None) if ts.tz is not None else ts
+    elif timezone is not None:
+        # Apply requested timezone
+        if ts.tz is None:
+            # Naive datetime - localize
+            ts = ts.tz_localize(timezone)
+        else:
+            # Already has timezone - convert
+            ts = ts.tz_convert(timezone)
+
+    # Check if date is in the future
+    if not allow_future:
+        now = pd.Timestamp.now(tz=ts.tz)
+        if ts > now:
+            raise ValueError(
+                f"{param_name}='{ts}' is in the future. "
+                f"Current time: {now}. "
+                f"Set allow_future=True to allow future dates."
+            )
+
+    return ts
+
+def validate_start_end(start_date, end_date, *, sensor: str = "Sentinel-1"):
     """
     Validate and normalize start/end dates for SAR data availability.
 
@@ -203,8 +313,8 @@ def validate_dates(start_date, end_date, *, sensor: str = "Sentinel-1"):
     if start_date is None or end_date is None:
         raise ValueError("start_date and end_date cannot be None")
 
-    start = pd.to_datetime(start_date)
-    end = pd.to_datetime(end_date)
+    start = validate_date(start_date)
+    end = validate_date(end_date)
 
     # ---- Timezone consistency ----
     if start.tz != end.tz:

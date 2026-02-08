@@ -1,7 +1,9 @@
 import numpy as np
 import xarray as xr
-from typing import Iterator, Sequence, Any
+from typing import Iterator, Sequence, Any, Iterable
 import logging
+
+from sarvalanche.weights.combinations import get_static_weights
 
 log = logging.getLogger(__name__)
 
@@ -9,10 +11,8 @@ def iter_track_pol_combinations(
     ds: xr.Dataset,
     polarizations: Sequence[str] = ("VV", "VH"),
     track_var: str = "track",
-    lia_var: str = "lia",
-    anf_var: str = "anf",
-    static_dim: str = "static_track",
-    include_static: bool = True,
+    weight_names: Iterable[str] | None = ["w_temporal", 'w_resolution'],
+    include_weights: bool = True,
     skip_missing: bool = True,
 ) -> Iterator[tuple[Any, str, xr.DataArray, xr.DataArray | None]]:
     """
@@ -29,13 +29,9 @@ def iter_track_pol_combinations(
         Polarization channels to iterate over.
     track_var : str, default="track"
         Name of the track variable/coordinate in the dataset.
-    lia_var : str, default="lia"
-        Name of the local incidence angle variable.
-    lia_dim : str, default="static_track"
-        Dimension name used to index the LIA by track.
-    include_static : bool, default=True
+    include_weights : bool, default=True
         Whether to include local incidence angle and local resolution in output.
-        If False, yields None for LIA and ANF.
+        If False, yields None for weights.
     skip_missing : bool, default=True
         If True, skip polarizations not present in dataset.
         If False, raise KeyError for missing polarizations.
@@ -48,9 +44,9 @@ def iter_track_pol_combinations(
         Polarization string (e.g., "VV", "VH").
     da : xr.DataArray
         Data for this track/polarization combination, dims=(time, y, x).
-    lia : xr.DataArray or None
-        Local incidence angle for this track, dims=(y, x).
-        None if include_lia=False or if lia_var not in dataset.
+    weights : xr.DataArray or None
+        weights for this track
+        None if include_weights=False or if lia_var not in dataset.
 
     Examples
     --------
@@ -74,20 +70,12 @@ def iter_track_pol_combinations(
 
     for track in tracks:
         # Get LIA for this track if requested
-        lia = None
-        anf = None
-        if include_static:
-            if lia_var in ds:
-                try:
-                    lia = ds[lia_var].sel({static_dim: track})
-                except (KeyError, ValueError) as e:
-                    log.warning(f"Could not select LIA for track {track}: {e}")
-                try:
-                    anf = ds[anf_var].sel({static_dim: track})
-                except (KeyError, ValueError) as e:
-                    log.warning(f"Could not select LIA for track {track}: {e}")
-            else:
-                log.debug(f"LIA variable '{lia_var}' not found in dataset")
+        weights = None
+        if include_weights:
+            try:
+                weights = ds[weight_names].sel({'static_track': track})
+            except (KeyError, ValueError) as e:
+                log.warning(f"Could not select LIA for track {track}: {e}")
 
         for pol in polarizations:
             # Check if polarization exists
@@ -107,4 +95,4 @@ def iter_track_pol_combinations(
                     raise ValueError(f"Empty data for track {track}, pol {pol}")
                 continue
 
-            yield track, pol, da, lia, anf
+            yield track, pol, da, weights

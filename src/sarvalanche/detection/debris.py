@@ -6,7 +6,7 @@ import xarray as xr
 
 # io functions
 from sarvalanche.utils.projections import resolution_to_degrees
-from sarvalanche.utils.validation import validate_crs, validate_path, validate_canonical
+from sarvalanche.utils.validation import validate_crs, validate_path, validate_canonical, validate_start_end, validate_date
 from sarvalanche.io.dataset import assemble_dataset, load_netcdf_to_dataset
 from sarvalanche.io.export import export_netcdf
 
@@ -14,12 +14,9 @@ from sarvalanche.io.export import export_netcdf
 from sarvalanche.detection.backscatter_detections import calculate_empirical_backscatter_probability
 # from sarvalanche.detection.backscatter_detections import calculate_ecdf_backscatter_probability
 
-# probability functions
-from sarvalanche.probabilities.static import probability_slope_angle
-from sarvalanche.probabilities.static import probability_cell_counts
-from sarvalanche.probabilities.static import probability_forest_cover
-from sarvalanche.probabilities.static import probability_swe_accumulation
-from sarvalanche.probabilities.combine import combine_probabilities
+# weights
+from sarvalanche.weights.combinations import get_static_weights
+from sarvalanche.probabilities.combine import combine_probabilities, get_static_probabilities
 
 # dense CRF processing
 from sarvalanche.detection import dense_crf
@@ -54,6 +51,10 @@ def detect_avalanche_debris(
 
     log.info(f"Arguments: {locals()}")
 
+    start_date, stop_date = validate_start_end(start_date, stop_date)
+    avalanche_date = validate_date(avalanche_date)
+
+
     crs = validate_crs(crs)
     # this should be generalized to any CRS and renamed
     resolution_deg = resolution_to_degrees(resolution, crs)
@@ -84,6 +85,9 @@ def detect_avalanche_debris(
 
     validate_canonical(ds)
 
+    # next generate spatial domain weights
+    ds = get_static_weights(ds, avalanche_date)
+
     # one method based on weighted backscatter changes
     log.info('Calculating emperical backscatter change probability')
     ds['p_emperical'] = calculate_empirical_backscatter_probability(ds, avalanche_date, smooth_method=None)
@@ -92,21 +96,7 @@ def detect_avalanche_debris(
     # log.info('Calculating distribution based probability')
     # ds['p_ecdf'] = calculate_ecdf_backscatter_probability(ds, avalanche_date)
 
-    # --- 6. Compute forest cover probability ---
-    log.info('Calculating forest cover probability')
-    ds['p_fcf'] = probability_forest_cover(ds['fcf'], midpoint=50, slope = 0.1)
-
-    # --- 7. Compute avalanche model cell counts probability ---
-    log.info('Calculating runout cell based probability')
-    ds['p_runout'] = probability_cell_counts(ds['cell_counts'])
-
-    # --- 8. Compute slope angle probability of debris ---
-    log.info('Calculating slope-angle based probability')
-    ds['p_slope'] = probability_slope_angle(ds['slope'])
-
-    # --- 9. Compute swe accumulation probability of debris ---
-    log.info('Calculating swe accumulation based probability')
-    ds['p_swe'] = probability_swe_accumulation(ds['swe'], avalanche_date, midpoint = 0.0, slope = 100.0)
+    ds = get_static_probabilities(ds, avalanche_date)
 
     factors = [ds['p_emperical'], ds['p_fcf'], ds['p_runout'], ds['p_slope'], ds['p_swe']]
     weights = [1.0, 1.0, 1.0, 1.0, 1.0]
@@ -126,8 +116,7 @@ def detect_avalanche_debris(
     p_total = p_total.where(~p_total.isnull(), 0)
 
     ds['p_pixelwise'] = p_total
-    for d in ['p_slope', 'p_runout', 'p_fcf', 'p_emperical', 'p_pixelwise', 'p_swe']:
-        ds[d].attrs = {'source': 'sarvalance', 'units': 'percentage', 'product': 'pixel_wise_probability'}
+    ds['p_pixelwise'].attrs = {'source': 'sarvalance', 'units': 'percentage', 'product': 'pixel_wise_probability'}
 
     log.info('Running dense CRF processing')
     # generate U from p_total for dense CRF

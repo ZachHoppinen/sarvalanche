@@ -1,11 +1,12 @@
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 def get_temporal_weights(
     times_1: xr.DataArray,
     times_2: xr.DataArray | np.datetime64 | pd.Timestamp,
-    tau_days: float,
+    tau_days: float = 24,
 ) -> xr.DataArray:
     """
     Calculate temporal weights based on time separation.

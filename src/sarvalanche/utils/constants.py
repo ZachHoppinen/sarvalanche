@@ -18,3 +18,5 @@ RTC_FILETYPES = ['VV', 'VH', 'mask']
 pols = ["VV", "VH"]
 
 eps = 1e-6
+
+temporal_only_vars = ('p_temporal')

@@ -4,7 +4,7 @@ import pandas as pd
 import xarray as xr
 import logging
 
-from sarvalanche.utils.validation import validate_dates, validate_aoi, validate_crs, validate_resolution, validate_canonical
+from sarvalanche.utils.validation import validate_start_end, validate_aoi, validate_crs, validate_resolution, validate_canonical
 
 from sarvalanche.utils.grid import make_reference_grid
 
@@ -49,7 +49,7 @@ def assemble_dataset(
         Contains SAR backscatter, incidence angle, DEM, slope, forest cover, etc.
     """
     # --- 1. Validate inputs ---
-    start_date, stop_date = validate_dates(start_date, stop_date)
+    start_date, stop_date = validate_start_end(start_date, stop_date)
     aoi = validate_aoi(aoi)
     crs = validate_crs(crs)
     resolution = validate_resolution(resolution, crs=crs)

@@ -15,21 +15,19 @@ from sarvalanche.features.backscatter_change import backscatter_changes_crossing
 from sarvalanche.weights.temporal import get_temporal_weights
 from sarvalanche.weights.local_resolution import get_local_resolution_weights
 from sarvalanche.weights.combinations import combine_weights, weighted_mean
-from sarvalanche.probabilities.static import probability_backscatter_change
+from sarvalanche.probabilities.features import probability_backscatter_change
 
 log = logging.getLogger(__name__)
 
 
 def compute_track_empirical_probability(
     da: xr.DataArray,
-    local_resolution: xr.DataArray,
+    weights: xr.Dataset,
     avalanche_date,
     *,
     smooth_method: str | None = None,
     tau_days: float = 24.0,
     pair_dim: str = "pair",
-    threshold_db: float = 0.1,
-    logistic_slope: float = 3.0,
 ) -> xr.DataArray:
     """
     Compute avalanche probability from backscatter change magnitude.
@@ -68,31 +66,13 @@ def compute_track_empirical_probability(
     # --- Backscatter changes crossing avalanche date ---
     diffs = backscatter_changes_crossing_date(da, avalanche_date, pair_dim=pair_dim)
 
-    # --- Temporal weighting ---
-    w_temporal = get_temporal_weights(diffs['t_start'], diffs['t_end'], tau_days=tau_days)
-
-    # --- Stability weighting ---
-    # with warnings.catch_warnings():
-    #     warnings.filterwarnings('ignore', 'Degrees of freedom <= 0 for slice', RuntimeWarning)
-    #     warnings.filterwarnings('ignore', 'invalid value encountered in subtract', RuntimeWarning)
-    #     warnings.filterwarnings('ignore', 'divide by zero encountered in log10', RuntimeWarning)
-    #     sigma_db = da.sel(time=slice(None, avalanche_date)).std(dim='time')
-    # w_stability = pixel_sigma_weighting(sigma_db)
-
-    # --- Incidence angle weighting ---
-    w_resolution = get_local_resolution_weights(local_resolution)
-
     # --- Combine weights ---
-    w_total = combine_weights(w_temporal, w_resolution)
+    w_total = combine_weights(weights['w_temporal'], weights['w_resolution'])
 
     # --- Weighted mean change ---
     mean_change = weighted_mean(diffs, w_total, dim=pair_dim)
 
     # --- Convert to probability ---
-    p = probability_backscatter_change(
-        mean_change,
-        threshold_db=threshold_db,
-        logistic_slope=logistic_slope
-    )
+    p = probability_backscatter_change(mean_change)
 
     return p
