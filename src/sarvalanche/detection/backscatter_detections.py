@@ -32,7 +32,9 @@ def calculate_empirical_backscatter_probability(ds, avalanche_date, **kwargs):
     probs = xr.concat(results, dim="track_pol")
     orbit_pol_weights = xr.concat(orbit_pol_weights, dim = 'track_pol')
 
+    # change to combine_probabilities_with_agreement for boosting for agreement.
     p_empirical = combine_probabilities(probs, weights = orbit_pol_weights, dim='track_pol', method='log_odds', alpha=None)
+
     p_empirical.attrs = {'source': 'sarvalanche', 'units': 'percentage', 'product': 'probability'}
     return p_empirical
 

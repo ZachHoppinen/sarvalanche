@@ -1,4 +1,4 @@
-
+#TODO - move main logic to detection_pipeline.py and make this just take a dataset...
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -68,7 +68,8 @@ def detect_avalanche_debris(
     log.info(f'Initial validation checks passed')
 
     if not ds_nc.exists() or ds_nc.stat().st_size == 0 or overwrite:
-        log.info('Netcdf not found. Assembling dataset now.')
+        if not ds_nc.exists() or ds_nc.stat().st_size == 0: log.info('Netcdf not found. Assembling dataset now.')
+        if overwrite == True: log.info('Netcdf found. Overwriting dataset.')
         ds = assemble_dataset(
             aoi=aoi,
             start_date=start_date,

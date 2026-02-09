@@ -40,6 +40,59 @@ def get_static_probabilities(ds, avalanche_date):
 
     return ds
 
+def combine_probabilities_with_agreement(
+    probs: xr.DataArray,
+    weights: xr.DataArray | None = None,
+    dim: str = 'track_pol',
+    min_prob_threshold: float = 0.1,
+    agreement_strength: float = 0.8,
+) -> xr.DataArray:
+    """
+    Combine probabilities with agreement boosting.
+
+    When multiple independent orbits agree, boost confidence toward 1.
+
+    Parameters
+    ----------
+    agreement_strength : float
+        How much to boost for full agreement (default: 0.8)
+        0.0 = no boost (just mean)
+        1.0 = full agreement pushes to p=1.0
+    """
+
+    # Filter out low probabilities
+    probs_filtered = probs.where(probs >= min_prob_threshold)
+
+    # Count valid sources
+    n_valid = probs_filtered.notnull().sum(dim=dim)
+    n_total = probs.sizes[dim]
+
+    # Agreement: fraction showing detection
+    agreement = n_valid / n_total
+
+    # Weighted mean of valid probabilities
+    if weights is not None:
+        weights_valid = weights.where(probs >= min_prob_threshold)
+        weights_normalized = weights_valid / weights_valid.sum(dim=dim)
+        p_mean = (probs_filtered * weights_normalized).sum(dim=dim)
+    else:
+        p_mean = probs_filtered.mean(dim=dim)
+
+    # Agreement boost formula:
+    # p_final = p_mean + (1 - p_mean) * agreement^2 * agreement_strength
+    #
+    # Interpretation:
+    # - Base probability: p_mean
+    # - Boost amount: (1 - p_mean) * agreement^2 * strength
+    # - agreement^2 gives quadratic boost (0.33→0.11, 0.67→0.45, 1.0→1.0)
+
+    boost = (1 - p_mean) * (agreement ** 2) * agreement_strength
+    p_final = p_mean + boost
+
+    # Handle no valid sources
+    p_final = xr.where(n_valid > 0, p_final, 0.0)
+
+    return p_final.clip(0, 1)
 
 def combine_probabilities(
     probs: xr.DataArray,
