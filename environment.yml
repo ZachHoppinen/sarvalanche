@@ -13,3 +13,5 @@ dependencies:
   - pytest-mock
   - dask
   - earthaccess
+  - pygeohydro
+  - bottleneck

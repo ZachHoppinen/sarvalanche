@@ -21,4 +21,4 @@ eps = 1e-6
 
 temporal_only_vars = ('w_temporal')
 
-rtc_pol_confidences = {'VV': 1.0, 'VH': 0.7}
+rtc_pol_weights = {'VV': 1.0, 'VH': 0.7}

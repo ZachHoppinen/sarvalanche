@@ -81,12 +81,15 @@ def assemble_dataset(
     lia_fps, anf_fps = [f for f in static_fps if str(f).endswith('local_incidence_angle.tif')], [f for f in static_fps if str(f).endswith('rtc_anf_gamma0_to_beta0.tif')]
     lia = load_reproject_concat_rtc(lia_fps, ref_grid, "lia")
     anf = load_reproject_concat_rtc(anf_fps, ref_grid, "anf")
+    # we need to fill nans in anf and lia for weighting...
 
     def combine_track(track_da):
         return track_da.max(dim="time")  # or mean if desired
 
     ds["lia"] = np.deg2rad(lia.groupby("track").apply(combine_track)).rename({"track": "static_track"})
     ds["anf"] = anf.groupby("track").apply(combine_track).rename({"track": "static_track"})
+
+    ds['anf'] = ds['anf'].ffill('x').bfill('x').ffill('y').bfill('y')
 
     ds['lia'].attrs = {'units': 'radians', 'source': SENTINEL1, 'product': RTC_STATIC}
     ds['anf'].attrs = {'units': 'meters', 'source': SENTINEL1, 'product': RTC_STATIC}

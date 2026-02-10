@@ -3,8 +3,6 @@ import xarray as xr
 from typing import Iterator, Sequence, Any, Iterable
 import logging
 
-from sarvalanche.weights.combinations import get_static_weights
-
 log = logging.getLogger(__name__)
 
 def iter_track_pol_combinations(

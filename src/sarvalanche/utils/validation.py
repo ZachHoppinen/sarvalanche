@@ -2,7 +2,7 @@
 
 import warnings
 from datetime import date
-from typing import Union, Tuple, Optional
+from typing import Union, Tuple, Optional, Literal
 from pathlib import Path
 from datetime import datetime
 
@@ -640,3 +640,162 @@ def validate_path(
         path.mkdir(parents=True, exist_ok=True)
 
     return path
+
+def validate_weights_sum_to_one(
+    data: xr.DataArray,
+    dim: Union[Literal["time", "static_orbit"], str] = None,
+    tolerance: float = 1e-6,
+    raise_on_fail: bool = True
+) -> bool:
+    """
+    Validate that weights sum to 1.0 along the specified dimension.
+
+    Args:
+        data: xarray DataArray containing weights
+        dim: Dimension name to sum along. If None, will look for 'time' or 'static_orbit'
+        tolerance: Numerical tolerance for sum check (default: 1e-6)
+        raise_on_fail: If True, raise ValueError on validation failure.
+                       If False, return False and issue warning.
+
+    Returns:
+        True if validation passes, False otherwise (only if raise_on_fail=False)
+
+    Raises:
+        ValueError: If validation fails and raise_on_fail=True
+        KeyError: If specified dimension not found in data
+
+    Examples:
+        >>> weights = xr.DataArray([0.3, 0.7], dims=['time'])
+        >>> validate_weights_sum_to_one(weights, dim='time')
+        True
+
+        >>> weights = xr.DataArray([0.3, 0.6], dims=['time'])
+        >>> validate_weights_sum_to_one(weights, dim='time')
+        ValueError: Weights do not sum to 1.0...
+    """
+
+    # Auto-detect dimension if not specified
+    if dim is None:
+        if 'time' in data.dims:
+            dim = 'time'
+        elif 'static_orbit' in data.dims:
+            dim = 'static_orbit'
+        else:
+            available_dims = list(data.dims)
+            raise KeyError(
+                f"Neither 'time' nor 'static_orbit' found in data dimensions. "
+                f"Available dimensions: {available_dims}. "
+                f"Please specify dim parameter explicitly."
+            )
+
+    # Check dimension exists
+    if dim not in data.dims:
+        available_dims = list(data.dims)
+        raise KeyError(
+            f"Dimension '{dim}' not found in data. "
+            f"Available dimensions: {available_dims}"
+        )
+
+    # Check for NaN or infinite values
+    if not np.all(np.isfinite(data.values)):
+        error_msg = f"Weights contain NaN or infinite values in dimension '{dim}'"
+        if raise_on_fail:
+            raise ValueError(error_msg)
+        else:
+            import warnings
+            warnings.warn(error_msg)
+            return False
+
+    # Check for negative values
+    if np.any(data.values < 0):
+        error_msg = f"Weights contain negative values in dimension '{dim}'"
+        if raise_on_fail:
+            raise ValueError(error_msg)
+        else:
+            import warnings
+            warnings.warn(error_msg)
+            return False
+
+    # Sum along the specified dimension
+    weight_sums = data.sum(dim=dim)
+
+    # Check if all sums are close to 1.0
+    is_valid = np.allclose(weight_sums.values, 1.0, atol=tolerance, rtol = 0)
+
+    if not is_valid:
+        # Get detailed error information
+        sum_values = weight_sums.values
+
+        # Handle scalar case
+        if sum_values.shape == ():
+            sum_values = np.array([sum_values])
+
+        min_sum = np.min(sum_values)
+        max_sum = np.max(sum_values)
+        mean_sum = np.mean(sum_values)
+
+        # Get coordinate info for problematic locations
+        deviations = np.abs(weight_sums.values - 1.0)
+        worst_locations = []
+
+        if deviations.shape == ():
+            # Scalar case
+            worst_locations.append(f"sum={weight_sums.values:.6f}")
+        else:
+            # Multi-dimensional case - find worst offenders
+            flat_deviations = deviations.flatten()
+            worst_indices = np.argsort(flat_deviations)[-min(3, len(flat_deviations)):]
+
+            for idx in worst_indices:
+                # Convert flat index to multi-dim coordinates
+                multi_idx = np.unravel_index(idx, deviations.shape)
+                coord_dict = {
+                    d: weight_sums[d].values[multi_idx[i]]
+                    for i, d in enumerate(weight_sums.dims)
+                }
+                sum_val = weight_sums.values[multi_idx]
+                coord_str = ", ".join([f"{k}={v}" for k, v in coord_dict.items()])
+                worst_locations.append(f"({coord_str}): sum={sum_val:.6f}")
+
+        error_msg = (
+            f"Weights do not sum to 1.0 along dimension '{dim}'.\n"
+            f"  Expected: 1.0 (tolerance: ±{tolerance})\n"
+            f"  Found: min={min_sum:.6f}, max={max_sum:.6f}, mean={mean_sum:.6f}\n"
+            f"  Worst cases:\n    " + "\n    ".join(worst_locations)
+        )
+
+        if raise_on_fail:
+            raise ValueError(error_msg)
+        else:
+            import warnings
+            warnings.warn(error_msg)
+            return False
+
+    return True
+
+def validate_time_weights(data: xr.DataArray, tolerance: float = 1e-6) -> bool:
+    """
+    Convenience function to validate weights along 'time' dimension.
+    
+    Args:
+        data: xarray DataArray containing weights
+        tolerance: Numerical tolerance for sum check
+        
+    Returns:
+        True if validation passes
+    """
+    return validate_weights_sum_to_one(data, dim='time', tolerance=tolerance)
+
+
+def validate_orbit_weights(data: xr.DataArray, tolerance: float = 1e-6) -> bool:
+    """
+    Convenience function to validate weights along 'static_orbit' dimension.
+    
+    Args:
+        data: xarray DataArray containing weights
+        tolerance: Numerical tolerance for sum check
+        
+    Returns:
+        True if validation passes
+    """
+    return validate_weights_sum_to_one(data, dim='static_orbit', tolerance=tolerance)

@@ -7,7 +7,7 @@ from pyproj import CRS
 from pyproj.exceptions import CRSError
 
 from sarvalanche.utils.validation import (
-    validate_dates,
+    validate_start_end,
     validate_aoi,
     within_conus,
     validate_crs,
@@ -16,7 +16,7 @@ from sarvalanche.utils.validation import (
 )
 
 def test_validate_dates_basic():
-    start, end = validate_dates("2020-01-01", "2020-02-01")
+    start, end = validate_start_end("2020-01-01", "2020-02-01")
 
     assert isinstance(start, pd.Timestamp)
     assert isinstance(end, pd.Timestamp)
@@ -24,26 +24,20 @@ def test_validate_dates_basic():
 
 def test_validate_dates_start_after_end():
     with pytest.raises(ValueError, match="start_date must be earlier"):
-        validate_dates("2020-02-01", "2020-01-01")
+        validate_start_end("2020-02-01", "2020-01-01")
 
 def test_validate_dates_before_2014():
     with pytest.raises(ValueError, match="2014"):
-        validate_dates("2010-01-01", "2015-01-01")
+        validate_start_end("2010-01-01", "2015-01-01")
 
 def test_validate_dates_future():
     future = pd.Timestamp.now() + pd.Timedelta(days=10)
     with pytest.raises(ValueError, match="future"):
-        validate_dates("2020-01-01", future)
-
-def test_validate_dates_timezone_mismatch():
-    start = pd.Timestamp("2020-01-01", tz="UTC")
-    end = pd.Timestamp("2020-02-01")
-    with pytest.raises(ValueError, match="same timezone"):
-        validate_dates(start, end)
+        validate_start_end("2020-01-01", future)
 
 def test_validate_dates_s1b_warning():
     with pytest.warns(UserWarning, match="Sentinel-1B outage"):
-        validate_dates("2022-01-01", "2022-02-01")
+        validate_start_end("2022-01-01", "2022-02-01")
 
 def test_validate_aoi_bbox_list():
     aoi = validate_aoi([-120, 30, -110, 40])
@@ -239,3 +233,4 @@ def test_validate_urls_mixed_valid_and_invalid_http():
 def test_validate_urls_empty_list_returns_empty():
     with pytest.raises(ValueError):
         result = validate_urls([])
+

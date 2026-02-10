@@ -3,58 +3,98 @@ from functools import reduce
 import operator
 import logging
 
+import numpy as np
 import xarray as xr
-
-# probability functions
-from sarvalanche.weights.local_resolution import get_local_resolution_weights
-from sarvalanche.weights.temporal import get_temporal_weights
 
 log = logging.getLogger(__name__)
 
-def get_static_weights(ds, avalanche_date):
 
-    ds['w_resolution'] = get_local_resolution_weights(ds['anf'])
-    ds['w_temporal'] = get_temporal_weights(ds['time'], avalanche_date)
-
-    for d in ['w_resolution', 'w_temporal']:
-        ds[d].attrs = {'source': 'sarvalance', 'units': '1', 'product': 'weight'}
-
-    return ds
-
-
-def combine_weights(*weights: xr.DataArray | float) -> xr.DataArray:
+def combine_weights(
+    *weights: xr.DataArray | float,
+    dim: str | None = None,
+) -> xr.DataArray:
     """
-    Combine multiple weights through multiplication.
+    Combine multiple weights through multiplication and normalize to sum to 1.0.
 
     Parameters
     ----------
     *weights : xr.DataArray or float
         Any number of weight arrays or scalar values to combine.
         All DataArrays must be broadcastable to the same shape.
+    dim : str, optional
+        Dimension to normalize along. If None, will auto-detect 'time',
+        'static_orbit', or 'track_pol'. If still ambiguous, normalizes over all dims.
+    validate : bool
+        If True, validate that final weights sum to 1.0 along dim
 
     Returns
     -------
     xr.DataArray
-        Combined weight as the product of all inputs, with NaN filled as 0.
+        Combined weight normalized to sum to 1.0 along the specified dimension.
 
     Examples
     --------
-    >>> w_total = combine_weights(w_temporal, w_stability, w_incidence)
-    >>> w_total = combine_weights(w_sigma, w_lia, q_pol, names=['sigma', 'lia', 'pol'])
+    >>> # Combine temporal and resolution weights
+    >>> w_total = combine_weights(w_temporal, w_resolution, dim='time')
+    >>> # w_total.sum(dim='time') == 1.0
+
+    >>> # Combine resolution and polarization weights
+    >>> w_total = combine_weights(w_resolution, w_polarization, dim='track_pol')
+    >>> # w_total.sum(dim='track_pol') == 1.0
+
+    >>> # With scalar multiplier (e.g., confidence factor)
+    >>> w_total = combine_weights(w_temporal, 0.8, dim='time')
     """
     if len(weights) == 0:
         raise ValueError("Must provide at least one weight")
 
     # Multiply all weights together
-    w_total = reduce(operator.mul, weights)
+    w_combined = reduce(operator.mul, weights)
 
-    # Ensure result is DataArray and handle NaN
-    if not isinstance(w_total, xr.DataArray):
-        w_total = xr.DataArray(w_total, name="w_total")
+    # Ensure result is DataArray
+    if not isinstance(w_combined, xr.DataArray):
+        w_combined = xr.DataArray(w_combined, name="w_total")
+
+    # Handle NaN values (treat as zero weight)
+    w_combined = w_combined.fillna(0)
+
+    # Auto-detect dimension if not specified
+    if dim is None and isinstance(w_combined, xr.DataArray):
+        if 'time' in w_combined.dims:
+            dim = 'time'
+        elif 'static_orbit' in w_combined.dims:
+            dim = 'static_orbit'
+        elif 'track_pol' in w_combined.dims:
+            dim = 'track_pol'
+        elif len(w_combined.dims) == 1:
+            dim = w_combined.dims[0]
+        # If still None, will normalize over all dimensions (scalar output)
+
+    # Normalize to sum to 1.0
+    if dim is not None:
+        sum_weights = w_combined.sum(dim=dim)
+
+        # Handle case where sum is zero
+        if np.any(sum_weights == 0):
+            raise ValueError(
+                f"Cannot normalize: sum of weights is zero along dimension '{dim}'. "
+                f"Check for all-NaN or all-zero weights."
+            )
+
+        w_normalized = w_combined / sum_weights
     else:
-        w_total = w_total.fillna(0).rename("w_total")
+        # Normalize over all dimensions
+        sum_weights = w_combined.sum()
+        if sum_weights == 0:
+            raise ValueError(
+                "Cannot normalize: sum of all weights is zero. "
+                "Check for all-NaN or all-zero weights."
+            )
+        w_normalized = w_combined / sum_weights
 
-    return w_total
+    w_normalized = w_normalized.rename("w_total")
+
+    return w_normalized
 
 def weighted_mean(
     da: xr.DataArray,

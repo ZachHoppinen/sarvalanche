@@ -15,7 +15,7 @@ from sarvalanche.detection.backscatter_detections import calculate_empirical_bac
 # from sarvalanche.detection.backscatter_detections import calculate_ecdf_backscatter_probability
 
 # weights
-from sarvalanche.weights.combinations import get_static_weights
+from sarvalanche.weights.get_weights import get_static_weights
 from sarvalanche.probabilities.combine import combine_probabilities, get_static_probabilities
 
 # dense CRF processing
@@ -47,7 +47,8 @@ def detect_avalanche_debris(
         stop_date,
         avalanche_date,
         cache_dir,
-        overwrite = False):
+        overwrite = False,
+        job_name = None):
 
     log.info(f"Arguments: {locals()}")
 
@@ -63,7 +64,11 @@ def detect_avalanche_debris(
     cache_dir.joinpath('opera').mkdir(exist_ok = True)
     cache_dir.joinpath('arrays').mkdir(exist_ok = True)
 
-    ds_nc = cache_dir.joinpath(f'{avalanche_date}.nc')
+    if job_name is None:
+        ds_nc = cache_dir.joinpath(f'{avalanche_date.strftime('%Y%m%d')}.nc')
+    else:
+        job_name = str(job_name)
+        ds_nc = cache_dir.joinpath(f'{job_name}.nc')
 
     log.info(f'Initial validation checks passed')
 
