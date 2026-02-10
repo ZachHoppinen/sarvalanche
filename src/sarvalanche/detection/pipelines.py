@@ -12,6 +12,7 @@ from sarvalanche.weights.combinations import combine_weights
 from sarvalanche.weights.polarizations import get_polarization_weights
 
 from sarvalanche.utils.validation import validate_weights_sum_to_one
+
 # Empirical pipeline - FULL SCENE
 def calculate_empirical_backscatter_probability(
     ds: xr.Dataset,
@@ -72,6 +73,7 @@ def calculate_empirical_backscatter_probability(
     for track, pol, da, weights in iter_track_pol_combinations(ds, include_weights=False):
         p = compute_track_empirical_probability(da, avalanche_date, **kwargs)
         ds[f'p_{track}_{pol}_empirical'] = p
+        ds[f'p_{track}_{pol}_empirical'].attrs = {'units': '1', 'source': 'sarvalanche', 'product': 'orbit_emperical_probabilities'}
         results.append(p)
         resolution_weights.append(ds['w_resolution'].sel(static_track=track))
         pol_weights.append(get_polarization_weights(pol))
