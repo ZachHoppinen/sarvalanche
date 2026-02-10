@@ -11,7 +11,7 @@ from sarvalanche.io.dataset import assemble_dataset, load_netcdf_to_dataset
 from sarvalanche.io.export import export_netcdf
 
 # backscatter based probabilities
-from sarvalanche.detection.pipelines import calculate_empirical_backscatter_probability
+from sarvalanche.detection.backscatter_change import calculate_empirical_backscatter_probability
 # from sarvalanche.detection.backscatter_detections import calculate_ecdf_backscatter_probability
 
 # weights
@@ -20,8 +20,8 @@ from sarvalanche.probabilities.combine import combine_probabilities
 from sarvalanche.probabilities.pipelines import get_static_probabilities
 
 # dense CRF processing
-from sarvalanche.detection import dense_crf
-from sarvalanche.detection.dense_crf import run_spatial_crf_densecrf_py38
+from sarvalanche.probabilities import dense_crf
+from sarvalanche.probabilities.dense_crf import run_spatial_crf_densecrf_py38
 
 # filtering functions
 from sarvalanche.masks.size_filter import filter_pixel_groups
