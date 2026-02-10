@@ -15,8 +15,9 @@ from sarvalanche.detection.backscatter_detections import calculate_empirical_bac
 # from sarvalanche.detection.backscatter_detections import calculate_ecdf_backscatter_probability
 
 # weights
-from sarvalanche.weights.get_weights import get_static_weights
-from sarvalanche.probabilities.combine import combine_probabilities, get_static_probabilities
+from sarvalanche.weights.pipelines import get_static_weights
+from sarvalanche.probabilities.combine import combine_probabilities
+from sarvalanche.probabilities.pipelines import get_static_probabilities
 
 # dense CRF processing
 from sarvalanche.detection import dense_crf
