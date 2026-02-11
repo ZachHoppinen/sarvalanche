@@ -149,3 +149,4 @@ data/*
 
 .vscode/
 local/
+*cache/
