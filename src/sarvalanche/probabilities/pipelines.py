@@ -45,10 +45,11 @@ def get_static_probabilities(ds, avalanche_date):
 
     return ds
 
-def group_classes(ds, cache_dir):
+def group_classes(pixel_wise_probability, cache_dir, smooth = True, threshold = 0.5):
     log.info('Running dense CRF processing')
     # generate U from p_total for dense CRF
-    arr = spatial_smooth(ds['p_pixelwise'])
+    arr = pixel_wise_probability
+    if smooth == True: arr = spatial_smooth(arr)
     arr = np.asarray(arr, dtype='<f4')
 
     P_debris = np.clip(arr, eps, 1 - eps)
@@ -73,13 +74,15 @@ def group_classes(ds, cache_dir):
     log.debug(f'Dense CRF script found at {dense_crf_script_path}')
     run_spatial_crf_densecrf_py38(U_fp, Q_fp, dense_crf_script_path, iters = 5)
 
-    p_crf = np.load(Q_fp)[1]
-    mask = p_crf > 0.5
-    mask_da = xr.zeros_like(ds['dem'])
+    p_dcrf = np.load(Q_fp)[1]
+    mask = p_dcrf > threshold
+    mask_da = xr.zeros_like(pixel_wise_probability)
     mask_da.data = mask
 
     detections, n_labels = filter_pixel_groups(mask_da, min_size=8, return_nlabels=True)
     log.info(f'N labels found in detections: {n_labels}')
+
     detections.attrs = {'source': 'sarvalance', 'units': 'binary', 'product': 'detection_map'}
+
 
     return detections

@@ -16,9 +16,9 @@ def linear_to_dB(da: xr.DataArray):
 
         # Replace -inf and invalid values with NaN
         da_db = xr.where(np.isfinite(da_db), da_db, np.nan)
-    da.attrs['units'] = 'db'
+    da_db.attrs['units'] = 'db'
 
-    return da
+    return da_db
 
 def dB_to_linear(da: xr.DataArray):
     if da.attrs['units'].lower() == 'linear':

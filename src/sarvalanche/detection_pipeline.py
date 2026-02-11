@@ -121,7 +121,7 @@ def run_detection(
     ds['p_pixelwise'] = get_pixelwise_probabilities(ds, avalanche_date)
 
     # increase likelyhood of neighboring classes
-    ds['detections'] = group_classes(ds, cache_dir)
+    ds['detections'] = group_classes(ds['p_pixelwise'], cache_dir)
 
     # -------------------------------------------------------------
     # 8️⃣ Generate output products

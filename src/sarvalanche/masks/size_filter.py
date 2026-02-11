@@ -54,7 +54,7 @@ def filter_pixel_groups(
     )
 
     if return_nlabels:
-        n_labels_post = np.sum(~remove_labels) - 1  # subtract 1 for background
+        n_labels_post = np.sum(~remove_labels)
         return out, n_labels_post
 
     return out

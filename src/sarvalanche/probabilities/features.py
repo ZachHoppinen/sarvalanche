@@ -7,8 +7,8 @@ from scipy.special import expit
 
 def probability_backscatter_change(
     diff: xr.DataArray,
-    logistic_slope: float = 5.0,
-    threshold_db: float = 0.75
+    logistic_slope: float = 3.0,
+    threshold_db: float = 1.5
 ) -> xr.DataArray:
     """Convert backscatter change to probability using stable sigmoid."""
 
@@ -56,7 +56,7 @@ def probability_forest_cover(fcf: xr.DataArray,
     return prob_da
 
 def probability_cell_counts(cell_counts: xr.DataArray,
-                            midpoint: float = 200,
+                            midpoint: float = 20,
                             slope: float = 7,
                             use_log: bool = True) -> xr.DataArray:
     """
@@ -99,7 +99,7 @@ def probability_cell_counts(cell_counts: xr.DataArray,
     return prob_da
 
 def probability_slope_angle(slope_angle: xr.DataArray,
-                             midpoint: float = 25.0,
+                             midpoint: float = 35.0,
                              slope: float = 1.0) -> xr.DataArray:
     """
     Convert slope in degrees (0-90) into probability of avalanche debris.
@@ -135,7 +135,7 @@ def probability_swe_accumulation(
     avalanche_date: pd.Timestamp,
     accumulation_days: int = 7,
     midpoint: float = 0.0,
-    slope: float = 100.0
+    slope: float = 50.0
 ) -> xr.DataArray:
     """
     Calculate probability of avalanche based on SWE accumulation over recent days.

@@ -52,6 +52,7 @@ def compute_track_empirical_probability(
     """
     # --- Convert to dB and smooth ---
     if check_db_linear(da) != 'dB':
+        log.info('Converting to dB')
         da = linear_to_dB(da)
 
     if smooth_method is not None:

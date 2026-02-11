@@ -71,7 +71,9 @@ def calculate_empirical_backscatter_probability(
     track_pol_labels = []
 
     for track, pol, da, weights in iter_track_pol_combinations(ds, include_weights=False):
+
         p = compute_track_empirical_probability(da, avalanche_date, **kwargs)
+
         ds[f'p_{track}_{pol}_empirical'] = p
         ds[f'p_{track}_{pol}_empirical'].attrs = {'units': '1', 'source': 'sarvalanche', 'product': 'orbit_empirical_probabilities'}
         results.append(p)

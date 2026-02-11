@@ -33,8 +33,8 @@ def check_db_linear(da: xr.DataArray):
         if 'linear' in units or units == '1' or units == '':
             return 'linear'
 
-    vmin = float(da.min())
-    vmax = float(da.max())
+    vmin = float(da.quantile(0.01))
+    vmax = float(da.quantile(0.99))
 
     # If we see negative values, almost certainly dB
     if vmin < 0:
