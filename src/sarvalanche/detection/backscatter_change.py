@@ -7,7 +7,7 @@ from sarvalanche.utils.generators import iter_track_pol_combinations
 # from sarvalanche.probabilities.ecdf import compute_track_ecdf_probability
 from sarvalanche.probabilities.empirical import compute_track_empirical_probability
 
-from sarvalanche.probabilities.combine import combine_probabilities_with_agreement
+from sarvalanche.probabilities.combine import combine_probabilities
 from sarvalanche.weights.combinations import combine_weights
 from sarvalanche.weights.polarizations import get_polarization_weights
 
@@ -17,9 +17,9 @@ from sarvalanche.utils.validation import validate_weights_sum_to_one
 def calculate_empirical_backscatter_probability(
     ds: xr.Dataset,
     avalanche_date: np.datetime64,
-    use_agreement_boosting: bool = True,
-    agreement_strength: float = 0.8,
-    min_prob_threshold: float = 0.1,
+    use_agreement_boosting: bool,
+    agreement_strength: float,
+    min_prob_threshold: float,
     validate_weights: bool = True,
     **kwargs
 ) -> xr.DataArray:
@@ -73,7 +73,7 @@ def calculate_empirical_backscatter_probability(
     for track, pol, da, weights in iter_track_pol_combinations(ds, include_weights=False):
         p = compute_track_empirical_probability(da, avalanche_date, **kwargs)
         ds[f'p_{track}_{pol}_empirical'] = p
-        ds[f'p_{track}_{pol}_empirical'].attrs = {'units': '1', 'source': 'sarvalanche', 'product': 'orbit_emperical_probabilities'}
+        ds[f'p_{track}_{pol}_empirical'].attrs = {'units': '1', 'source': 'sarvalanche', 'product': 'orbit_empirical_probabilities'}
         results.append(p)
         resolution_weights.append(ds['w_resolution'].sel(static_track=track))
         pol_weights.append(get_polarization_weights(pol))
@@ -102,18 +102,16 @@ def calculate_empirical_backscatter_probability(
         validate_weights_sum_to_one(combined_weights, dim='track_pol')
 
     # Combine probabilities
-    if use_agreement_boosting:
-        # Use agreement boosting - boosts confidence when multiple sources agree
-        p_empirical = combine_probabilities_with_agreement(
-            probs,
-            weights=combined_weights,
-            dim='track_pol',
-            min_prob_threshold=min_prob_threshold,
-            agreement_strength=agreement_strength,
-        )
-    else:
-        # Simple weighted average
-        p_empirical = (probs * combined_weights).sum(dim='track_pol')
+    # Use agreement boosting - boosts confidence when multiple sources agree
+    p_empirical = combine_probabilities(
+        probs,
+        weights=combined_weights,
+        method = 'log_odds',
+        dim='track_pol',
+        min_prob_threshold=min_prob_threshold,
+        agreement_strength=agreement_strength,
+        agreement_boosting = use_agreement_boosting
+    )
 
     p_empirical.attrs = {
         'source': 'sarvalanche',

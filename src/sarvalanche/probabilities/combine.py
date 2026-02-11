@@ -9,183 +9,107 @@ from typing import Literal
 
 log = logging.getLogger(__name__)
 
-def combine_probabilities_with_agreement(
+def combine_probabilities(
     probs: xr.DataArray,
     weights: xr.DataArray | None = None,
     dim: str = 'track_pol',
-    min_prob_threshold: float = 0.25,
+    method: str = 'weighted_mean',
+    agreement_boosting: bool = False,
+    min_prob_threshold: float = 0.1,
     agreement_strength: float = 0.8,
 ) -> xr.DataArray:
     """
-    Combine probabilities with agreement boosting.
-
-    When multiple independent orbits agree, boost confidence toward 1.
-
-    Parameters
-    ----------
-    agreement_strength : float
-        How much to boost for full agreement (default: 0.8)
-        0.0 = no boost (just mean)
-        1.0 = full agreement pushes to p=1.0
-    """
-
-    # Filter out low probabilities
-    probs_filtered = probs.where(probs >= min_prob_threshold)
-
-    # Count valid sources
-    n_valid = probs_filtered.notnull().sum(dim=dim)
-    n_total = probs.sizes[dim]
-
-    # Agreement: fraction showing detection
-    agreement = n_valid / n_total
-
-    # Weighted mean of valid probabilities
-    if weights is not None:
-        weights_valid = weights.where(probs >= min_prob_threshold)
-        weights_normalized = weights_valid / weights_valid.sum(dim=dim)
-        p_mean = (probs_filtered * weights_normalized).sum(dim=dim)
-    else:
-        p_mean = probs_filtered.mean(dim=dim)
-
-    # Agreement boost formula:
-    # p_final = p_mean + (1 - p_mean) * agreement^2 * agreement_strength
-    #
-    # Interpretation:
-    # - Base probability: p_mean
-    # - Boost amount: (1 - p_mean) * agreement^2 * strength
-    # - agreement^2 gives quadratic boost (0.33→0.11, 0.67→0.45, 1.0→1.0)
-
-    boost = (1 - p_mean) * (agreement ** 2) * agreement_strength
-    p_final = p_mean + boost
-
-    # Handle no valid sources
-    p_final = xr.where(n_valid > 0, p_final, 0.0)
-
-    return p_final.clip(0, 1)
-
-def combine_probabilities(
-    probs: xr.DataArray,
-    dim: str,
-    method: Literal['log_odds', 'stouffer', 'mean', 'product', 'max'] = 'log_odds',
-    alpha: float | None = None,
-    weights: xr.DataArray | None = None,
-    eps: float = 1e-6,
-) -> xr.DataArray:
-    """
-    Combine probabilities along a dimension.
+    Combine probabilities using weighted mean or log-odds.
 
     Parameters
     ----------
     probs : xr.DataArray
-        Probability array to combine.
-        Example dims: (source, y, x) or (track_pol, y, x)
-    dim : str
-        Dimension along which to combine (e.g., 'source', 'track_pol')
-    method : str, default='log_odds'
-        Combination method:
-        - 'log_odds': Sum log-odds (Bayesian fusion)
-        - 'stouffer': Weighted z-score combination
-        - 'mean': Simple average
-        - 'product': Geometric mean
-        - 'max': Maximum probability
-    alpha : float, optional
-        Shrinkage toward 0.5 for log_odds (0=uniform, 1=full confidence)
+        Probabilities to combine (values between 0 and 1)
     weights : xr.DataArray, optional
-        Weights along the combination dimension.
-        Must have `dim` in its dimensions and be broadcastable to probs.
-        If None, uses equal weighting.
-    eps : float, default=1e-6
-        Numerical stability constant
+        Weights for each probability (should sum to 1.0 along dim)
+    dim : str
+        Dimension to combine along
+    method : str
+        'weighted_mean' or 'log_odds'
+    agreement_boosting : bool
+        If True, boost probability when multiple sources agree
+    min_prob_threshold : float
+        Minimum probability to consider as "detection" for agreement boosting
+    agreement_strength : float
+        Boost strength for agreement (0.0-1.0)
 
     Returns
     -------
     xr.DataArray
-        Combined probability with `dim` removed.
+        Combined probability (0-1)
 
     Examples
     --------
-    >>> # Combine list of results
-    >>> results = [p1, p2, p3]  # Each (y, x)
-    >>> probs = xr.concat(results, dim='source')  # (source, y, x)
-    >>> p_combined = combine_temporal_probabilities(probs, dim='source')
+    >>> # Simple weighted average
+    >>> p = combine_probabilities(probs, weights, method='weighted_mean')
 
-    >>> # Combine with weights
-    >>> weights = xr.DataArray([1.0, 0.8, 0.9], dims='source')
-    >>> p_combined = combine_temporal_probabilities(probs, dim='source', weights=weights)
+    >>> # Log-odds combination (better for extreme probabilities)
+    >>> p = combine_probabilities(probs, weights, method='log_odds')
+
+    >>> # With agreement boosting
+    >>> p = combine_probabilities(
+    ...     probs, weights,
+    ...     agreement_boosting=True,
+    ...     agreement_strength=0.8
+    ... )
     """
-    if dim not in probs.dims:
-        raise ValueError(f"Dimension '{dim}' not found in probs. Available: {probs.dims}")
 
-    log.info(f"Combining {probs.sizes[dim]} probabilities along '{dim}' using '{method}' method")
+    # Validate method
+    if method not in ['weighted_mean', 'log_odds']:
+        raise ValueError(
+            f"Unknown method: {method}. Use 'weighted_mean' or 'log_odds'."
+        )
 
-    # Apply shrinkage if requested
-    if method == 'log_odds' and alpha is not None:
-        log.debug(f"Applying shrinkage with alpha={alpha}")
-        probs = 0.5 + alpha * (probs - 0.5)
-
-    # Set up weights
+    # Set default weights if not provided
     if weights is None:
-        weights = xr.ones_like(probs.coords[dim], dtype=float)
-    else:
-        if dim not in weights.dims:
-            raise ValueError(f"Weights must have dimension '{dim}'")
+        n = probs.sizes[dim]
+        weights = xr.ones_like(probs) / n
 
-    # Combine
-    if method == 'log_odds':
-        combined = _combine_log_odds(probs, weights, dim, eps)
-    elif method == 'stouffer':
-        combined = _combine_stouffer(probs, weights, dim, eps)
-    elif method == 'mean':
-        combined = (probs * weights).sum(dim) / weights.sum(dim)
-    elif method == 'product':
-        log_vals = np.log(probs.clip(eps, 1 - eps))
-        weighted_log = (log_vals * weights).sum(dim) / weights.sum(dim)
-        combined = np.exp(weighted_log)
-    elif method == 'max':
-        combined = probs.max(dim)
-    else:
-        raise ValueError(f"Unknown method: {method}")
+    # Combine probabilities based on method
+    if method == 'weighted_mean':
+        # Standard weighted average
+        p_combined = (probs * weights).sum(dim=dim)
 
-    return combined.clip(0, 1)
+    elif method == 'log_odds':
+        # Log-odds space combination
+        # log_odds = log(p / (1-p))
+        # Better for probabilities near 0 or 1
 
+        epsilon = 1e-10  # Avoid division by zero
+        probs_safe = probs.clip(epsilon, 1 - epsilon)
 
-def _combine_log_odds(
-    probs: xr.DataArray,
-    weights: xr.DataArray,
-    dim: str,
-    eps: float
-) -> xr.DataArray:
-    """Combine using weighted log-odds."""
-    probs_clip = probs.clip(eps, 1 - eps)
-    log_odds = np.log(probs_clip / (1 - probs_clip))
-    log_odds_sum = (log_odds * weights).sum(dim, skipna=True)
-    return 1.0 / (1.0 + np.exp(-log_odds_sum))
+        # Convert to log-odds
+        log_odds = np.log(probs_safe / (1 - probs_safe))
 
+        # Weighted average in log-odds space
+        log_odds_combined = (log_odds * weights).sum(dim=dim)
 
-def _combine_stouffer(
-    probs: xr.DataArray,
-    weights: xr.DataArray,
-    dim: str,
-    eps: float
-) -> xr.DataArray:
-    """Combine using weighted Stouffer's method."""
-    from scipy.stats import norm
+        # Convert back to probability
+        # p = 1 / (1 + exp(-log_odds))
+        p_combined = 1 / (1 + np.exp(-log_odds_combined))
 
-    probs_clip = probs.clip(eps, 1 - eps)
-    z_scores = xr.apply_ufunc(
-        norm.ppf,
-        probs_clip,
-        dask="parallelized",
-        output_dtypes=[float]
-    )
+    # Apply agreement boosting if enabled
+    if agreement_boosting:
+        # Filter out low probabilities
+        probs_filtered = probs.where(probs >= min_prob_threshold)
 
-    num = (z_scores * weights).sum(dim, skipna=True)
-    den = np.sqrt((weights ** 2).sum(dim))
-    z_combined = num / (den + eps)
+        # Count valid sources (how many detect something)
+        n_valid = probs_filtered.notnull().sum(dim=dim)
+        n_total = probs.sizes[dim]
 
-    return xr.apply_ufunc(
-        norm.cdf,
-        z_combined,
-        dask="parallelized",
-        output_dtypes=[float]
-    )
+        # Agreement: fraction showing detection
+        agreement = n_valid / n_total
+
+        # Boost formula: p_final = p_mean + (1 - p_mean) × agreement² × strength
+        boost = (1 - p_combined) * (agreement ** 2) * agreement_strength
+        p_combined = p_combined + boost
+
+        # Handle no valid sources
+        p_combined = xr.where(n_valid > 0, p_combined, 0.0)
+
+    return p_combined.clip(0, 1)

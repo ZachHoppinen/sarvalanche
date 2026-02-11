@@ -14,8 +14,8 @@ if __name__ == '__main__':
     stop_date = "2020-04-30"
     avalanche_date = '2020-03-31'
 
-    from sarvalanche.detection.debris import detect_avalanche_debris
+    from sarvalanche.detection_pipeline import run_detection
 
     cache_dir = Path('/Users/zmhoppinen/Documents/sarvalanche/local/data')
-    # ds = assemble_dataset(aoi, start_date, stop_date, crs, resolution, cache_dir)
-    ds = detect_avalanche_debris(aoi, crs, 20, start_date, stop_date, avalanche_date, cache_dir=cache_dir, overwrite=True)
+    resolution = resolution_to_degrees(20, validate_crs(crs))
+    ds = run_detection(aoi, crs, resolution, start_date, stop_date, avalanche_date, cache_dir=cache_dir, overwrite=True)

@@ -8,7 +8,7 @@ from scipy.special import expit
 def probability_backscatter_change(
     diff: xr.DataArray,
     logistic_slope: float = 5.0,
-    threshold_db: float = 0.5
+    threshold_db: float = 0.75
 ) -> xr.DataArray:
     """Convert backscatter change to probability using stable sigmoid."""
 

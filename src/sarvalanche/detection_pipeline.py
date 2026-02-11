@@ -1,36 +1,32 @@
 
-import os
-from typing import Union
 from pathlib import Path
-from datetime import datetime
-
-from tqdm import tqdm
-import py3dep
-import xarray as xr
-from shapely.geometry import Polygon
-import asf_search as asf
-from asf_search.constants import RTC, RTC_STATIC
-
-from sarvalanche.utils.validation import (
-    validate_aoi,
-    validate_dates,
-    validate_crs,
-    validate_resolution,
-    validate_canonical
-)
-
-from sarvalanche.utils.grid import make_reference_grid
-
-from sarvalanche.io.find_data import find_asf_urls
-from sarvalanche.io.load_data import load_reproject_concat_rtc
-from sarvalanche.utils import combine_close_images
-
-from sarvalanche.utils import download_urls_parallel
-from sarvalanche.utils.constants import RTC_FILETYPES
-from sarvalanche.utils import combine_close_images
-
-
 import logging
+import numpy as np
+import pandas as pd
+import xarray as xr
+
+# io functions
+from sarvalanche.utils.projections import resolution_to_degrees
+from sarvalanche.utils.validation import (
+    validate_crs,
+    validate_path,
+    validate_canonical,
+    validate_start_end,
+    validate_date,
+    validate_resolution,
+    validate_aoi)
+from sarvalanche.io.dataset import assemble_dataset, load_netcdf_to_dataset
+from sarvalanche.io.export import export_netcdf
+
+# weights and static probabilities
+from sarvalanche.weights.pipelines import get_static_weights
+from sarvalanche.probabilities.pipelines import get_static_probabilities
+
+# pixelwise terrain, snow, SAR probabilities
+from sarvalanche.detection.pixelwise import get_pixelwise_probabilities
+
+# grouping of probabilities
+from sarvalanche.probabilities.pipelines import group_classes
 
 # Configure logging at the very top of your main script
 logging.basicConfig(
@@ -43,15 +39,15 @@ log = logging.getLogger(__name__)
 
 
 def run_detection(
-    aoi: Polygon,
-    start_date: datetime,
-    stop_date: datetime,
-    *,
-    cache_dir: Path = Path('/Users/zmhoppinen/Documents/sarvalanche/local/data/opera'),
-    masks: dict | None = None,
-    dem: Path | None = None,
-    detection_params: dict | None = None
-) -> xr.Dataset:
+        aoi,
+        crs,
+        resolution,
+        start_date,
+        stop_date,
+        avalanche_date,
+        cache_dir,
+        overwrite = False,
+        job_name = None):
     """
     Run the SARvalanche detection pipeline for a given AOI and date range.
 
@@ -63,8 +59,6 @@ def run_detection(
         Start of acquisition range.
     end_date : str | datetime
         End of acquisition range.
-    sensor : str, optional
-        SAR sensor to use ('Sentinel-1', 'NISAR', or 'auto').
     masks : dict, optional
         Precomputed masks (slope, layover, forest).
     dem : Path, optional
@@ -78,70 +72,67 @@ def run_detection(
         Dataset with dimensions (time, y, x) containing detection masks
         and optionally intermediate features.
     """
-
-    # ------------- Validate user inputs ------------- #
-    # return pandas datetimes
-    start_date, stop_date = validate_dates(start_date, stop_date)
-    # returns shapely polygon
-    aoi = validate_aoi(aoi)
-    # return PyProj CRS
-    crs = validate_crs(crs)
-    # return tuple of (xres, yres)
-    resolution = validate_resolution(resolution, crs = crs)
-    os.environ["HYRIVER_CACHE_NAME"] = cache_dir.joinpath('/cache/aiohttp_cache.sqlite')
-
-
-    # ------------- Reference grid ------------- #
-    # make reference grid for all other data products
-    ref_grid = make_reference_grid(aoi = aoi, crs = crs, resolution = resolution)
-
     log.info(f"Arguments: {locals()}")
 
-        crs = validate_crs(crs)
-        # this should be generalized to any CRS and renamed
-        resolution_deg = resolution_to_degrees(resolution, crs)
+    log.info('Validating arguments')
+    start_date, stop_date = validate_start_end(start_date, stop_date)
+    avalanche_date = validate_date(avalanche_date)
+    crs = validate_crs(crs)
+    resolution = validate_resolution(resolution)
+    aoi = validate_aoi(aoi)
+    cache_dir = validate_path(cache_dir, should_exist=None, make_directory=True)
+    assert overwrite in [True, False]
+    log.info(f'Initial validation checks passed')
 
-        cache_dir = validate_path(cache_dir, make_directory = True)
-        cache_dir.joinpath('opera').mkdir(exist_ok = True)
-        cache_dir.joinpath('arrays').mkdir(exist_ok = True)
+    for sub_directory_name in ['opera', 'arrays']:
+        cache_dir.joinpath(sub_directory_name).mkdir(exist_ok = True)
 
-        ds_nc = cache_dir.joinpath(f'{avalanche_date}.nc')
+    ds_stem = f'{avalanche_date.strftime('%Y-%m-%d')}' if job_name is None else f'{job_name}'
+    ds_nc = cache_dir.joinpath(ds_stem).with_suffix('.nc')
 
-        log.info(f'Initial validation checks passed')
+    log.info(f'Saving results to {ds_nc}')
 
-        if not ds_nc.exists() or ds_nc.stat().st_size == 0 or overwrite:
-            log.info('Netcdf not found. Assembling dataset now.')
-            ds = assemble_dataset(
-                aoi=aoi,
-                start_date=start_date,
-                stop_date=stop_date,
-                resolution=resolution_deg,
-                crs=crs,
-                cache_dir=cache_dir
-            )
-            log.info(f'Saving netcdf to {ds_nc}')
-            export_netcdf(ds, ds_nc)
-        else:
-            log.info(f'Found netcdf at {ds_nc}. Loading...')
-            ds = load_netcdf_to_dataset(ds_nc)
+    if not ds_nc.exists() or ds_nc.stat().st_size == 0 or overwrite:
+        if not ds_nc.exists() or ds_nc.stat().st_size == 0: log.info('Netcdf not found. Assembling dataset now.')
+        elif overwrite == True: log.info('Netcdf found. Overwriting dataset.')
 
-    # -------------------------------------------------------------
-    # 7️⃣ Detect avalanches
-    # -------------------------------------------------------------
-    # debris_mask = detect_avalanches(
-        # masked_backscatter,
-        # masked_coherence,
-        # detection_params=detection_params
-    # )
+        ds = assemble_dataset(
+            aoi=aoi,
+            start_date=start_date,
+            stop_date=stop_date,
+            resolution=resolution,
+            crs=crs,
+            cache_dir=cache_dir)
+        log.info(f'Saving netcdf to {ds_nc}')
+        export_netcdf(ds, ds_nc)
+    else:
+        log.info(f'Found netcdf at {ds_nc}. Loading...')
+        ds = load_netcdf_to_dataset(ds_nc)
+
+    validate_canonical(ds)
+
+    # next generate spatial domain weights
+    ds = get_static_weights(ds, avalanche_date)
+
+    # generate non-SAR probabilities
+    ds = get_static_probabilities(ds, avalanche_date)
+
+    # get pixel-by-pixel probabiliteis based on non-Sar and SAR probalities
+    ds['p_pixelwise'] = get_pixelwise_probabilities(ds, avalanche_date)
+
+    # increase likelyhood of neighboring classes
+    ds['detections'] = group_classes(ds, cache_dir)
 
     # -------------------------------------------------------------
     # 8️⃣ Generate output products
     # -------------------------------------------------------------
-    # ds = generate_output_detections(
-        # debris_mask,
-        # features_dict,
-        # aoi=aoi
-    # )
+    validate_canonical(ds)
+
+    log.info(f'Saving final results to {ds_nc}')
+    export_netcdf(ds, ds_nc, overwrite = True)
+
+    for var in ['detections', 'p_pixelwise', 'p_empirical']:
+        ds[var].astype(float).rio.to_raster(cache_dir.joinpath(f'{var}.tif'))
 
     # -------------------------------------------------------------
     # 9️⃣ Return canonical xarray dataset

@@ -8,7 +8,6 @@ import logging
 
 log = logging.getLogger(__name__)
 
-
 def run_spatial_crf_densecrf_py38(
     U_path,
     Q_path,
