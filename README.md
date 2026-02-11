@@ -573,7 +573,7 @@ SARvalanche relies on several external packages and tools:
   - Removed GUI and PyQt5 dependency
   - Removed file I/O (replaced with xarray interface)
   - Added programmatic API for embedding in detection pipeline
-  - updated release zone split for multiprocessing to better balance process loads
+  - updated release zone split for multiprocessing to use random points instead of spatially based split to better balance process loads
 - Citation:
   > Neuhauser, M., D'Amboise, C., Teich, M., Kofler, A., Huber, A., Fromm, R., and Fischer, J. T.: Flow-Py: routing and stopping of gravitational mass flows, Zenodo [code], https://doi.org/10.5281/zenodo.5027274, 2021
 

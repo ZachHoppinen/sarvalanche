@@ -72,6 +72,7 @@ def run_detection(
         Dataset with dimensions (time, y, x) containing detection masks
         and optionally intermediate features.
     """
+    # TODO add timing for individual steps and full workflwo
     log.info(f"Arguments: {locals()}")
 
     log.info('Validating arguments')
