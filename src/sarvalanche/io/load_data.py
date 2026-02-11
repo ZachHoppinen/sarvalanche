@@ -231,6 +231,304 @@ def get_forest_cover(aoi, aoi_crs, ref_grid = None):
     if ref_grid is not None: fcf = fcf.rio.reproject_match(ref_grid)
     return fcf.assign_attrs(units="percent", source="nlcd", product = "forest_cover")
 
+def get_water_extent(aoi, aoi_crs, ref_grid=None, year=2021):
+    """
+    Get water extent from NLCD land cover classification.
+
+    This identifies permanent water bodies (lakes, rivers, reservoirs)
+    from the NLCD land cover product.
+
+    Parameters
+    ----------
+    aoi : shapely.geometry.Polygon
+        Area of interest polygon.
+    aoi_crs : str or int
+        Coordinate reference system of the AOI (e.g., 'EPSG:4326').
+    ref_grid : xr.DataArray, optional
+        Reference grid to match. If provided, result will be reprojected
+        to match this grid's CRS, resolution, and extent.
+    year : int, optional
+        NLCD year to use. Options: 2001, 2004, 2006, 2008, 2011, 2013,
+        2016, 2019, 2021. Default is 2021.
+
+    Returns
+    -------
+    xr.DataArray
+        Binary mask where 1 = water, 0 = not water.
+
+    Notes
+    -----
+    NLCD water classes:
+    - 11: Open Water
+    - 12: Perennial Ice/Snow (also masked as water for avalanche context)
+
+    For avalanche detection, we typically want to mask out:
+    - Lakes and reservoirs (not avalanche terrain)
+    - Large rivers (not avalanche terrain)
+    """
+    g = gpd.GeoSeries([aoi], crs=aoi_crs)
+
+    # Get land cover classification
+    lc = gh.nlcd_bygeom(geometry=g, years=year)[0][f"cover_{year}"]
+
+    # Create water mask
+    # NLCD class 11 = Open Water
+    # NLCD class 12 = Perennial Ice/Snow (optional - uncomment if needed)
+    water_mask = (lc == 11)  # | (lc == 12)
+
+    # Convert boolean to int (0 or 1)
+    water_extent = water_mask.astype(int)
+
+    if ref_grid is not None:
+        water_extent = water_extent.rio.reproject_match(ref_grid)
+
+    return water_extent.assign_attrs(
+        units="binary",
+        source="nlcd",
+        product="water_extent",
+        description="1=water, 0=land",
+        nlcd_classes="11 (Open Water)"
+    )
+
+
+def get_urban_extent(aoi, aoi_crs, ref_grid=None, year=2021):
+    """
+    Get urban/developed extent from NLCD land cover classification.
+
+    This identifies developed areas (cities, towns, roads) which are
+    unlikely to have avalanches.
+
+    Parameters
+    ----------
+    aoi : shapely.geometry.Polygon
+        Area of interest polygon.
+    aoi_crs : str or int
+        Coordinate reference system of the AOI (e.g., 'EPSG:4326').
+    ref_grid : xr.DataArray, optional
+        Reference grid to match. If provided, result will be reprojected
+        to match this grid's CRS, resolution, and extent.
+    year : int, optional
+        NLCD year to use. Options: 2001, 2004, 2006, 2008, 2011, 2013,
+        2016, 2019, 2021. Default is 2021.
+
+    Returns
+    -------
+    xr.DataArray
+        Binary mask where 1 = urban/developed, 0 = not developed.
+
+    Notes
+    -----
+    NLCD developed classes:
+    - 21: Developed, Open Space (< 20% impervious)
+    - 22: Developed, Low Intensity (20-49% impervious)
+    - 23: Developed, Medium Intensity (50-79% impervious)
+    - 24: Developed, High Intensity (80-100% impervious)
+
+    For avalanche detection, developed areas should be masked out as they
+    are not natural avalanche terrain.
+
+    Alternative: You can also use NLCD impervious surface product for a
+    continuous measure of development (0-100% impervious).
+    """
+    g = gpd.GeoSeries([aoi], crs=aoi_crs)
+
+    # Get land cover classification
+    lc = gh.nlcd_bygeom(geometry=g, years=year)[0][f"cover_{year}"]
+
+    # Create urban mask
+    # NLCD classes 21-24 = Developed areas
+    urban_mask = (lc >= 21) & (lc <= 24)
+
+    # Convert boolean to int (0 or 1)
+    urban_extent = urban_mask.astype(int)
+
+    if ref_grid is not None:
+        urban_extent = urban_extent.rio.reproject_match(ref_grid)
+
+    return urban_extent.assign_attrs(
+        units="binary",
+        source="nlcd",
+        product="urban_extent",
+        description="1=developed, 0=undeveloped",
+        nlcd_classes="21-24 (Developed)"
+    )
+
+
+def get_water_extent(aoi, aoi_crs, ref_grid=None, year=2021):
+    """
+    Get water extent from NLCD land cover classification.
+
+    This identifies permanent water bodies (lakes, rivers, reservoirs)
+    from the NLCD land cover product.
+
+    Parameters
+    ----------
+    aoi : shapely.geometry.Polygon
+        Area of interest polygon.
+    aoi_crs : str or int
+        Coordinate reference system of the AOI (e.g., 'EPSG:4326').
+    ref_grid : xr.DataArray, optional
+        Reference grid to match. If provided, result will be reprojected
+        to match this grid's CRS, resolution, and extent.
+    year : int, optional
+        NLCD year to use. Options: 2001, 2004, 2006, 2008, 2011, 2013,
+        2016, 2019, 2021. Default is 2021.
+
+    Returns
+    -------
+    xr.DataArray
+        Binary mask where 1 = water, 0 = not water.
+
+    Notes
+    -----
+    NLCD water classes:
+    - 11: Open Water
+    - 12: Perennial Ice/Snow (also masked as water for avalanche context)
+
+    For avalanche detection, we typically want to mask out:
+    - Lakes and reservoirs (not avalanche terrain)
+    - Large rivers (not avalanche terrain)
+    """
+    g = gpd.GeoSeries([aoi], crs=aoi_crs)
+
+    # Get land cover classification
+    years = {'impervious': [year], 'cover': [year], 'canopy': [year], 'descriptor': [year]}
+    lc = gh.nlcd_bygeom(geometry=g, years=years)[0][f"cover_{year}"]
+
+    # Create water mask
+    # NLCD class 11 = Open Water
+    # NLCD class 12 = Perennial Ice/Snow (optional - uncomment if needed)
+    water_mask = (lc == 11)  # | (lc == 12)
+
+    # Convert boolean to int (0 or 1)
+    water_extent = water_mask.astype(int)
+
+    if ref_grid is not None:
+        water_extent = water_extent.rio.reproject_match(ref_grid)
+
+    return water_extent.assign_attrs(
+        units="binary",
+        source="nlcd",
+        product="water_extent",
+        description="1=water, 0=land",
+        nlcd_classes="11 (Open Water)"
+    )
+
+
+def get_urban_extent(aoi, aoi_crs, ref_grid=None, year=2021):
+    """
+    Get urban/developed extent from NLCD land cover classification.
+
+    This identifies developed areas (cities, towns, roads) which are
+    unlikely to have avalanches.
+
+    Parameters
+    ----------
+    aoi : shapely.geometry.Polygon
+        Area of interest polygon.
+    aoi_crs : str or int
+        Coordinate reference system of the AOI (e.g., 'EPSG:4326').
+    ref_grid : xr.DataArray, optional
+        Reference grid to match. If provided, result will be reprojected
+        to match this grid's CRS, resolution, and extent.
+    year : int, optional
+        NLCD year to use. Options: 2001, 2004, 2006, 2008, 2011, 2013,
+        2016, 2019, 2021. Default is 2021.
+
+    Returns
+    -------
+    xr.DataArray
+        Binary mask where 1 = urban/developed, 0 = not developed.
+
+    Notes
+    -----
+    NLCD developed classes:
+    - 21: Developed, Open Space (< 20% impervious)
+    - 22: Developed, Low Intensity (20-49% impervious)
+    - 23: Developed, Medium Intensity (50-79% impervious)
+    - 24: Developed, High Intensity (80-100% impervious)
+
+    For avalanche detection, developed areas should be masked out as they
+    are not natural avalanche terrain.
+
+    Alternative: You can also use NLCD impervious surface product for a
+    continuous measure of development (0-100% impervious).
+    """
+    g = gpd.GeoSeries([aoi], crs=aoi_crs)
+
+    # Get land cover classification
+    years = {'impervious': [year], 'cover': [year], 'canopy': [year], 'descriptor': [year]}
+    lc = gh.nlcd_bygeom(geometry=g, years=years)[0][f"cover_{year}"]
+
+    # Create urban mask
+    # NLCD classes 21-24 = Developed areas
+    urban_mask = (lc >= 21) & (lc <= 24)
+
+    # Convert boolean to int (0 or 1)
+    urban_extent = urban_mask.astype(int)
+
+    if ref_grid is not None:
+        urban_extent = urban_extent.rio.reproject_match(ref_grid)
+
+    return urban_extent.assign_attrs(
+        units="binary",
+        source="nlcd",
+        product="urban_extent",
+        description="1=developed, 0=undeveloped",
+        nlcd_classes="21-24 (Developed)"
+    )
+
+
+def get_impervious_surface(aoi, aoi_crs, ref_grid=None, year=2021):
+    """
+    Get impervious surface percentage from NLCD.
+
+    This is an alternative to the binary urban mask - it provides a
+    continuous measure of development (0-100% impervious surface).
+
+    Parameters
+    ----------
+    aoi : shapely.geometry.Polygon
+        Area of interest polygon.
+    aoi_crs : str or int
+        Coordinate reference system of the AOI (e.g., 'EPSG:4326').
+    ref_grid : xr.DataArray, optional
+        Reference grid to match. If provided, result will be reprojected
+        to match this grid's CRS, resolution, and extent.
+    year : int, optional
+        NLCD year to use. Default is 2021.
+
+    Returns
+    -------
+    xr.DataArray
+        Impervious surface as percentage (0-100).
+
+    Notes
+    -----
+    Impervious surface indicates developed areas:
+    - 0% = No development (natural)
+    - 1-20% = Low development
+    - 20-50% = Moderate development
+    - 50%+ = High development
+
+    You can threshold this (e.g., > 10%) to create a binary urban mask.
+    """
+    g = gpd.GeoSeries([aoi], crs=aoi_crs)
+
+    # Get impervious surface data
+    years = {'impervious': [year], 'cover': [year], 'canopy': [year], 'descriptor': [year]}
+    imp = gh.nlcd_bygeom(geometry=g, years=years)[0][f"impervious_{year}"]
+
+    if ref_grid is not None:
+        imp = imp.rio.reproject_match(ref_grid)
+
+    return imp.assign_attrs(
+        units="percent",
+        source="nlcd",
+        product="impervious_surface",
+        description="Percent impervious surface (0-100)"
+    )
+
 def open_ucla_snowmodel(fp):
     da = xr.open_dataset(fp)['SWE_Post'].sel(Stats = 2) # SWE data var and median stat is 3rd (2nd with 0 index) (mean is 0)
     da = da.rename({'Longitude': 'x', 'Latitude': 'y', 'Day':'snowmodel_time'}).transpose('snowmodel_time', 'y', 'x')

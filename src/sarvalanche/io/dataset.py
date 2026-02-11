@@ -14,7 +14,14 @@ from sarvalanche.utils.download import download_urls_parallel
 from sarvalanche.utils.constants import RTC_FILETYPES, SENTINEL1
 from asf_search.constants import RTC, RTC_STATIC
 
-from sarvalanche.io.load_data import load_reproject_concat_rtc, get_dem, get_forest_cover, get_slope, get_snowmodel
+from sarvalanche.io.load_data import (
+    load_reproject_concat_rtc,
+    get_dem,
+    get_forest_cover,
+    get_slope,
+    get_urban_extent,
+    get_water_extent,
+    get_snowmodel)
 from sarvalanche.utils.raster_utils import combine_close_images
 
 from sarvalanche.masks.debris_flow_modeling import generate_runcount_alpha_angle
@@ -101,6 +108,10 @@ def assemble_dataset(
     ds["slope"] = get_slope(aoi, crs, ref_grid)
     log.info('Getting fcf')
     ds["fcf"] = get_forest_cover(aoi, crs, ref_grid)
+    log.info('Getting water cover')
+    ds["water_mask"] = get_water_extent(aoi, crs, ref_grid)
+    log.info('Getting urban')
+    ds["urban_mask"] = get_urban_extent(aoi, crs, ref_grid)
 
     # get snowmodel
     swe_urls = find_earthaccess_urls(aoi, start_date, stop_date)

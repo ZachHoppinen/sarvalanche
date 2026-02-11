@@ -45,11 +45,15 @@ def get_pixelwise_probabilities(
     # Empirical is the "likelihood" - did we detect something?
     p_likelihood = ds['p_empirical']
 
-    # Bayesian-style update
-    # If empirical is high, boost. If low, suppress based on prior.
-    p_pixelwise = p_prior * p_likelihood / (
+    # Standard Bayesian update (allows increases and decreases)
+    p_bayesian = p_prior * p_likelihood / (
         p_prior * p_likelihood + (1 - p_prior) * (1 - p_likelihood)
     )
+
+    # Take minimum: this caps the result at the prior probability
+    # If Bayesian update > prior: use prior (don't increase)
+    # If Bayesian update < prior: use Bayesian (allow decrease)
+    p_pixelwise = xr.ufuncs.minimum(p_likelihood, p_bayesian)
 
     p_pixelwise = p_pixelwise.where(~p_pixelwise.isnull(), 0)
 

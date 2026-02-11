@@ -23,6 +23,9 @@ from sarvalanche.detection.pixelwise import get_pixelwise_probabilities
 # grouping of probabilities
 from sarvalanche.probabilities.pipelines import group_classes
 
+# masking
+from sarvalanche.masks.pipelines import apply_exclusion_masks
+
 # timing utilities
 from sarvalanche.utils.timing import PipelineTimer
 
@@ -174,6 +177,11 @@ def run_detection(
 
     # Combine SAR backscatter changes with static probabilities
     ds['p_pixelwise'] = get_pixelwise_probabilities(ds, avalanche_date)
+
+    # Step 6.5: Apply exclusion masks
+    timer.step('6.5_apply_masks')
+    ds = apply_exclusion_masks(ds)
+
 
     # ================================================================
     # Step 7: Group and refine detections
