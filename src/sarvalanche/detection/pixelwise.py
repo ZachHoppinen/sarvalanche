@@ -28,8 +28,8 @@ def get_pixelwise_probabilities(
 
     # one method based on weighted backscatter changes
     log.info('Calculating empirical backscatter change probability')
-    ds['p_empirical'] = calculate_empirical_backscatter_probability(ds, 
-                                                                    avalanche_date, 
+    ds['p_empirical'] = calculate_empirical_backscatter_probability(ds,
+                                                                    avalanche_date,
                                                                     smooth_method=None,
                                                                     use_agreement_boosting=True,
                                                                     agreement_strength=0.8,

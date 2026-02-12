@@ -45,7 +45,7 @@ def get_static_probabilities(ds, avalanche_date):
 
     return ds
 
-def group_classes(pixel_wise_probability, cache_dir, smooth = True, threshold = 0.5):
+def group_classes(pixel_wise_probability, cache_dir, smooth = True):
     log.info('Running dense CRF processing')
     # generate U from p_total for dense CRF
     arr = pixel_wise_probability
@@ -75,7 +75,7 @@ def group_classes(pixel_wise_probability, cache_dir, smooth = True, threshold = 
     run_spatial_crf_densecrf_py38(U_fp, Q_fp, dense_crf_script_path, iters = 5)
 
     p_dcrf = np.load(Q_fp)[1]
-    mask = p_dcrf > threshold
+    mask = p_dcrf > 0.5
     mask_da = xr.zeros_like(pixel_wise_probability)
     mask_da.data = mask
 

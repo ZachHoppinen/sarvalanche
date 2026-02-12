@@ -11,15 +11,15 @@ if __name__ == '__main__':
     crs= 'EPSG:4326'
     resolution = resolution_to_degrees(resolution, validate_crs(crs))
 
-    # start_date = "2020-03-01"
-    # stop_date = "2020-05-01"
-    # avalanche_date = '2020-03-31'
+    start_date = "2020-03-01"
+    stop_date = "2020-05-01"
+    avalanche_date = '2020-03-31'
 
-    start_date = "2020-01-01"
-    stop_date = "2020-03-01"
-    avalanche_date = '2020-01-31'
+    # start_date = "2020-01-01"
+    # stop_date = "2020-03-01"
+    # avalanche_date = '2020-01-31'
 
     from sarvalanche.detection_pipeline import run_detection
 
     cache_dir = Path('/Users/zmhoppinen/Documents/sarvalanche/local/data')
-    ds = run_detection(aoi, crs, resolution, start_date, stop_date, avalanche_date, cache_dir=cache_dir, overwrite=True)
+    ds = run_detection(aoi, crs, resolution, start_date, stop_date, avalanche_date, cache_dir=cache_dir, overwrite=False)
