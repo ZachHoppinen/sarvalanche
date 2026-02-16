@@ -189,6 +189,7 @@ def run_detection(
     timer.step('7_group_detections')
 
     # Increase likelihood of neighboring pixels (spatial smoothing)
+    # rename to dense_crf...
     ds['detections'] = group_classes(ds['p_pixelwise'], cache_dir)
 
     # ================================================================

@@ -72,8 +72,14 @@ def group_classes(pixel_wise_probability, cache_dir, smooth = True):
 
     dense_crf_script_path = Path(dense_crf.__file__)
     log.debug(f'Dense CRF script found at {dense_crf_script_path}')
-    run_spatial_crf_densecrf_py38(U_fp, Q_fp, dense_crf_script_path, iters = 5)
-
+    run_spatial_crf_densecrf_py38(
+        U_fp, Q_fp, dense_crf_script_path,
+        iters = 3,
+        sxy = 2,
+        compat = 1,
+        sdims = (5, 5),
+        schan = (0.1,)
+    )
     p_dcrf = np.load(Q_fp)[1]
     mask = p_dcrf > 0.5
     mask_da = xr.zeros_like(pixel_wise_probability)

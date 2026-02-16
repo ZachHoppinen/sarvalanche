@@ -55,6 +55,10 @@ def get_pixelwise_probabilities(
     # If Bayesian update < prior: use Bayesian (allow decrease)
     p_pixelwise = xr.ufuncs.minimum(p_likelihood, p_bayesian)
 
+    # Hard constraint: if p_runout is 0, force p_pixelwise to 0
+    p_pixelwise = p_pixelwise.where(ds['p_runout'] > 0.01, 0)
+
+
     p_pixelwise = p_pixelwise.where(~p_pixelwise.isnull(), 0)
 
     p_pixelwise.attrs = {'source': 'sarvalance', 'units': 'percentage', 'product': 'pixel_wise_probability'}
