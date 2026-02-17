@@ -9,8 +9,6 @@ def iter_track_pol_combinations(
     ds: xr.Dataset,
     polarizations: Sequence[str] = ("VV", "VH"),
     track_var: str = "track",
-    weight_names: Iterable[str] | None = ["w_temporal", 'w_resolution'],
-    include_weights: bool = False,
     skip_missing: bool = True,
 ) -> Iterator[tuple[Any, str, xr.DataArray, xr.DataArray | None]]:
     """
@@ -42,22 +40,16 @@ def iter_track_pol_combinations(
         Polarization string (e.g., "VV", "VH").
     da : xr.DataArray
         Data for this track/polarization combination, dims=(time, y, x).
-    weights : xr.DataArray or None
-        weights for this track
-        None if include_weights=False or if lia_var not in dataset.
 
     Examples
     --------
-    >>> for track, pol, da, lia in iter_track_pol_combinations(ds):
+    >>> for track, pol, da in iter_track_pol_combinations(ds):
     ...     print(f"Processing {pol} on track {track}")
     ...     da_db = linear_to_dB(da)
 
-    >>> # Skip LIA if not needed
-    >>> for track, pol, da, _ in iter_track_pol_combinations(ds, include_lia=False):
-    ...     process(da)
 
     >>> # Only process VV polarization
-    >>> for track, pol, da, lia in iter_track_pol_combinations(ds, polarizations=["VV"]):
+    >>> for track, pol, da in iter_track_pol_combinations(ds, polarizations=["VV"]):
     ...     ...
     """
     if track_var not in ds.coords and track_var not in ds.data_vars:
@@ -68,12 +60,6 @@ def iter_track_pol_combinations(
 
     for track in tracks:
         # Get LIA for this track if requested
-        weights = None
-        if include_weights:
-            try:
-                weights = ds[weight_names].sel({'static_track': track})
-            except (KeyError, ValueError) as e:
-                log.warning(f"Could not select LIA for track {track}: {e}")
 
         for pol in polarizations:
             # Check if polarization exists
@@ -93,4 +79,4 @@ def iter_track_pol_combinations(
                     raise ValueError(f"Empty data for track {track}, pol {pol}")
                 continue
 
-            yield track, pol, da, weights
+            yield track, pol, da
