@@ -13,6 +13,9 @@ from sarvalanche.utils.validation import (
 from sarvalanche.io.dataset import assemble_dataset, load_netcdf_to_dataset
 from sarvalanche.io.export import export_netcdf
 
+# preprocessing
+from sarvalanche.preprocessing.pipelines import preprocess_rtc
+
 # weights and static probabilities
 from sarvalanche.weights.pipelines import get_static_weights
 from sarvalanche.probabilities.pipelines import get_static_probabilities
@@ -153,6 +156,10 @@ def run_detection(
         ds = load_netcdf_to_dataset(ds_nc)
 
     validate_canonical(ds)
+
+    # 3.5 - Preprocessing
+    # rtc pre-processing is a homomorphic total variation based despeckling on each time step for each pol
+    ds = preprocess_rtc(ds, tv_weight = 0.5)
 
     # ================================================================
     # Step 4: Calculate spatial domain weights

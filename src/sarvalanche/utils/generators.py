@@ -10,7 +10,7 @@ def iter_track_pol_combinations(
     polarizations: Sequence[str] = ("VV", "VH"),
     track_var: str = "track",
     weight_names: Iterable[str] | None = ["w_temporal", 'w_resolution'],
-    include_weights: bool = True,
+    include_weights: bool = False,
     skip_missing: bool = True,
 ) -> Iterator[tuple[Any, str, xr.DataArray, xr.DataArray | None]]:
     """
