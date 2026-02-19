@@ -30,7 +30,7 @@ def export_netcdf(ds, filepath, overwrite = True):
             if coord.dtype.kind in ['U', 'S']:
                 # Store as fixed-length string
                 encoding[coord_name] = {'dtype': f'S{coord.dtype.itemsize}'}
-    
+
     if overwrite:
         if filepath.exists():
             filepath.unlink()

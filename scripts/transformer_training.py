@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from sarvalanche.utils.projections import resolution_to_degrees
 from sarvalanche.utils.validation import validate_crs
 from sarvalanche.io import assemble_dataset
-from sarvalanche.preprocessing.despeckling import denoise_sar_homomorphic
+from sarvalanche.preprocessing.pipelines import preprocess_rtc
 from sarvalanche.preprocessing.radiometric import linear_to_dB
 from sarvalanche.ml.SARTimeSeriesDataset import SARTimeSeriesDataset
 from sarvalanche.ml.SARTransformer import SARTransformer
@@ -142,8 +142,9 @@ if __name__ == '__main__':
                         sar_only=True,
                         )
 
+                    ds = preprocess_rtc(ds, tv_weight=TV_WEIGHT)
                     for pol in ['VV', 'VH']:
-                        ds[pol] = linear_to_dB(denoise_sar_homomorphic(ds[pol], tv_weight=TV_WEIGHT))
+                        ds[pol] = linear_to_dB(ds[pol])
 
                     export_netcdf(ds[['VV', 'VH']], cache_file)
                     print(f"  Saved to {cache_file.name}")
