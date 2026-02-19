@@ -150,9 +150,12 @@ if __name__ == '__main__':
 
                 tracks = np.unique(ds.track.values)
                 print(f"  Found {len(tracks)} tracks: {tracks}")
-                existing_tracks = list(SCENE_CACHE_DIR.glob(f"{zone_key}__track*__{season_key}.nc"))
 
-                if len(existing_tracks) == len(tracks):
+                existing_tracks = list(SCENE_CACHE_DIR.glob(f"{zone_key}__track*__{season_key}.nc"))
+                valid_tracks = [t for t in tracks  if len(ds.sel(time=ds.track == t).time) >= 3]
+
+                if len(existing_tracks) == len(valid_tracks):
+                    del ds
                     print(f"  Found all {len(existing_tracks)} cached tracks, skipping assembly")
                     for f in existing_tracks:
                         if season_key == TEST_SEASON:
@@ -203,20 +206,20 @@ if __name__ == '__main__':
     assert len(val_paths)   > 0, "No val scenes loaded"
 
     # --- DATASETS ---
-    train_dataset = SARTimeSeriesDataset(train_paths, min_seq_len=2, max_seq_len=10, patch_size=16)
-    val_dataset   = SARTimeSeriesDataset(val_paths,   min_seq_len=2, max_seq_len=10, patch_size=16)
-    test_dataset  = SARTimeSeriesDataset(test_paths,  min_seq_len=2, max_seq_len=10, patch_size=16)
+    train_dataset = SARTimeSeriesDataset(train_paths, min_seq_len=5, max_seq_len=10, patch_size=16, stride=32)
+    val_dataset   = SARTimeSeriesDataset(val_paths,   min_seq_len=5, max_seq_len=10, patch_size=16, stride=32)
+    test_dataset  = SARTimeSeriesDataset(test_paths,  min_seq_len=5, max_seq_len=10, patch_size=16, stride=32)
 
     print(f"\nDataset sizes — Train: {len(train_dataset)} | Val: {len(val_dataset)} | Test: {len(test_dataset)}")
 
     # --- DATALOADERS ---
     train_loader = DataLoader(
-        train_dataset, batch_size=32, shuffle=True,
+        train_dataset, batch_size=256, shuffle=True,
         num_workers=8, pin_memory=True,
         collate_fn=collate_variable_length, persistent_workers=True
     )
     val_loader = DataLoader(
-        val_dataset, batch_size=32, shuffle=False,
+        val_dataset, batch_size=256, shuffle=False,
         num_workers=4, pin_memory=True,
         collate_fn=collate_variable_length, persistent_workers=True
     )
@@ -228,9 +231,9 @@ if __name__ == '__main__':
     model     = SARTransformer(img_size=16, patch_size=8, in_chans=2)
     model     = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5, verbose=True
-    )
+    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    #     optimizer, mode='min', factor=0.5, patience=5, verbose=True
+    # )
 
     # --- CHECKPOINT ---
     start_epoch   = 0
@@ -284,7 +287,14 @@ if __name__ == '__main__':
                 val_loss      += nll_loss(mu, sigma, target_batch).item()
 
         avg_val_loss = val_loss / len(val_loader)
-        scheduler.step(avg_val_loss)
+        # scheduler.step(avg_val_loss)
+
+        if epoch == 25:
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = 1e-5
+            print('LR decayed to 1e-5')
+
+
 
         print(f'\nEpoch {epoch} — train: {avg_train_loss:.4f} | val: {avg_val_loss:.4f}')
 

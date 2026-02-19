@@ -10,17 +10,18 @@ class SARTimeSeriesDataset(Dataset):
     Dataset for self-supervised SAR time series learning.
     Accepts either xr.DataArray objects (in-memory) or Path objects (lazy disk reads).
     """
-    def __init__(self, sar_timeseries, min_seq_len=2, max_seq_len=10, patch_size=16):
+    def __init__(self, sar_timeseries, min_seq_len=2, max_seq_len=10, patch_size=16, stride=None):
         self.min_seq_len = min_seq_len
         self.max_seq_len = max_seq_len
         self.patch_size  = patch_size
+        self.stride      = stride if stride is not None else patch_size  # default: non-overlapping
 
         # Normalise input to a list
         if isinstance(sar_timeseries, (xr.DataArray, Path)):
             sar_timeseries = [sar_timeseries]
         self.scenes = sar_timeseries  # list of DataArray or Path, can be mixed
 
-        # Build patch index — open paths just long enough to read shape
+        # Build patch index
         self.valid_patches = []
         for scene_idx, scene in enumerate(self.scenes):
             T, H, W = self._get_shape(scene)
@@ -29,15 +30,12 @@ class SARTimeSeriesDataset(Dataset):
                 print(f"  Skipping scene {scene_idx}: only {T} timesteps")
                 continue
 
-            n_patches_h = H // patch_size
-            n_patches_w = W // patch_size
-
-            for i in range(n_patches_h):
-                for j in range(n_patches_w):
+            for y in range(0, H - patch_size + 1, self.stride):
+                for x in range(0, W - patch_size + 1, self.stride):
                     self.valid_patches.append({
                         'scene_idx': scene_idx,
-                        'patch_i':   i,
-                        'patch_j':   j,
+                        'patch_y':   y,   # now absolute pixel coords, not patch index
+                        'patch_x':   x,
                     })
 
     def _get_shape(self, scene):
@@ -80,19 +78,19 @@ class SARTimeSeriesDataset(Dataset):
         t_start = np.random.randint(0, max_start + 1)
         t_end   = t_start + T_baseline
 
-        i, j, ps = patch_info['patch_i'], patch_info['patch_j'], self.patch_size
-        y_start, x_start = i * ps, j * ps
+        y_start = patch_info['patch_y']
+        x_start = patch_info['patch_x']
 
         baseline = scene.isel(
             time=slice(t_start, t_end),
-            y=slice(y_start, y_start + ps),
-            x=slice(x_start, x_start + ps)
+            y=slice(y_start, y_start + self.patch_size),
+            x=slice(x_start, x_start + self.patch_size)
         ).values
 
         target = scene.isel(
             time=t_end,
-            y=slice(y_start, y_start + ps),
-            x=slice(x_start, x_start + ps)
+            y=slice(y_start, y_start + self.patch_size),
+            x=slice(x_start, x_start + self.patch_size)
         ).values
 
         # Ensure channel dim exists for single-pol case
