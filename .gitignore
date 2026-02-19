@@ -151,3 +151,6 @@ data/*
 local/
 *cache/
 $*
+
+# ML weights
+**/ml/weights/

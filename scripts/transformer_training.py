@@ -23,6 +23,7 @@ from sarvalanche.ml.losses import nll_loss
 from sarvalanche.ml.inference import predict_with_sweeping
 from sarvalanche.io.export import export_netcdf
 from sarvalanche.io.dataset import load_netcdf_to_dataset
+from sarvalanche.ml.export_weights import export_weights
 
 import threading, time
 
@@ -213,7 +214,7 @@ if __name__ == '__main__':
                     if season_key == TEST_SEASON:
                         test_paths.append(cache_file_track)
                     elif zone_key in VAL_ZONES:
-                        val_paths.append(f)
+                        val_paths.append(cache_file_track)
                     else:
                         train_paths.append(cache_file_track)
 
@@ -394,7 +395,22 @@ if __name__ == '__main__':
             'img_size': 16, 'patch_size': 8, 'in_chans': 2,
             'embed_dim': 256, 'depth': 4, 'num_heads': 4,
         },
-        'zones':   list(zones.keys()),  # fixed: was ZONES (undefined)
+        'zones':   list(zones.keys()),
         'seasons': SEASONS,
     }, 'sar_transformer_final.pth')
+
+    # --- EXPORT WEIGHTS ---
+    for ckpt_path, label in [
+        (Path(CHECKPOINT_PATH),          'sar_transformer_best'),
+        (Path('sar_transformer_final.pth'), 'sar_transformer_final'),
+    ]:
+        if ckpt_path.exists():
+            export_weights(
+                checkpoint_path=ckpt_path,
+                model_name=label,
+                train_samples=len(train_dataset),
+                test_samples=len(test_dataset),
+                notes=f"Zones: {list(zones.keys())} | Seasons: {SEASONS} | TV weight: {TV_WEIGHT}",
+            )
+
     print('Training complete.')

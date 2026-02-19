@@ -6,7 +6,7 @@ import logging
 
 from sarvalanche.utils.validation import validate_start_end, validate_aoi, validate_crs, validate_resolution, validate_canonical
 
-from sarvalanche.utils.grid import make_reference_grid
+from sarvalanche.utils.grid import make_reference_grid, make_opera_reference_grid
 
 from sarvalanche.io.find_data import find_asf_urls, find_earthaccess_urls
 from sarvalanche.utils.download import download_urls_parallel
@@ -65,6 +65,8 @@ def assemble_dataset(
     resolution = validate_resolution(resolution, crs=crs)
 
     # --- 2. Create reference grid ---
+    # TODO convert to opera grid for less reprojecting...
+    # ref_grid = make_opera_reference_grid(aoi=aoi, crs=crs)  # would remove resolution. Force to 30 meters...
     ref_grid = make_reference_grid(aoi=aoi, crs=crs, resolution=resolution)
 
     # --- 3. Find and download ASF RTC data ---
@@ -129,7 +131,7 @@ def assemble_dataset(
 
     ds['time'] = pd.to_datetime(ds['time']).tz_localize(None)
 
-    validate_canonical(ds, require_time= None)
+    validate_canonical(ds, require_time = None)
 
     return ds
 

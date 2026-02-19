@@ -1,4 +1,3 @@
-import asf_search as asf
 REQUIRED_ATTRS = {
     "source",
     "product",
@@ -22,3 +21,5 @@ eps = 1e-6
 temporal_only_vars = ('w_temporal')
 
 rtc_pol_weights = {'VV': 1.0, 'VH': 0.7}
+
+OPERA_RESOLUTION = 30.0

@@ -6,7 +6,7 @@ from rasterio.warp import calculate_default_transform, reproject, Resampling
 def reproject_align(
     src: xr.DataArray,
     target: xr.DataArray,
-    resampling: str = "nearest"
+    resampling: str = "bilinear"
 ) -> xr.DataArray:
     """
     Reproject and align a DataArray to match the grid and CRS of a target DataArray.
