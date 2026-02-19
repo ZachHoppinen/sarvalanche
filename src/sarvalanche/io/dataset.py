@@ -35,6 +35,7 @@ def assemble_dataset(
     crs=None,
     resolution=None,
     cache_dir=Path("/tmp/sarvalanche_cache"),
+    add_flowpy = True,
     chunks = {
     'time': 5,      # 5 time steps at once
     'x': 256,       # 256x256 spatial tiles
@@ -118,7 +119,7 @@ def assemble_dataset(
     swe_fps = download_urls_parallel(swe_urls, cache_dir.joinpath('snowmodel'), description='Downloading UCLA Snowmodel')
     ds['swe'] = get_snowmodel(swe_fps, start_date, stop_date, ref_grid)
 
-    ds = generate_runcount_alpha_angle(ds)
+    if add_flowpy: ds = generate_runcount_alpha_angle(ds)
 
     ds['time'] = pd.to_datetime(ds['time']).tz_localize(None)
 
