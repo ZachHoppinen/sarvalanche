@@ -13,7 +13,11 @@ from concurrent.futures import ThreadPoolExecutor
 from tqdm.auto import tqdm
 import geopandas as gpd
 
-from sarvalanche.io.find_data import find_earthaccess_urls
+import warnings
+from rasterio.errors import NotGeoreferencedWarning
+# silence NotGeoreferencedWarning: Dataset has no geotransform, gcps, or rpcs. The identity matrix will be returned.
+warnings.filterwarnings('ignore', category=NotGeoreferencedWarning)
+
 
 ALLOWED_EXTENSIONS = (".tif", ".tiff")
 

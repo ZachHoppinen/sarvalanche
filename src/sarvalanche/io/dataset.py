@@ -37,6 +37,7 @@ def assemble_dataset(
     cache_dir=Path("/tmp/sarvalanche_cache"),
     add_flowpy = True,
     sar_only = False,
+    # TODO implement dask/chunking...
     chunks = {
     'time': 5,      # 5 time steps at once
     'x': 256,       # 256x256 spatial tiles
