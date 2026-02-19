@@ -1,48 +1,34 @@
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 import numpy as np
 import xarray as xr
+from pathlib import Path
+
 
 class SARTimeSeriesDataset(Dataset):
     """
     Dataset for self-supervised SAR time series learning.
-
-    Creates random sequences of T baseline images + 1 target image.
+    Accepts either xr.DataArray objects (in-memory) or Path objects (lazy disk reads).
     """
     def __init__(self, sar_timeseries, min_seq_len=2, max_seq_len=10, patch_size=16):
-        """
-        Parameters
-        ----------
-        sar_timeseries : xr.DataArray or list of xr.DataArray
-            SAR backscatter with dimensions (time, polarization, y, x) or (time, y, x)
-            If list, will sample from multiple scenes
-        min_seq_len : int
-            Minimum baseline sequence length (default: 2)
-        max_seq_len : int
-            Maximum baseline sequence length (default: 10)
-        patch_size : int
-            Size of spatial patches to extract (default: 16)
-        """
         self.min_seq_len = min_seq_len
         self.max_seq_len = max_seq_len
-        self.patch_size = patch_size
+        self.patch_size  = patch_size
 
-        # Handle single DataArray or list
-        if isinstance(sar_timeseries, xr.DataArray):
-            self.scenes = [sar_timeseries]
-        else:
-            self.scenes = sar_timeseries
+        # Normalise input to a list
+        if isinstance(sar_timeseries, (xr.DataArray, Path)):
+            sar_timeseries = [sar_timeseries]
+        self.scenes = sar_timeseries  # list of DataArray or Path, can be mixed
 
-        # Pre-compute valid patches for each scene
+        # Build patch index — open paths just long enough to read shape
         self.valid_patches = []
         for scene_idx, scene in enumerate(self.scenes):
-            T, H, W = scene.shape[0], scene.shape[-2], scene.shape[-1]
+            T, H, W = self._get_shape(scene)
 
-            # Need at least min_seq_len + 1 timesteps
             if T < min_seq_len + 1:
+                print(f"  Skipping scene {scene_idx}: only {T} timesteps")
                 continue
 
-            # Calculate number of patches
             n_patches_h = H // patch_size
             n_patches_w = W // patch_size
 
@@ -50,66 +36,75 @@ class SARTimeSeriesDataset(Dataset):
                 for j in range(n_patches_w):
                     self.valid_patches.append({
                         'scene_idx': scene_idx,
-                        'patch_i': i,
-                        'patch_j': j,
+                        'patch_i':   i,
+                        'patch_j':   j,
                     })
+
+    def _get_shape(self, scene):
+        """Get (T, H, W) without loading data for Path inputs."""
+        if isinstance(scene, Path):
+            with xr.open_dataset(scene) as ds:
+                da = self._ds_to_array(ds)
+                return da.shape[0], da.shape[-2], da.shape[-1]
+        else:
+            return scene.shape[0], scene.shape[-2], scene.shape[-1]
+
+    def _load_scene(self, scene):
+        """Return a DataArray regardless of whether input is Path or DataArray."""
+        if isinstance(scene, Path):
+            # Opens file, loads only what __getitem__ slices — closed after with block
+            ds = xr.open_dataset(scene)
+            return self._ds_to_array(ds)
+        return scene
+
+    def _ds_to_array(self, ds):
+        """Stack VV+VH into (time, polarization, y, x)."""
+        return xr.concat([ds['VV'], ds['VH']], dim='polarization') \
+                 .transpose('time', 'polarization', 'y', 'x')
 
     def __len__(self):
         return len(self.valid_patches)
 
     def __getitem__(self, idx):
         patch_info = self.valid_patches[idx]
-        scene = self.scenes[patch_info['scene_idx']]
+        scene      = self._load_scene(self.scenes[patch_info['scene_idx']])
 
-        # Random sequence length
-        T_total = len(scene.time)
-        T_baseline = np.random.randint(
-            self.min_seq_len,
-            min(self.max_seq_len, T_total - 1) + 1
-        )
+        T_total    = len(scene.time)
+        T_baseline = np.random.randint(self.min_seq_len, min(self.max_seq_len, T_total - 1) + 1)
 
-        # Random starting point
-        max_start = T_total - T_baseline - 1  # need at least 1 timestep after baseline for target
+        max_start = T_total - T_baseline - 1
         if max_start < 0:
-            # fallback: use all available as baseline, last step as target
             T_baseline = T_total - 1
             max_start  = 0
 
         t_start = np.random.randint(0, max_start + 1)
         t_end   = t_start + T_baseline
 
-        # Extract patch
-        i = patch_info['patch_i']
-        j = patch_info['patch_j']
-        ps = self.patch_size
+        i, j, ps = patch_info['patch_i'], patch_info['patch_j'], self.patch_size
+        y_start, x_start = i * ps, j * ps
 
-        y_start = i * ps
-        x_start = j * ps
-
-        # Get baseline and target
         baseline = scene.isel(
             time=slice(t_start, t_end),
             y=slice(y_start, y_start + ps),
             x=slice(x_start, x_start + ps)
-        ).values  # (T_baseline, 2, 16, 16) or (T_baseline, 16, 16)
+        ).values
 
         target = scene.isel(
             time=t_end,
             y=slice(y_start, y_start + ps),
             x=slice(x_start, x_start + ps)
-        ).values  # (2, 16, 16) or (16, 16)
+        ).values
 
-        # Ensure channel dimension exists
-        if baseline.ndim == 3:  # (T, H, W)
-            baseline = baseline[:, None, :, :]  # (T, 1, H, W)
-        if target.ndim == 2:  # (H, W)
-            target = target[None, :, :]  # (1, H, W)
+        # Ensure channel dim exists for single-pol case
+        if baseline.ndim == 3:
+            baseline = baseline[:, None, :, :]
+        if target.ndim == 2:
+            target = target[None, :, :]
 
-        # Handle NaNs (replace with 0 or skip - here we replace)
         baseline = np.nan_to_num(baseline, nan=0.0)
-        target = np.nan_to_num(target, nan=0.0)
+        target   = np.nan_to_num(target,   nan=0.0)
 
         return {
-            'baseline': torch.FloatTensor(baseline),  # (T, C, H, W)
-            'target': torch.FloatTensor(target),      # (C, H, W)
+            'baseline': torch.FloatTensor(baseline),
+            'target':   torch.FloatTensor(target),
         }

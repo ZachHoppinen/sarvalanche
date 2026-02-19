@@ -84,7 +84,9 @@ def assemble_dataset(
     ds["VH"] = ds["VH"].where(ds["mask"] == 0)
     ds = ds.rename({"mask": "lia_mask"})
 
-    if sar_only: return ds
+    if sar_only:
+        ds['time'] = pd.to_datetime(ds['time']).tz_localize(None)
+        return ds
 
     # --- 6. Load static LIA ---
     static_urls = find_asf_urls(aoi, start_date = None, stop_date = None, product_type=RTC_STATIC)

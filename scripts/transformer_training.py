@@ -1,5 +1,6 @@
 import requests
 import json
+import shutil
 from pathlib import Path
 from shapely.geometry import shape, box
 from collections import defaultdict
@@ -91,6 +92,7 @@ if __name__ == '__main__':
     TV_WEIGHT = 0.5
 
     TARGET_CENTERS = ['SNFAC', 'GNFAC', 'CAIC', 'UAC', 'ESAC']
+    TARGET_CENTERS = ['SNFAC', 'GNFAC']
 
     SEASONS = [
         ('2019-12-01', '2020-03-31'),
@@ -119,8 +121,6 @@ if __name__ == '__main__':
         height_deg = bounds[3] - bounds[1]
         print(f"{zone_key:50s}  {width_deg:.2f}° x {height_deg:.2f}°")
 
-        if zone_info['center_id'] != 'SNFAC': continue  # TEMP: focus on one zone for now
-
         for start_date, stop_date in SEASONS:
             season_key = start_date[:7]
             cache_file  = SCENE_CACHE_DIR / f"{zone_key}__{season_key}.nc"
@@ -129,56 +129,83 @@ if __name__ == '__main__':
 
             try:
                 if cache_file.exists():
-                    ds = xr.open_dataset(cache_file)
-                    print(f"(from cache)")
+                    ds = load_netcdf_to_dataset(cache_file)
+                    print(f"  Loaded from cache: {cache_file.name}")
                 else:
                     ds = assemble_dataset(
                         aoi=zone_info['aoi'],
-                    crs=CRS,
-                    resolution=resolution,
-                    start_date=start_date,
-                    stop_date=stop_date,
-                    cache_dir=CACHE_DIR,
-                    add_flowpy=False,
-                    )
+                        crs=CRS,
+                        resolution=resolution,
+                        start_date=start_date,
+                        stop_date=stop_date,
+                        cache_dir=CACHE_DIR,
+                        sar_only=True,
+                        )
 
                     for pol in ['VV', 'VH']:
                         ds[pol] = linear_to_dB(denoise_sar_homomorphic(ds[pol], tv_weight=TV_WEIGHT))
 
-                    if len(ds.time) < 3:
-                        print(f"  Skipping: only {len(ds.time)} timesteps")
+                    export_netcdf(ds[['VV', 'VH']], cache_file)
+                    print(f"  Saved to {cache_file.name}")
+
+                tracks = np.unique(ds.track.values)
+                print(f"  Found {len(tracks)} tracks: {tracks}")
+                existing_tracks = list(SCENE_CACHE_DIR.glob(f"{zone_key}__track*__{season_key}.nc"))
+
+                if len(existing_tracks) == len(tracks):
+                    print(f"  Found all {len(existing_tracks)} cached tracks, skipping assembly")
+                    for f in existing_tracks:
+                        if season_key == TEST_SEASON:
+                            test_paths.append(f)
+                        elif zone_info['center_id'] == VAL_CENTER:
+                            val_paths.append(f)
+                        else:
+                            train_paths.append(f)
+                    continue  # skip to next season
+
+                for track in tracks:
+                    ds_track    = ds.sel(time=ds.track == track)
+                    track_key   = f"{zone_key}__track{track}__{season_key}"
+                    cache_file_track = SCENE_CACHE_DIR / f"{track_key}.nc"
+
+                    if len(ds_track.time) < 3:
+                        print(f"  Skipping track {track}: only {len(ds_track.time)} timesteps")
                         continue
 
-                    export_netcdf(ds, cache_file)
-                    print(f"  Assembled and cached {len(ds.time)} timesteps")
+                    if not cache_file_track.exists():
+                        export_netcdf(ds_track[['VV', 'VH']], cache_file_track)
+                        print(f"  Saved track {track} → {cache_file_track.name}")
 
-                # Stack VV+VH → (time, 2, y, x)
-                da = ds_to_stacked_array(ds)
-                print(f"  OK — {len(da.time)} timesteps, shape: {da.shape}")
+                    if season_key == TEST_SEASON:
+                        test_paths.append(cache_file_track)
+                    elif zone_info['center_id'] == VAL_CENTER:
+                        val_paths.append(cache_file_track)
+                    else:
+                        train_paths.append(cache_file_track)
 
-                if season_key == TEST_SEASON:
-                    test_paths.append(cache_file)
-                elif zone_info['center_id'] == VAL_CENTER:
-                    val_paths.append(cache_file)
-                else:
-                    train_paths.append(cache_file)
+                # Clean up full ds and opera dir
+                del ds
+                # opera_dir = CACHE_DIR / 'opera'
+                # if opera_dir.exists():
+                #     shutil.rmtree(opera_dir)
+
             except Exception as e:
                 print(f"  FAILED: {e}")
                 failed.append((zone_key, season_key, str(e)))
 
     print(f"\nSplit summary:")
-    print(f"  Train: {len(train_scenes)} | Val: {len(val_scenes)} | Test: {len(test_scenes)}")
+    print(f"  Train: {len(train_paths)} | Val: {len(val_paths)} | Test: {len(test_paths)}")
     print(f"  Failed: {len(failed)}")
     for f in failed:
         print(f"    {f[0]} | {f[1]}: {f[2]}")
 
-    assert len(train_scenes) > 0, "No training scenes loaded"
-    assert len(val_scenes)   > 0, "No val scenes loaded"
+    assert len(train_paths) > 0, "No training scenes loaded"
+    assert len(val_paths)   > 0, "No val scenes loaded"
 
     # --- DATASETS ---
-    train_dataset = SARTimeSeriesDataset(train_scenes, min_seq_len=2, max_seq_len=10, patch_size=16)
-    val_dataset   = SARTimeSeriesDataset(val_scenes,   min_seq_len=2, max_seq_len=10, patch_size=16)
-    test_dataset  = SARTimeSeriesDataset(test_scenes,  min_seq_len=2, max_seq_len=10, patch_size=16)
+    train_dataset = SARTimeSeriesDataset(train_paths, min_seq_len=2, max_seq_len=10, patch_size=16)
+    val_dataset   = SARTimeSeriesDataset(val_paths,   min_seq_len=2, max_seq_len=10, patch_size=16)
+    test_dataset  = SARTimeSeriesDataset(test_paths,  min_seq_len=2, max_seq_len=10, patch_size=16)
 
     print(f"\nDataset sizes — Train: {len(train_dataset)} | Val: {len(val_dataset)} | Test: {len(test_dataset)}")
 

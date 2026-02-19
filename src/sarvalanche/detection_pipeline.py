@@ -210,8 +210,9 @@ def run_detection(
     export_netcdf(ds, ds_nc, overwrite=True)
 
     # Export individual probability layers as GeoTIFFs for visualization
+    cache_dir.joinpath("probabilities").mkdir(exist_ok=True)
     for var in ['detections', 'p_pixelwise', 'p_empirical', 'p_fcf', 'p_runout', 'p_slope']:
-        output_tif = cache_dir.joinpath(f"{ds_stem}_{var}.tif")
+        output_tif = cache_dir.joinpath("probabilities", f"{ds_stem}_{var}.tif")
         log.info(f'Exporting {var} to {output_tif.name}')
         ds[var].astype(float).rio.to_raster(output_tif)
 
