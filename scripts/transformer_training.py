@@ -110,11 +110,13 @@ if __name__ == '__main__':
     CRS            = 'EPSG:4326'
     CACHE_DIR      = Path('/Users/zmhoppinen/Documents/sarvalanche/local/data')
     GEOJSON_CACHE  = CACHE_DIR / 'forecast_zones.geojson'
-    CHECKPOINT_PATH = 'sar_transformer_best.pth'
     TV_WEIGHT = 0.5
-    MIN_SEQ_LEN = 7
+    MIN_SEQ_LEN = 5
     MAX_SEQ_LEN = 10
     STRIDE = 48 # match SARTimeSeriesDataset — change to 16 for no stride
+    WEIGHTS_DIR = Path('/Users/zmhoppinen/Documents/sarvalanche/src/sarvalanche/ml/weights')
+    CHECKPOINT_PATH = WEIGHTS_DIR /'sar_transformer_best.pth'
+
 
     TARGET_CENTERS = ['SNFAC', 'GNFAC', 'CAIC', 'UAC', 'ESAC']
     TARGET_CENTERS = ['SNFAC', 'GNFAC']
@@ -250,14 +252,16 @@ if __name__ == '__main__':
     # --- DATALOADERS ---
     train_loader = DataLoader(
         train_dataset, batch_size=256, shuffle=True,
-        num_workers=2, pin_memory=True,
+        num_workers=4, pin_memory=True,
         collate_fn=collate_variable_length, persistent_workers=True
     )
+    print(f"Created train DataLoader with {train_loader.num_workers} workers")
     val_loader = DataLoader(
         val_dataset, batch_size=256, shuffle=False,
         num_workers=2, pin_memory=True,
         collate_fn=collate_variable_length, persistent_workers=True
     )
+    print(f"Created val DataLoader with {val_loader.num_workers} workers")
 
     # --- MODEL --- note in_chans=2 for VV+VH
     device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
@@ -282,7 +286,7 @@ if __name__ == '__main__':
     else:
         print("No checkpoint found, training from scratch.")
 
- # --- TRAINING LOOP ---
+    # --- TRAINING LOOP ---
     for epoch in range(start_epoch, 50):
 
         model.train()
@@ -399,6 +403,30 @@ if __name__ == '__main__':
         'seasons': SEASONS,
     }, 'sar_transformer_final.pth')
 
+    # --- TEST EVALUATION ---
+    test_loader = DataLoader(
+        test_dataset, batch_size=256, shuffle=False,
+        num_workers=2, pin_memory=True,
+        collate_fn=collate_variable_length, persistent_workers=True
+    )
+
+    # Load best model for test eval
+    checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+
+    test_loss = 0
+    test_bar = tqdm(test_loader, desc='Test eval', leave=True)
+    with torch.no_grad():
+        for batch in test_bar:
+            baseline_batch = batch['baseline'].to(device)
+            target_batch   = batch['target'].to(device)
+            mu, sigma      = model(baseline_batch)
+            test_loss     += nll_loss(mu, sigma, target_batch).item()
+
+    avg_test_loss = test_loss / len(test_loader)
+    print(f"\nTest loss: {avg_test_loss:.4f}")
+
     # --- EXPORT WEIGHTS ---
     for ckpt_path, label in [
         (Path(CHECKPOINT_PATH),          'sar_transformer_best'),
@@ -410,7 +438,9 @@ if __name__ == '__main__':
                 model_name=label,
                 train_samples=len(train_dataset),
                 test_samples=len(test_dataset),
+                extra_metrics={'test_loss': avg_test_loss},
                 notes=f"Zones: {list(zones.keys())} | Seasons: {SEASONS} | TV weight: {TV_WEIGHT}",
+                weights_dir=WEIGHTS_DIR
             )
 
     print('Training complete.')
