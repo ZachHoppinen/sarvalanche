@@ -1,7 +1,8 @@
-
 import logging
 import xarray as xr
+import numpy as np
 from tqdm.auto import tqdm
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from sarvalanche.preprocessing.despeckling import denoise_sar_homomorphic
 from sarvalanche.utils.constants import pols
@@ -9,67 +10,59 @@ from sarvalanche.utils.validation import check_db_linear
 
 log = logging.getLogger(__name__)
 
-def preprocess_rtc(ds, tv_weight=0.1, polarizations=None):
-    """
-    Preprocess RTC SAR data with homomorphic TV denoising.
-
-    Applies TV denoising in dB space to each polarization independently
-    across all timesteps.
-
-    Parameters
-    ----------
-    ds : xarray.Dataset
-        Dataset containing SAR backscatter in linear scale.
-        Expected to have polarization variables (e.g., 'VV', 'VH')
-        and dimensions (time, y, x).
-    tv_weight : float, default 0.1
-        TV denoising weight. Higher = more smoothing.
-        Typical range: 0.05-0.5 depending on speckle level.
-    polarizations : list of str, optional
-        List of polarization variables to process.
-        If None, uses all polarizations from sarvalanche.utils.constants.pols
-        that exist in the dataset.
-
-    Returns
-    -------
-    ds_denoised : xarray.Dataset
-        Dataset with denoised backscatter, preserving all other variables.
-    """
+def preprocess_rtc(ds, tv_weight=0.1, polarizations=None, n_workers=4):
     ds = ds.copy()
 
-    # Determine which pols to process
     if polarizations is None:
         polarizations = [p for p in pols if p in ds]
 
     for pol in polarizations:
         log.info(f'Despeckling polarization: {pol}')
         if pol not in ds:
-            log.warning(f"Warning: {pol} not found in dataset, skipping")
+            log.warning(f"{pol} not found in dataset, skipping")
             continue
 
-        # Validate input is linear
         assert check_db_linear(ds[pol]) == 'linear', f"{pol} must be in linear scale"
 
         n_times = ds.sizes['time']
-        pbar = tqdm(total=n_times, desc=f"Denoising {pol}")
+        data = ds[pol].values  # (time, y, x)
 
-        def denoise_with_progress(da, tv_weight=0.1):
-            result = denoise_sar_homomorphic(da, tv_weight=tv_weight)
-            pbar.update(1)
-            return result
+        # --- Pre-denoising stats ---
+        valid = np.isfinite(data) & (data > 0)
+        log.debug(f"  [{pol}] Input  — mean: {data[valid].mean():.4f}  std: {data[valid].std():.4f}  "
+                f"min: {data[valid].min():.4f}  max: {data[valid].max():.4f}  "
+                f"nan%: {(~valid).mean()*100:.2f}%")
+        results = [None] * n_times
 
-        # Apply denoising across time
-        ds[pol] = xr.apply_ufunc(
-            denoise_with_progress,
-            ds[pol],
-            input_core_dims=[['y', 'x']],
-            output_core_dims=[['y', 'x']],
-            vectorize=True,
-            dask='parallelized',
-            output_dtypes=[ds[pol].dtype],
-            kwargs={'tv_weight': tv_weight}
-        )
+        def denoise_timestep(t):
+            arr = data[t]
+            result = denoise_sar_homomorphic(arr, tv_weight=tv_weight)
 
-        pbar.close()
+            return t, result
+
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            futures = {executor.submit(denoise_timestep, t): t for t in range(n_times)}
+            with tqdm(total=n_times, desc=f"Denoising {pol}") as pbar:
+                for future in as_completed(futures):
+                    t, result = future.result()
+                    results[t] = result
+                    pbar.update(1)
+
+        denoised = np.stack(results, axis=0)
+
+        # --- Post-denoising stats ---
+        valid_out = np.isfinite(denoised) & (denoised > 0)
+        log.debug(f"  [{pol}] Output — mean: {denoised[valid_out].mean():.4f}  std: {denoised[valid_out].std():.4f}  "
+                f"min: {denoised[valid_out].min():.4f}  max: {denoised[valid_out].max():.4f}  "
+                f"nan%: {(~valid_out).mean()*100:.2f}%")
+        log.debug(f"  [{pol}] Overall std reduction: "
+                f"{(1 - denoised[valid_out].std()/data[valid].std())*100:.1f}%  "
+                f"mean absolute change: {np.abs(denoised[valid_out] - data[valid_out]).mean():.4f}")
+
+        # preserve attrs before overwriting
+        original_attrs = ds[pol].attrs
+        ds[pol] = xr.DataArray(denoised, coords=ds[pol].coords, dims=ds[pol].dims)
+        # restore attrs
+        ds[pol].attrs = original_attrs
 
     return ds

@@ -4,11 +4,13 @@ import shutil
 from pathlib import Path
 from shapely.geometry import shape, box
 from collections import defaultdict
+import logging
 
 import torch
 import numpy as np
 import xarray as xr
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from sarvalanche.utils.projections import resolution_to_degrees
 from sarvalanche.utils.validation import validate_crs
@@ -21,6 +23,25 @@ from sarvalanche.ml.losses import nll_loss
 from sarvalanche.ml.inference import predict_with_sweeping
 from sarvalanche.io.export import export_netcdf
 from sarvalanche.io.dataset import load_netcdf_to_dataset
+
+import threading, time
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s  %(levelname)s  %(name)s  %(message)s'
+)
+logging.getLogger('sarvalanche').setLevel(logging.DEBUG)
+logging.getLogger('asf_search').setLevel(logging.WARNING)
+
+def progress_monitor(counter, total, desc):
+    bar = tqdm(total=total, desc=desc, position=1, leave=False)
+    last = 0
+    while last < total:
+        current = counter.value
+        bar.update(current - last)
+        last = current
+        time.sleep(0.1)
+    bar.close()
 
 
 def collate_variable_length(batch):
@@ -90,6 +111,9 @@ if __name__ == '__main__':
     GEOJSON_CACHE  = CACHE_DIR / 'forecast_zones.geojson'
     CHECKPOINT_PATH = 'sar_transformer_best.pth'
     TV_WEIGHT = 0.5
+    MIN_SEQ_LEN = 7
+    MAX_SEQ_LEN = 10
+    STRIDE = 48 # match SARTimeSeriesDataset — change to 16 for no stride
 
     TARGET_CENTERS = ['SNFAC', 'GNFAC', 'CAIC', 'UAC', 'ESAC']
     TARGET_CENTERS = ['SNFAC', 'GNFAC']
@@ -101,7 +125,10 @@ if __name__ == '__main__':
     ]
 
     TEST_SEASON = '2020-12'
-    VAL_CENTER  = 'GNFAC'
+    VAL_ZONES = (
+    'GNFAC_Southern_Madison_Range',
+    'SNFAC_Banner_Summit',
+    )
 
     resolution = resolution_to_degrees(RESOLUTION_M, validate_crs(CRS))
 
@@ -156,12 +183,13 @@ if __name__ == '__main__':
                 valid_tracks = [t for t in tracks  if len(ds.sel(time=ds.track == t).time) >= 3]
 
                 if len(existing_tracks) == len(valid_tracks):
+                    ds.close()
                     del ds
                     print(f"  Found all {len(existing_tracks)} cached tracks, skipping assembly")
                     for f in existing_tracks:
                         if season_key == TEST_SEASON:
                             test_paths.append(f)
-                        elif zone_info['center_id'] == VAL_CENTER:
+                        elif zone_key in VAL_ZONES:
                             val_paths.append(f)
                         else:
                             train_paths.append(f)
@@ -180,15 +208,20 @@ if __name__ == '__main__':
                         export_netcdf(ds_track[['VV', 'VH']], cache_file_track)
                         print(f"  Saved track {track} → {cache_file_track.name}")
 
+                    del ds_track
+
                     if season_key == TEST_SEASON:
                         test_paths.append(cache_file_track)
-                    elif zone_info['center_id'] == VAL_CENTER:
-                        val_paths.append(cache_file_track)
+                    elif zone_key in VAL_ZONES:
+                        val_paths.append(f)
                     else:
                         train_paths.append(cache_file_track)
 
                 # Clean up full ds and opera dir
+                import gc
+                ds.close()
                 del ds
+                gc.collect()
                 # opera_dir = CACHE_DIR / 'opera'
                 # if opera_dir.exists():
                 #     shutil.rmtree(opera_dir)
@@ -207,34 +240,31 @@ if __name__ == '__main__':
     assert len(val_paths)   > 0, "No val scenes loaded"
 
     # --- DATASETS ---
-    train_dataset = SARTimeSeriesDataset(train_paths, min_seq_len=5, max_seq_len=10, patch_size=16, stride=32)
-    val_dataset   = SARTimeSeriesDataset(val_paths,   min_seq_len=5, max_seq_len=10, patch_size=16, stride=32)
-    test_dataset  = SARTimeSeriesDataset(test_paths,  min_seq_len=5, max_seq_len=10, patch_size=16, stride=32)
+    train_dataset = SARTimeSeriesDataset(train_paths, min_seq_len=MIN_SEQ_LEN, max_seq_len=MAX_SEQ_LEN, patch_size=16, stride=STRIDE)
+    val_dataset   = SARTimeSeriesDataset(val_paths,   min_seq_len=MIN_SEQ_LEN, max_seq_len=MAX_SEQ_LEN, patch_size=16, stride=STRIDE)
+    test_dataset  = SARTimeSeriesDataset(test_paths,  min_seq_len=MIN_SEQ_LEN, max_seq_len=MAX_SEQ_LEN, patch_size=16, stride=STRIDE)
 
     print(f"\nDataset sizes — Train: {len(train_dataset)} | Val: {len(val_dataset)} | Test: {len(test_dataset)}")
 
     # --- DATALOADERS ---
     train_loader = DataLoader(
         train_dataset, batch_size=256, shuffle=True,
-        num_workers=8, pin_memory=True,
+        num_workers=2, pin_memory=True,
         collate_fn=collate_variable_length, persistent_workers=True
     )
     val_loader = DataLoader(
         val_dataset, batch_size=256, shuffle=False,
-        num_workers=4, pin_memory=True,
+        num_workers=2, pin_memory=True,
         collate_fn=collate_variable_length, persistent_workers=True
     )
 
     # --- MODEL --- note in_chans=2 for VV+VH
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
     print(f"Using device: {device}")
 
     model     = SARTransformer(img_size=16, patch_size=8, in_chans=2)
     model     = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    #     optimizer, mode='min', factor=0.5, patience=5, verbose=True
-    # )
 
     # --- CHECKPOINT ---
     start_epoch   = 0
@@ -251,13 +281,23 @@ if __name__ == '__main__':
     else:
         print("No checkpoint found, training from scratch.")
 
-    # --- TRAINING LOOP ---
+ # --- TRAINING LOOP ---
     for epoch in range(start_epoch, 50):
 
         model.train()
         train_loss = 0
 
-        for batch_idx, batch in enumerate(train_loader):
+        # Before your batch loop:
+        train_dataset._counter.value = 0
+        monitor = threading.Thread(
+            target=progress_monitor,
+            args=(train_dataset._counter, len(train_dataset), 'patches'),
+            daemon=True
+        )
+        monitor.start()
+
+        train_bar = tqdm(train_loader, desc=f'Epoch {epoch:02d} [train]', leave=True)
+        for batch_idx, batch in enumerate(train_bar):
             baseline_batch = batch['baseline'].to(device)
             target_batch   = batch['target'].to(device)
 
@@ -266,13 +306,17 @@ if __name__ == '__main__':
 
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
             train_loss += loss.item()
+            avg_so_far  = train_loss / (batch_idx + 1)
 
-            if batch_idx % 50 == 0:
-                print(f'Epoch {epoch} [{batch_idx}/{len(train_loader)}] loss: {loss.item():.4f}')
+            train_bar.set_postfix({
+                'loss':      f'{loss.item():.4f}',
+                'avg':       f'{avg_so_far:.4f}',
+                'grad_norm': f'{grad_norm:.3f}',
+            })
 
         avg_train_loss = train_loss / len(train_loader)
 
@@ -280,20 +324,33 @@ if __name__ == '__main__':
         model.eval()
         val_loss = 0
 
+        val_bar = tqdm(val_loader, desc=f'Epoch {epoch:02d} [val]  ', leave=True)
         with torch.no_grad():
-            for batch in val_loader:
+            for batch in val_bar:
                 baseline_batch = batch['baseline'].to(device)
                 target_batch   = batch['target'].to(device)
                 mu, sigma      = model(baseline_batch)
-                val_loss      += nll_loss(mu, sigma, target_batch).item()
+                batch_val_loss = nll_loss(mu, sigma, target_batch).item()
+                val_loss      += batch_val_loss
+                val_bar.set_postfix({'val_loss': f'{batch_val_loss:.4f}'})
 
         avg_val_loss = val_loss / len(val_loader)
-        # scheduler.step(avg_val_loss)
 
         if epoch == 25:
             for param_group in optimizer.param_groups:
                 param_group['lr'] = 1e-5
             print('LR decayed to 1e-5')
+
+        # -- Epoch summary --
+        current_lr = optimizer.param_groups[0]['lr']
+        print(
+            f'\nEpoch {epoch:02d} summary'
+            f'  |  train: {avg_train_loss:.4f}'
+            f'  |  val: {avg_val_loss:.4f}'
+            f'  |  Δ: {avg_val_loss - avg_train_loss:+.4f}'
+            f'  |  lr: {current_lr:.2e}'
+            f'  |  best: {best_val_loss:.4f}'
+        )
 
 
 
@@ -303,7 +360,7 @@ if __name__ == '__main__':
         with torch.no_grad():
             print(f"  Target range : [{target_batch.min():.2f}, {target_batch.max():.2f}]")
             print(f"  μ range      : [{mu.min():.2f}, {mu.max():.2f}]")
-            print(f"  sigma range      : [{sigma.min():.2f}, {sigma.max():.2f}]  mean σ: {sigma.mean():.4f}")
+            print(f"  sigma range      : [{sigma.min():.2f}, {sigma.max():.2f}]  mean sigma: {sigma.mean():.4f}")
             print(f"  MAE          : {torch.abs(target_batch - mu).mean():.4f}")
             corr = torch.corrcoef(torch.stack([target_batch.flatten(), mu.flatten()]))[0, 1]
             print(f"  Correlation  : {corr:.4f}")

@@ -13,7 +13,7 @@ from collections import defaultdict
 SCENE_CACHE_DIR = Path('/Users/zmhoppinen/Documents/sarvalanche/local/data/scene_cache')
 PATCH_SIZE      = 16
 STRIDE          = 48   # match SARTimeSeriesDataset — change to 16 for no stride
-MIN_SEQ_LEN     = 5
+MIN_SEQ_LEN     = 7
 MAX_SEQ_LEN     = 10
 
 def count_sequences_for_scene(nc_path, patch_size=16, stride=None, min_seq_len=2, max_seq_len=10):

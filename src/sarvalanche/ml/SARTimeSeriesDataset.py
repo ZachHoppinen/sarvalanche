@@ -1,5 +1,6 @@
 import torch
 from torch.utils.data import Dataset
+import torch.multiprocessing as mp
 import numpy as np
 import xarray as xr
 from pathlib import Path
@@ -15,6 +16,9 @@ class SARTimeSeriesDataset(Dataset):
         self.max_seq_len = max_seq_len
         self.patch_size  = patch_size
         self.stride      = stride if stride is not None else patch_size  # default: non-overlapping
+        self._cache = {}  # per-worker file cache
+        self._counter = mp.Value('i', 0)  # shared integer across workers
+
 
         # Normalise input to a list
         if isinstance(sar_timeseries, (xr.DataArray, Path)):
@@ -48,12 +52,13 @@ class SARTimeSeriesDataset(Dataset):
             return scene.shape[0], scene.shape[-2], scene.shape[-1]
 
     def _load_scene(self, scene):
-        """Return a DataArray regardless of whether input is Path or DataArray."""
         if isinstance(scene, Path):
-            # Opens file, loads only what __getitem__ slices — closed after with block
-            ds = xr.open_dataset(scene)
-            return self._ds_to_array(ds)
+            if scene not in self._cache:
+                ds = xr.open_dataset(scene)
+                self._cache[scene] = self._ds_to_array(ds)  # lazy DataArray
+            return self._cache[scene]
         return scene
+
 
     def _ds_to_array(self, ds):
         """Stack VV+VH into (time, polarization, y, x)."""
@@ -101,6 +106,9 @@ class SARTimeSeriesDataset(Dataset):
 
         baseline = np.nan_to_num(baseline, nan=0.0)
         target   = np.nan_to_num(target,   nan=0.0)
+
+        with self._counter.get_lock():
+            self._counter.value += 1
 
         return {
             'baseline': torch.FloatTensor(baseline),
