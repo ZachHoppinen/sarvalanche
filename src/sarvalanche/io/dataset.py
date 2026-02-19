@@ -36,6 +36,7 @@ def assemble_dataset(
     resolution=None,
     cache_dir=Path("/tmp/sarvalanche_cache"),
     add_flowpy = True,
+    sar_only = False,
     chunks = {
     'time': 5,      # 5 time steps at once
     'x': 256,       # 256x256 spatial tiles
@@ -82,6 +83,8 @@ def assemble_dataset(
     ds["VV"] = ds["VV"].where(ds["mask"] == 0)
     ds["VH"] = ds["VH"].where(ds["mask"] == 0)
     ds = ds.rename({"mask": "lia_mask"})
+
+    if sar_only: return ds
 
     # --- 6. Load static LIA ---
     static_urls = find_asf_urls(aoi, start_date = None, stop_date = None, product_type=RTC_STATIC)

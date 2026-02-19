@@ -1,0 +1,305 @@
+import requests
+import json
+from pathlib import Path
+from shapely.geometry import shape, box
+from collections import defaultdict
+
+import torch
+import numpy as np
+import xarray as xr
+from torch.utils.data import DataLoader
+
+from sarvalanche.utils.projections import resolution_to_degrees
+from sarvalanche.utils.validation import validate_crs
+from sarvalanche.io import assemble_dataset
+from sarvalanche.preprocessing.despeckling import denoise_sar_homomorphic
+from sarvalanche.preprocessing.radiometric import linear_to_dB
+from sarvalanche.ml.SARTimeSeriesDataset import SARTimeSeriesDataset
+from sarvalanche.ml.SARTransformer import SARTransformer
+from sarvalanche.ml.losses import nll_loss
+from sarvalanche.ml.inference import predict_with_sweeping
+from sarvalanche.io.export import export_netcdf
+from sarvalanche.io.dataset import load_netcdf_to_dataset
+
+
+def collate_variable_length(batch):
+    max_T = max([item['baseline'].shape[0] for item in batch])
+    baselines, targets = [], []
+    for item in batch:
+        baseline = item['baseline']  # (T, C, H, W)
+        target   = item['target']    # (C, H, W)
+        T, C, H, W = baseline.shape
+        if T < max_T:
+            padding  = torch.zeros(max_T - T, C, H, W)
+            baseline = torch.cat([baseline, padding], dim=0)
+        baselines.append(baseline)
+        targets.append(target)
+    return {
+        'baseline': torch.stack(baselines),
+        'target':   torch.stack(targets),
+    }
+
+
+def fetch_zones(target_centers, geojson_cache, force_refresh=False):
+    if geojson_cache.exists() and not force_refresh:
+        print(f"Loading zones from cache: {geojson_cache}")
+        geojson = json.loads(geojson_cache.read_text())
+    else:
+        print("Fetching zones from avalanche.org API...")
+        url     = "https://api.avalanche.org/v2/public/products/map-layer"
+        headers = {'User-Agent': 'sarvalanche-research/1.0 (your@email.com)'}
+        geojson = requests.get(url, headers=headers).json()
+        geojson_cache.write_text(json.dumps(geojson, indent=2))
+        print(f"  Saved to {geojson_cache}")
+
+    zones = {}
+    for feature in geojson['features']:
+        props     = feature['properties']
+        center_id = props.get('center_id', '')
+        if center_id not in target_centers:
+            continue
+        try:
+            key = f"{center_id}_{props['name'].replace(' ', '_').replace('/', '-')}"
+            zones[key] = {
+                'aoi':       box(*shape(feature['geometry']).bounds),
+                'center_id': center_id,
+                'name':      props['name'],
+            }
+        except Exception as e:
+            print(f"  Skipping {props.get('name', '?')}: {e}")
+
+    print(f"Found {len(zones)} zones across {target_centers}")
+    return zones
+
+
+def ds_to_stacked_array(ds):
+    """
+    Convert a dataset with VV and VH variables to a single
+    DataArray with a 'polarization' dimension: (time, polarization, y, x)
+    """
+    return xr.concat([ds['VV'], ds['VH']], dim='polarization').transpose('time', 'polarization', 'y', 'x')
+
+
+if __name__ == '__main__':
+
+    # --- CONFIG ---
+    RESOLUTION_M   = 20
+    CRS            = 'EPSG:4326'
+    CACHE_DIR      = Path('/Users/zmhoppinen/Documents/sarvalanche/local/data')
+    GEOJSON_CACHE  = CACHE_DIR / 'forecast_zones.geojson'
+    CHECKPOINT_PATH = 'sar_transformer_best.pth'
+    TV_WEIGHT = 0.5
+
+    TARGET_CENTERS = ['SNFAC', 'GNFAC', 'CAIC', 'UAC', 'ESAC']
+
+    SEASONS = [
+        ('2019-12-01', '2020-03-31'),
+        ('2020-12-01', '2021-03-31'),
+        ('2021-12-01', '2022-03-31'),
+    ]
+
+    TEST_SEASON = '2020-12'
+    VAL_CENTER  = 'GNFAC'
+
+    resolution = resolution_to_degrees(RESOLUTION_M, validate_crs(CRS))
+
+    # --- FETCH ZONES ---
+    zones = fetch_zones(TARGET_CENTERS, GEOJSON_CACHE)
+
+    # --- LOAD SAR SCENES ---
+    train_paths, val_paths, test_paths = [], [], []
+    failed = []
+
+    SCENE_CACHE_DIR = CACHE_DIR / 'scene_cache'
+    SCENE_CACHE_DIR.mkdir(exist_ok=True)
+
+    for zone_key, zone_info in zones.items():
+        bounds = zone_info['aoi'].bounds  # (minx, miny, maxx, maxy)
+        width_deg  = bounds[2] - bounds[0]
+        height_deg = bounds[3] - bounds[1]
+        print(f"{zone_key:50s}  {width_deg:.2f}° x {height_deg:.2f}°")
+
+        if zone_info['center_id'] != 'SNFAC': continue  # TEMP: focus on one zone for now
+
+        for start_date, stop_date in SEASONS:
+            season_key = start_date[:7]
+            cache_file  = SCENE_CACHE_DIR / f"{zone_key}__{season_key}.nc"
+
+            print(f"Loading {zone_key} | {season_key}...")
+
+            try:
+                if cache_file.exists():
+                    ds = xr.open_dataset(cache_file)
+                    print(f"(from cache)")
+                else:
+                    ds = assemble_dataset(
+                        aoi=zone_info['aoi'],
+                    crs=CRS,
+                    resolution=resolution,
+                    start_date=start_date,
+                    stop_date=stop_date,
+                    cache_dir=CACHE_DIR,
+                    add_flowpy=False,
+                    )
+
+                    for pol in ['VV', 'VH']:
+                        ds[pol] = linear_to_dB(denoise_sar_homomorphic(ds[pol], tv_weight=TV_WEIGHT))
+
+                    if len(ds.time) < 3:
+                        print(f"  Skipping: only {len(ds.time)} timesteps")
+                        continue
+
+                    export_netcdf(ds, cache_file)
+                    print(f"  Assembled and cached {len(ds.time)} timesteps")
+
+                # Stack VV+VH → (time, 2, y, x)
+                da = ds_to_stacked_array(ds)
+                print(f"  OK — {len(da.time)} timesteps, shape: {da.shape}")
+
+                if season_key == TEST_SEASON:
+                    test_paths.append(cache_file)
+                elif zone_info['center_id'] == VAL_CENTER:
+                    val_paths.append(cache_file)
+                else:
+                    train_paths.append(cache_file)
+            except Exception as e:
+                print(f"  FAILED: {e}")
+                failed.append((zone_key, season_key, str(e)))
+
+    print(f"\nSplit summary:")
+    print(f"  Train: {len(train_scenes)} | Val: {len(val_scenes)} | Test: {len(test_scenes)}")
+    print(f"  Failed: {len(failed)}")
+    for f in failed:
+        print(f"    {f[0]} | {f[1]}: {f[2]}")
+
+    assert len(train_scenes) > 0, "No training scenes loaded"
+    assert len(val_scenes)   > 0, "No val scenes loaded"
+
+    # --- DATASETS ---
+    train_dataset = SARTimeSeriesDataset(train_scenes, min_seq_len=2, max_seq_len=10, patch_size=16)
+    val_dataset   = SARTimeSeriesDataset(val_scenes,   min_seq_len=2, max_seq_len=10, patch_size=16)
+    test_dataset  = SARTimeSeriesDataset(test_scenes,  min_seq_len=2, max_seq_len=10, patch_size=16)
+
+    print(f"\nDataset sizes — Train: {len(train_dataset)} | Val: {len(val_dataset)} | Test: {len(test_dataset)}")
+
+    # --- DATALOADERS ---
+    train_loader = DataLoader(
+        train_dataset, batch_size=32, shuffle=True,
+        num_workers=8, pin_memory=True,
+        collate_fn=collate_variable_length, persistent_workers=True
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=32, shuffle=False,
+        num_workers=4, pin_memory=True,
+        collate_fn=collate_variable_length, persistent_workers=True
+    )
+
+    # --- MODEL --- note in_chans=2 for VV+VH
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+
+    model     = SARTransformer(img_size=16, patch_size=8, in_chans=2)
+    model     = model.to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=5, verbose=True
+    )
+
+    # --- CHECKPOINT ---
+    start_epoch   = 0
+    best_val_loss = float('inf')
+
+    if Path(CHECKPOINT_PATH).exists():
+        print(f"Resuming from {CHECKPOINT_PATH}...")
+        checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch   = checkpoint['epoch'] + 1
+        best_val_loss = checkpoint.get('val_loss', float('inf'))
+        print(f"  Resumed from epoch {checkpoint['epoch']}, best val loss: {best_val_loss:.4f}")
+    else:
+        print("No checkpoint found, training from scratch.")
+
+    # --- TRAINING LOOP ---
+    for epoch in range(start_epoch, 50):
+
+        model.train()
+        train_loss = 0
+
+        for batch_idx, batch in enumerate(train_loader):
+            baseline_batch = batch['baseline'].to(device)
+            target_batch   = batch['target'].to(device)
+
+            mu, sigma = model(baseline_batch)
+            loss = nll_loss(mu, sigma, target_batch)
+
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+
+            train_loss += loss.item()
+
+            if batch_idx % 50 == 0:
+                print(f'Epoch {epoch} [{batch_idx}/{len(train_loader)}] loss: {loss.item():.4f}')
+
+        avg_train_loss = train_loss / len(train_loader)
+
+        # -- Validate --
+        model.eval()
+        val_loss = 0
+
+        with torch.no_grad():
+            for batch in val_loader:
+                baseline_batch = batch['baseline'].to(device)
+                target_batch   = batch['target'].to(device)
+                mu, sigma      = model(baseline_batch)
+                val_loss      += nll_loss(mu, sigma, target_batch).item()
+
+        avg_val_loss = val_loss / len(val_loader)
+        scheduler.step(avg_val_loss)
+
+        print(f'\nEpoch {epoch} — train: {avg_train_loss:.4f} | val: {avg_val_loss:.4f}')
+
+        # -- Diagnostics --
+        with torch.no_grad():
+            print(f"  Target range : [{target_batch.min():.2f}, {target_batch.max():.2f}]")
+            print(f"  μ range      : [{mu.min():.2f}, {mu.max():.2f}]")
+            print(f"  sigma range      : [{sigma.min():.2f}, {sigma.max():.2f}]  mean σ: {sigma.mean():.4f}")
+            print(f"  MAE          : {torch.abs(target_batch - mu).mean():.4f}")
+            corr = torch.corrcoef(torch.stack([target_batch.flatten(), mu.flatten()]))[0, 1]
+            print(f"  Correlation  : {corr:.4f}")
+
+        # -- Save best --
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save({
+                'epoch':                epoch,
+                'model_state_dict':     model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'train_loss':           avg_train_loss,
+                'val_loss':             avg_val_loss,
+                'model_config': {
+                    'img_size': 16, 'patch_size': 8, 'in_chans': 2,  # 2 for VV+VH
+                    'embed_dim': 256, 'depth': 4, 'num_heads': 4,
+                },
+                'zones':   list(zones.keys()),  # fixed: was ZONES (undefined)
+                'seasons': SEASONS,
+            }, CHECKPOINT_PATH)
+            print(f'  ✓ Saved best model (val loss: {best_val_loss:.4f})')
+
+    # -- Save final --
+    torch.save({
+        'epoch':                epoch,
+        'model_state_dict':     model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'train_loss':           avg_train_loss,
+        'val_loss':             avg_val_loss,
+        'model_config': {
+            'img_size': 16, 'patch_size': 8, 'in_chans': 2,
+            'embed_dim': 256, 'depth': 4, 'num_heads': 4,
+        },
+        'zones':   list(zones.keys()),  # fixed: was ZONES (undefined)
+        'seasons': SEASONS,
+    }, 'sar_transformer_final.pth')
+    print('Training complete.')

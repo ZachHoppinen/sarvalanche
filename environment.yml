@@ -16,3 +16,5 @@ dependencies:
   - pygeohydro
   - bottleneck
   - scikit-image
+  - pytorch
+  - timm
