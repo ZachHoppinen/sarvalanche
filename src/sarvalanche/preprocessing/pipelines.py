@@ -17,7 +17,7 @@ def preprocess_rtc(ds, tv_weight=0.1, polarizations=None, n_workers=4):
         polarizations = [p for p in pols if p in ds]
 
     for pol in polarizations:
-        log.info(f'Despeckling polarization: {pol}')
+        log.debug(f'Despeckling polarization: {pol}')
         if pol not in ds:
             log.warning(f"{pol} not found in dataset, skipping")
             continue

@@ -122,7 +122,7 @@ if __name__ == '__main__':
     CHECKPOINT_PATH = WEIGHTS_DIR /'sar_transformer_best.pth'
 
     # TARGET_CENTERS = ['SNFAC', 'GNFAC', 'CAIC', 'UAC', 'ESAC']
-    TARGET_CENTERS = ['SNFAC', 'GNFAC', 'UAC', 'CAIC']
+    TARGET_CENTERS = ['SNFAC', 'GNFAC', 'UAC', 'FAC', 'BTAC', 'CAIC']
 
     SEASONS = [
         ('2019-12-01', '2020-03-31'),
@@ -133,11 +133,16 @@ if __name__ == '__main__':
     TEST_ZONES = {
         'GNFAC_Bridger_Range',
         'SNFAC_Soldier_Mountain',
-        'UAC_Abajos'
+        'UAC_Abajos',
+        'BTAC_Snake_River_Range'
     }
     VAL_ZONES = {
         'GNFAC_Southern_Madison_Range',
         'SNFAC_Banner_Summit',
+        'CAIC_CAIC_zone'
+        'UAC_Uintas',
+        'BTAC_Salt_River_and_Wyoming_Ranges',
+        'FAC_Flathead_Range_&_Glacier_NP'
     }
     resolution = resolution_to_degrees(RESOLUTION_M, validate_crs(CRS))
 
