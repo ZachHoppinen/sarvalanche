@@ -17,7 +17,7 @@ class SARTimeSeriesDataset(Dataset):
         self.patch_size  = patch_size
         self.stride      = stride if stride is not None else patch_size  # default: non-overlapping
         self._cache = {}  # per-worker file cache
-        self._counter = mp.Value('i', 0)  # shared integer across workers
+        # self._counter = mp.Value('i', 0)  # shared integer across workers
 
 
         # Normalise input to a list
@@ -107,8 +107,8 @@ class SARTimeSeriesDataset(Dataset):
         baseline = np.nan_to_num(baseline, nan=0.0)
         target   = np.nan_to_num(target,   nan=0.0)
 
-        with self._counter.get_lock():
-            self._counter.value += 1
+        # with self._counter.get_lock():
+        #     self._counter.value += 1
 
         return {
             'baseline': torch.FloatTensor(baseline),

@@ -11,6 +11,7 @@ import numpy as np
 import xarray as xr
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
+import pandas as pd
 
 from sarvalanche.utils.projections import resolution_to_degrees
 from sarvalanche.utils.validation import validate_crs
@@ -232,6 +233,30 @@ if __name__ == '__main__':
             except Exception as e:
                 print(f"  FAILED: {e}")
                 failed.append((zone_key, season_key, str(e)))
+    # --- CONVERT NC TRACKS TO ZARR ---
+    ZARR_CACHE_DIR = CACHE_DIR / 'zarr_cache'
+    ZARR_CACHE_DIR.mkdir(exist_ok=True)
+
+    def nc_to_zarr(nc_path: Path, zarr_dir: Path) -> Path:
+        zarr_path = zarr_dir / (nc_path.stem + '.zarr')
+        if zarr_path.exists():
+            return zarr_path
+        print(f"  Converting {nc_path.name} → zarr...")
+        with xr.open_dataset(nc_path) as ds:
+            da = xr.concat([ds['VV'], ds['VH']], dim='polarization') \
+                   .transpose('time', 'polarization', 'y', 'x')
+            da = da.assign_coords(time=pd.to_datetime(da.time.values))
+            da = da.drop_vars([v for v in da.coords
+                   if da.coords[v].dtype.kind in ('U', 'S', 'O')
+                   and v != 'time'])
+            da.chunk({'time': -1, 'polarization': -1, 'y': 64, 'x': 64}) \
+              .to_zarr(zarr_path)
+        return zarr_path
+
+    print("\nConverting track files to zarr...")
+    train_paths = [nc_to_zarr(p, ZARR_CACHE_DIR) for p in tqdm(train_paths, desc='train')]
+    val_paths   = [nc_to_zarr(p, ZARR_CACHE_DIR) for p in tqdm(val_paths,   desc='val')]
+    test_paths  = [nc_to_zarr(p, ZARR_CACHE_DIR) for p in tqdm(test_paths,  desc='test')]
 
     print(f"\nSplit summary:")
     print(f"  Train: {len(train_paths)} | Val: {len(val_paths)} | Test: {len(test_paths)}")
@@ -252,21 +277,23 @@ if __name__ == '__main__':
     # --- DATALOADERS ---
     train_loader = DataLoader(
         train_dataset, batch_size=256, shuffle=True,
-        num_workers=4, pin_memory=True,
+        num_workers=2, pin_memory=False,
         collate_fn=collate_variable_length, persistent_workers=True
     )
     print(f"Created train DataLoader with {train_loader.num_workers} workers")
+
     val_loader = DataLoader(
         val_dataset, batch_size=256, shuffle=False,
-        num_workers=2, pin_memory=True,
+        num_workers=2, pin_memory=False,
         collate_fn=collate_variable_length, persistent_workers=True
     )
     print(f"Created val DataLoader with {val_loader.num_workers} workers")
 
-    # --- MODEL --- note in_chans=2 for VV+VH
+    # --- MODEL ---
     device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
     print(f"Using device: {device}")
 
+    # in_chans=2 for VV+VH
     model     = SARTransformer(img_size=16, patch_size=8, in_chans=2)
     model     = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
@@ -292,14 +319,13 @@ if __name__ == '__main__':
         model.train()
         train_loss = 0
 
-        # Before your batch loop:
-        train_dataset._counter.value = 0
-        monitor = threading.Thread(
-            target=progress_monitor,
-            args=(train_dataset._counter, len(train_dataset), 'patches'),
-            daemon=True
-        )
-        monitor.start()
+        # train_dataset._counter.value = 0
+        # monitor = threading.Thread(
+            # target=progress_monitor,
+            # args=(train_dataset._counter, len(train_dataset), 'patches'),
+            # daemon=True
+        # )
+        # monitor.start()
 
         train_bar = tqdm(train_loader, desc=f'Epoch {epoch:02d} [train]', leave=True)
         for batch_idx, batch in enumerate(train_bar):
