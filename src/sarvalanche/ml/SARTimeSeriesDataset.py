@@ -17,8 +17,8 @@ class SARTimeSeriesDataset(Dataset):
         self.max_seq_len = max_seq_len
         self.patch_size  = patch_size
         self.stride      = stride if stride is not None else patch_size  # default: non-overlapping
-        self._cache = {}  # per-worker file cache
-        self._counter = mp.Value('i', 0)  # shared integer across workers
+        # self._cache = {}  # per-worker file cache
+        # self._counter = mp.Value('i', 0)  # shared integer across workers
 
 
         # Normalise input to a list
@@ -43,53 +43,44 @@ class SARTimeSeriesDataset(Dataset):
                         'patch_x':   x,
                     })
 
-    def _preload(self):
-        """Call this before creating the DataLoader."""
-        unique_scenes = list(dict.fromkeys(
-            p['scene_idx'] for p in self.valid_patches
-        ))
-        for idx in tqdm(unique_scenes, desc='Preloading scenes'):
-            scene = self.scenes[idx]
-            if isinstance(scene, Path) and scene not in self._cache:
-                ds = self._open(scene)
-                arr = self._ds_to_array(ds).values
-                ds.close()
-                self._cache[scene] = arr
+    # def _preload(self):
+    #     unique_scenes = list(dict.fromkeys(p['scene_idx'] for p in self.valid_patches))
+    #     for idx in tqdm(unique_scenes, desc='Preloading scenes'):
+    #         scene = self.scenes[idx]
+    #         if isinstance(scene, Path):
+    #             self._load_scene(scene)  # populates cache as a side effect
 
-    def _open(self, path: Path):
-        """Open a zarr or netCDF file as a dataset."""
-        if path.suffix == '.zarr':
-            return xr.open_zarr(path, consolidated=False)
-        return xr.open_dataset(path)
+    # def _open(self, path: Path):
+    #     """Open a zarr or netCDF file as a dataset."""
+    #     if path.suffix == '.zarr':
+    #         return xr.open_zarr(path, consolidated=False)
+    #     return xr.open_dataset(path)
 
     def _get_shape(self, scene):
         if isinstance(scene, Path):
-            ds = self._open(scene)
-            da = self._ds_to_array(ds)
-            shape = da.shape[0], da.shape[-2], da.shape[-1]
-            ds.close()
-            return shape
-        else:
-            return scene.shape[0], scene.shape[-2], scene.shape[-1]
+            arr = np.load(scene, mmap_mode='r')
+            return arr.shape[0], arr.shape[-2], arr.shape[-1]
+        return scene.shape[0], scene.shape[-2], scene.shape[-1]
+
+    # def _load_scene(self, scene):
+    #     if isinstance(scene, Path):
+    #         if scene not in self._cache:
+    #             self._cache[scene] = np.load(scene, mmap_mode='r')
+    #         return self._cache[scene]
+    #     return scene
 
     def _load_scene(self, scene):
         if isinstance(scene, Path):
-            if scene not in self._cache:
-                print(f"  Cache miss: {scene.name}")  # should only print once per scene
-                if len(self._cache) >= 10:
-                    oldest = next(iter(self._cache))
-                    del self._cache[oldest]
-                ds = self._open(scene)
-                self._cache[scene] = self._ds_to_array(ds).values
-            return self._cache[scene]
-        return scene
+            # Don't cache — mmap is cheap to re-open, and caching causes blowup
+            return np.load(scene, mmap_mode='r')
+        return scene.values if isinstance(scene, xr.DataArray) else scene
 
 
-    def _ds_to_array(self, ds):
-        if 'backscatter' in ds:
-            return ds['backscatter']
-        return xr.concat([ds['VV'], ds['VH']], dim='polarization') \
-                .transpose('time', 'polarization', 'y', 'x')
+    # def _ds_to_array(self, ds):
+    #     if 'backscatter' in ds:
+    #         return ds['backscatter']
+    #     return xr.concat([ds['VV'], ds['VH']], dim='polarization') \
+    #             .transpose('time', 'polarization', 'y', 'x')
 
     def __len__(self):
         return len(self.valid_patches)
@@ -97,7 +88,6 @@ class SARTimeSeriesDataset(Dataset):
     def __getitem__(self, idx):
         patch_info = self.valid_patches[idx]
         scene      = self._load_scene(self.scenes[patch_info['scene_idx']])
-        print(f"Worker {mp.current_process().name} loading scene {patch_info['scene_idx']} for patch {idx}")  # debug print
 
         T_total    = scene.shape[0]  # was len(scene.time)
         T_baseline = np.random.randint(self.min_seq_len, min(self.max_seq_len, T_total - 1) + 1)
@@ -119,8 +109,8 @@ class SARTimeSeriesDataset(Dataset):
         baseline = np.nan_to_num(baseline, nan=0.0)
         target   = np.nan_to_num(target,   nan=0.0)
 
-        with self._counter.get_lock():
-            self._counter.value += 1
+        # with self._counter.get_lock():
+        #     self._counter.value += 1
 
 
         return {

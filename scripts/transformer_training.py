@@ -240,6 +240,9 @@ if __name__ == '__main__':
     ZARR_CACHE_DIR = CACHE_DIR / 'zarr_cache'
     ZARR_CACHE_DIR.mkdir(exist_ok=True)
 
+    NPY_CACHE_DIR = CACHE_DIR / 'npy_cache'
+    NPY_CACHE_DIR.mkdir(exist_ok=True)
+
     def nc_to_zarr(nc_path: Path, zarr_dir: Path) -> Path:
         zarr_path = zarr_dir / (nc_path.stem + '.zarr')
         if zarr_path.exists():
@@ -270,9 +273,9 @@ if __name__ == '__main__':
 
 
     print("\nConverting track files to npy...")
-    train_paths = [nc_to_npy(p, ZARR_CACHE_DIR) for p in tqdm(train_paths, desc='train')]
-    val_paths   = [nc_to_npy(p, ZARR_CACHE_DIR) for p in tqdm(val_paths,   desc='val')]
-    test_paths  = [nc_to_npy(p, ZARR_CACHE_DIR) for p in tqdm(test_paths,  desc='test')]
+    train_paths = [nc_to_npy(p, NPY_CACHE_DIR) for p in tqdm(train_paths, desc='train')]
+    val_paths   = [nc_to_npy(p, NPY_CACHE_DIR) for p in tqdm(val_paths,   desc='val')]
+    test_paths  = [nc_to_npy(p, NPY_CACHE_DIR) for p in tqdm(test_paths,  desc='test')]
 
     print(f"\nSplit summary:")
     print(f"  Train: {len(train_paths)} | Val: {len(val_paths)} | Test: {len(test_paths)}")
@@ -285,7 +288,7 @@ if __name__ == '__main__':
 
     # --- DATASETS ---
     train_dataset = SARTimeSeriesDataset(train_paths, min_seq_len=MIN_SEQ_LEN, max_seq_len=MAX_SEQ_LEN, patch_size=16, stride=STRIDE)
-    train_dataset._preload()  # load before DataLoader spawns workers
+    # train_dataset._preload()  # load before DataLoader spawns workers
     val_dataset   = SARTimeSeriesDataset(val_paths,   min_seq_len=MIN_SEQ_LEN, max_seq_len=MAX_SEQ_LEN, patch_size=16, stride=STRIDE)
     # val_dataset._preload()  # load before DataLoader spawns workers
     test_dataset  = SARTimeSeriesDataset(test_paths,  min_seq_len=MIN_SEQ_LEN, max_seq_len=MAX_SEQ_LEN, patch_size=16, stride=STRIDE)
@@ -295,7 +298,7 @@ if __name__ == '__main__':
     # --- DATALOADERS ---
     train_loader = DataLoader(
         train_dataset, batch_size=256, shuffle=True,
-        num_workers=2, pin_memory=False,
+        num_workers=8, pin_memory=False,
         collate_fn=collate_variable_length, persistent_workers=True
     )
     print(f"Created train DataLoader with {train_loader.num_workers} workers")
@@ -337,16 +340,17 @@ if __name__ == '__main__':
         model.train()
         train_loss = 0
 
-        train_dataset._counter.value = 0
-        monitor = threading.Thread(
-            target=progress_monitor,
-            args=(train_dataset._counter, len(train_dataset), 'patches'),
-            daemon=True
-        )
-        monitor.start()
+        # train_dataset._counter.value = 0
+        # monitor = threading.Thread(
+        #     target=progress_monitor,
+        #     args=(train_dataset._counter, len(train_dataset), 'patches'),
+        #     daemon=True
+        # )
+        # monitor.start()
 
         train_bar = tqdm(train_loader, desc=f'Epoch {epoch:02d} [train]', leave=True)
         for batch_idx, batch in enumerate(train_bar):
+
             baseline_batch = batch['baseline'].to(device)
             target_batch   = batch['target'].to(device)
 
