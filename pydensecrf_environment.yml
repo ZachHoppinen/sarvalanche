@@ -1,4 +1,4 @@
-name: py38
+name: pydensecrf
 channels:
   - conda-forge
 dependencies:

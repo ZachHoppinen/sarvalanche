@@ -5,6 +5,7 @@ import numpy as np
 import xarray as xr
 from pathlib import Path
 from tqdm.auto import tqdm
+import zarr
 
 
 class SARTimeSeriesDataset(Dataset):
@@ -57,9 +58,7 @@ class SARTimeSeriesDataset(Dataset):
     #     return xr.open_dataset(path)
 
     def _get_shape(self, scene):
-        if isinstance(scene, Path):
-            arr = np.load(scene, mmap_mode='r')
-            return arr.shape[0], arr.shape[-2], arr.shape[-1]
+        scene = self._load_scene(scene)
         return scene.shape[0], scene.shape[-2], scene.shape[-1]
 
     # def _load_scene(self, scene):
@@ -71,11 +70,10 @@ class SARTimeSeriesDataset(Dataset):
 
     def _load_scene(self, scene):
         if isinstance(scene, Path):
-            # Don't cache — mmap is cheap to re-open, and caching causes blowup
+            if scene.suffix == '.zarr':
+                return zarr.open(str(scene), mode='r')['backscatter']
             return np.load(scene, mmap_mode='r')
-        return scene.values if isinstance(scene, xr.DataArray) else scene
-
-
+        return scene
     # def _ds_to_array(self, ds):
     #     if 'backscatter' in ds:
     #         return ds['backscatter']

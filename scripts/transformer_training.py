@@ -36,7 +36,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s  %(levelname)s  %(name)s  %(message)s'
 )
-logging.getLogger('sarvalanche').setLevel(logging.DEBUG)
+# logging.getLogger('sarvalanche').setLevel(logging.DEBUG)
 logging.getLogger('asf_search').setLevel(logging.WARNING)
 
 def progress_monitor(counter, total, desc):
@@ -123,7 +123,7 @@ if __name__ == '__main__':
     CHECKPOINT_PATH = WEIGHTS_DIR /'sar_transformer_best.pth'
 
     # TARGET_CENTERS = ['SNFAC', 'GNFAC', 'CAIC', 'UAC', 'ESAC']
-    TARGET_CENTERS = ['SNFAC', 'GNFAC']
+    TARGET_CENTERS = ['SNFAC', 'GNFAC', 'UAC', 'CAIC']
 
     SEASONS = [
         ('2019-12-01', '2020-03-31'),
@@ -131,12 +131,15 @@ if __name__ == '__main__':
         ('2021-12-01', '2022-03-31'),
     ]
 
-    TEST_SEASON = '2020-12'
-    VAL_ZONES = (
-    'GNFAC_Southern_Madison_Range',
-    'SNFAC_Banner_Summit',
-    )
-
+    TEST_ZONES = {
+        'GNFAC_Bridger_Range',
+        'SNFAC_Soldier_Mountain',
+        'UAC_Abajos'
+    }
+    VAL_ZONES = {
+        'GNFAC_Southern_Madison_Range',
+        'SNFAC_Banner_Summit',
+    }
     resolution = resolution_to_degrees(RESOLUTION_M, validate_crs(CRS))
 
     # --- FETCH ZONES ---
@@ -194,9 +197,9 @@ if __name__ == '__main__':
                     del ds
                     print(f"  Found all {len(existing_tracks)} cached tracks, skipping assembly")
                     for f in existing_tracks:
-                        if season_key == TEST_SEASON:
+                        if any(zone_key.startswith(z) for z in TEST_ZONES):
                             test_paths.append(f)
-                        elif zone_key in VAL_ZONES:
+                        elif any(zone_key.startswith(z) for z in VAL_ZONES):
                             val_paths.append(f)
                         else:
                             train_paths.append(f)
@@ -217,21 +220,19 @@ if __name__ == '__main__':
 
                     del ds_track
 
-                    if season_key == TEST_SEASON:
+                    if any(zone_key.startswith(z) for z in TEST_ZONES):
                         test_paths.append(cache_file_track)
-                    elif zone_key in VAL_ZONES:
+                    elif any(zone_key.startswith(z) for z in VAL_ZONES):
                         val_paths.append(cache_file_track)
                     else:
                         train_paths.append(cache_file_track)
+
 
                 # Clean up full ds and opera dir
                 import gc
                 ds.close()
                 del ds
                 gc.collect()
-                # opera_dir = CACHE_DIR / 'opera'
-                # if opera_dir.exists():
-                #     shutil.rmtree(opera_dir)
 
             except Exception as e:
                 print(f"  FAILED: {e}")
@@ -255,7 +256,7 @@ if __name__ == '__main__':
             da = da.drop_vars([v for v in da.coords
                             if da.coords[v].dtype.kind in ('U', 'S', 'O')
                             and v != 'time'])
-            da.chunk({'time': -1, 'polarization': -1, 'y': 128, 'x': 128}) \
+            da.chunk({'time': 1, 'polarization': -1, 'y': 128, 'x': 128}) \
             .to_zarr(zarr_path, consolidated=False)
         return zarr_path
 
@@ -273,9 +274,9 @@ if __name__ == '__main__':
 
 
     print("\nConverting track files to npy...")
-    train_paths = [nc_to_npy(p, NPY_CACHE_DIR) for p in tqdm(train_paths, desc='train')]
-    val_paths   = [nc_to_npy(p, NPY_CACHE_DIR) for p in tqdm(val_paths,   desc='val')]
-    test_paths  = [nc_to_npy(p, NPY_CACHE_DIR) for p in tqdm(test_paths,  desc='test')]
+    train_paths = [nc_to_zarr(p, ZARR_CACHE_DIR) for p in tqdm(train_paths, desc='train')]
+    val_paths   = [nc_to_zarr(p, ZARR_CACHE_DIR) for p in tqdm(val_paths,   desc='val')]
+    test_paths  = [nc_to_zarr(p, ZARR_CACHE_DIR) for p in tqdm(test_paths,  desc='test')]
 
     print(f"\nSplit summary:")
     print(f"  Train: {len(train_paths)} | Val: {len(val_paths)} | Test: {len(test_paths)}")
@@ -449,7 +450,7 @@ if __name__ == '__main__':
         },
         'zones':   list(zones.keys()),
         'seasons': SEASONS,
-    }, 'sar_transformer_final.pth')
+    }, WEIGHTS_DIR / 'sar_transformer_final.pth')
 
     # --- TEST EVALUATION ---
     test_loader = DataLoader(
