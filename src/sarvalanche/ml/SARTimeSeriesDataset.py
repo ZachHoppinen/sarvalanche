@@ -4,6 +4,7 @@ import torch.multiprocessing as mp
 import numpy as np
 import xarray as xr
 from pathlib import Path
+from tqdm.auto import tqdm
 
 
 class SARTimeSeriesDataset(Dataset):
@@ -17,7 +18,7 @@ class SARTimeSeriesDataset(Dataset):
         self.patch_size  = patch_size
         self.stride      = stride if stride is not None else patch_size  # default: non-overlapping
         self._cache = {}  # per-worker file cache
-        # self._counter = mp.Value('i', 0)  # shared integer across workers
+        self._counter = mp.Value('i', 0)  # shared integer across workers
 
 
         # Normalise input to a list
@@ -42,28 +43,53 @@ class SARTimeSeriesDataset(Dataset):
                         'patch_x':   x,
                     })
 
+    def _preload(self):
+        """Call this before creating the DataLoader."""
+        unique_scenes = list(dict.fromkeys(
+            p['scene_idx'] for p in self.valid_patches
+        ))
+        for idx in tqdm(unique_scenes, desc='Preloading scenes'):
+            scene = self.scenes[idx]
+            if isinstance(scene, Path) and scene not in self._cache:
+                ds = self._open(scene)
+                arr = self._ds_to_array(ds).values
+                ds.close()
+                self._cache[scene] = arr
+
+    def _open(self, path: Path):
+        """Open a zarr or netCDF file as a dataset."""
+        if path.suffix == '.zarr':
+            return xr.open_zarr(path, consolidated=False)
+        return xr.open_dataset(path)
+
     def _get_shape(self, scene):
-        """Get (T, H, W) without loading data for Path inputs."""
         if isinstance(scene, Path):
-            with xr.open_dataset(scene) as ds:
-                da = self._ds_to_array(ds)
-                return da.shape[0], da.shape[-2], da.shape[-1]
+            ds = self._open(scene)
+            da = self._ds_to_array(ds)
+            shape = da.shape[0], da.shape[-2], da.shape[-1]
+            ds.close()
+            return shape
         else:
             return scene.shape[0], scene.shape[-2], scene.shape[-1]
 
     def _load_scene(self, scene):
         if isinstance(scene, Path):
             if scene not in self._cache:
-                ds = xr.open_dataset(scene)
-                self._cache[scene] = self._ds_to_array(ds)  # lazy DataArray
+                print(f"  Cache miss: {scene.name}")  # should only print once per scene
+                if len(self._cache) >= 10:
+                    oldest = next(iter(self._cache))
+                    del self._cache[oldest]
+                ds = self._open(scene)
+                self._cache[scene] = self._ds_to_array(ds).values
             return self._cache[scene]
         return scene
 
 
     def _ds_to_array(self, ds):
-        """Stack VV+VH into (time, polarization, y, x)."""
+        if 'backscatter' in ds:
+            return ds['backscatter']
         return xr.concat([ds['VV'], ds['VH']], dim='polarization') \
-                 .transpose('time', 'polarization', 'y', 'x')
+                .transpose('time', 'polarization', 'y', 'x')
 
     def __len__(self):
         return len(self.valid_patches)
@@ -71,8 +97,9 @@ class SARTimeSeriesDataset(Dataset):
     def __getitem__(self, idx):
         patch_info = self.valid_patches[idx]
         scene      = self._load_scene(self.scenes[patch_info['scene_idx']])
+        print(f"Worker {mp.current_process().name} loading scene {patch_info['scene_idx']} for patch {idx}")  # debug print
 
-        T_total    = len(scene.time)
+        T_total    = scene.shape[0]  # was len(scene.time)
         T_baseline = np.random.randint(self.min_seq_len, min(self.max_seq_len, T_total - 1) + 1)
 
         max_start = T_total - T_baseline - 1
@@ -86,29 +113,15 @@ class SARTimeSeriesDataset(Dataset):
         y_start = patch_info['patch_y']
         x_start = patch_info['patch_x']
 
-        baseline = scene.isel(
-            time=slice(t_start, t_end),
-            y=slice(y_start, y_start + self.patch_size),
-            x=slice(x_start, x_start + self.patch_size)
-        ).values
-
-        target = scene.isel(
-            time=t_end,
-            y=slice(y_start, y_start + self.patch_size),
-            x=slice(x_start, x_start + self.patch_size)
-        ).values
-
-        # Ensure channel dim exists for single-pol case
-        if baseline.ndim == 3:
-            baseline = baseline[:, None, :, :]
-        if target.ndim == 2:
-            target = target[None, :, :]
+        baseline = scene[t_start:t_end, :, y_start:y_start+self.patch_size, x_start:x_start+self.patch_size]
+        target   = scene[t_end,         :, y_start:y_start+self.patch_size, x_start:x_start+self.patch_size]
 
         baseline = np.nan_to_num(baseline, nan=0.0)
         target   = np.nan_to_num(target,   nan=0.0)
 
-        # with self._counter.get_lock():
-        #     self._counter.value += 1
+        with self._counter.get_lock():
+            self._counter.value += 1
+
 
         return {
             'baseline': torch.FloatTensor(baseline),
