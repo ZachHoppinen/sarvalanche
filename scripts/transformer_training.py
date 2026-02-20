@@ -155,6 +155,10 @@ if __name__ == '__main__':
         bounds = zone_info['aoi'].bounds  # (minx, miny, maxx, maxy)
         width_deg  = bounds[2] - bounds[0]
         height_deg = bounds[3] - bounds[1]
+        if (width_deg * height_deg) > 0.8:
+            print(f"{zone_key:50s}  {width_deg:.2f}° x {height_deg:.2f}°  — SKIPPED (too large)")
+            continue
+
         print(f"{zone_key:50s}  {width_deg:.2f}° x {height_deg:.2f}°")
 
         for start_date, stop_date in SEASONS:

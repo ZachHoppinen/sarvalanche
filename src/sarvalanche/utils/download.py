@@ -1,6 +1,7 @@
 """
 Utility functions for downloading files
 """
+import os
 import hashlib
 from pathlib import Path
 import time
@@ -11,6 +12,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm.auto import tqdm
 import asf_search as asf
 from asf_search import download_url
+
+from sarvalanche.utils.validation import validate_geotiff_thorough
 
 import logging
 log = logging.getLogger(__name__)
@@ -74,6 +77,7 @@ def download_urls_parallel(
     max_workers=10,
     timeout=20,
     description = None,
+    validate_geotiffs=True
 ):
     """
     Faster parallel downloader using a shared requests.Session,
@@ -124,5 +128,42 @@ def download_urls_parallel(
         if description is None: description = 'Downloading'
         for fut in tqdm(as_completed(futures), total=len(urls), desc=description):
             download_fps.append(fut.result())
+
+    # POST-DOWNLOAD VALIDATION (optional, only for GeoTIFFs)
+    if validate_geotiffs:
+        log.debug("Validating downloaded files...")
+        corrupted = []
+
+        for fp in tqdm(download_fps, desc='Validating'):
+            # Only validate if it looks like a GeoTIFF
+            if str(fp).lower().endswith('.tif') or str(fp).lower().endswith('.tiff'):
+                if not validate_geotiff_thorough(fp):
+                    corrupted.append(fp)
+
+        # Retry corrupted files
+        if corrupted:
+            log.warning(f"Found {len(corrupted)} corrupted files, retrying...")
+
+            # Delete corrupted files
+            for fp in corrupted:
+                if fp.exists():
+                    os.remove(fp)
+                    download_fps.remove(fp)
+
+            # Re-download corrupted files
+            corrupted_urls = [url for url in urls if (out_directory / Path(url).name) in corrupted]
+
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                futures = {ex.submit(download_one, url): url for url in corrupted_urls}
+                for fut in tqdm(as_completed(futures), total=len(corrupted_urls),
+                               desc='Retrying corrupted'):
+                    retry_fp = fut.result()
+
+                    # Validate retry
+                    if validate_geotiff_thorough(retry_fp):
+                        download_fps.append(retry_fp)
+                    else:
+                        log.warning(f"Still corrupted after retry: {retry_fp.name}")
+
 
     return sorted(download_fps)

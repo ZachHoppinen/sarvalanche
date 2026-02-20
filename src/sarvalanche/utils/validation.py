@@ -9,9 +9,58 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import xarray as xr
+import rasterio
 from pyproj import CRS
 
 from .constants import REQUIRED_ATTRS, temporal_only_vars
+
+def validate_geotiff_quick(filepath):
+    """Quick validation - just check if file opens and can read first tile"""
+    try:
+        with rasterio.open(filepath) as src:
+            # Try to read a tiny bit
+            _ = src.read(1, window=((0, min(10, src.height)),
+                                   (0, min(10, src.width))))
+        return True
+    except:
+        return False
+
+def validate_geotiff_thorough(filepath):
+    """More thorough validation - sample multiple tiles across the image"""
+    try:
+        with rasterio.open(filepath) as src:
+            height, width = src.height, src.width
+
+            # Sample 9 points: corners, edges, and center
+            test_points = [
+                (0, 0),                          # Top-left
+                (0, width // 2),                 # Top-center
+                (0, max(0, width - 10)),         # Top-right
+                (height // 2, 0),                # Middle-left
+                (height // 2, width // 2),       # Center
+                (height // 2, max(0, width - 10)), # Middle-right
+                (max(0, height - 10), 0),        # Bottom-left
+                (max(0, height - 10), width // 2), # Bottom-center
+                (max(0, height - 10), max(0, width - 10)), # Bottom-right
+            ]
+
+            # Try to read a small window at each point
+            for row, col in test_points:
+                _ = src.read(1, window=((row, min(row + 10, height)),
+                                       (col, min(col + 10, width))))
+
+        return True
+
+    except Exception as e:
+        error_str = str(e)
+        # Check for TIFF corruption errors
+        if any(x in error_str for x in ['TIFF', 'IReadBlock', 'ReadEncodedTile', 'Read failed']):
+            return False  # Definitely corrupted
+        else:
+            # Truly unknown error - print and reject to be safe
+            print(f"⚠️  Unknown error validating {filepath.name}: {e}")
+            return False  # Reject on unknown errors too
+
 
 def check_db_linear(da: xr.DataArray):
     """
@@ -776,11 +825,11 @@ def validate_weights_sum_to_one(
 def validate_time_weights(data: xr.DataArray, tolerance: float = 1e-6) -> bool:
     """
     Convenience function to validate weights along 'time' dimension.
-    
+
     Args:
         data: xarray DataArray containing weights
         tolerance: Numerical tolerance for sum check
-        
+
     Returns:
         True if validation passes
     """
@@ -790,11 +839,11 @@ def validate_time_weights(data: xr.DataArray, tolerance: float = 1e-6) -> bool:
 def validate_orbit_weights(data: xr.DataArray, tolerance: float = 1e-6) -> bool:
     """
     Convenience function to validate weights along 'static_orbit' dimension.
-    
+
     Args:
         data: xarray DataArray containing weights
         tolerance: Numerical tolerance for sum check
-        
+
     Returns:
         True if validation passes
     """

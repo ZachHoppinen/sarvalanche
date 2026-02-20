@@ -7,6 +7,7 @@ from shapely.ops import transform as shapely_transform
 from rasterio.transform import from_bounds
 from pyproj.aoi import AreaOfInterest
 from pyproj.database import query_utm_crs_info
+from shapely.geometry import box
 
 from sarvalanche.utils.constants import OPERA_RESOLUTION
 from sarvalanche.utils.validation import validate_crs
@@ -123,3 +124,41 @@ def make_opera_reference_grid(*, aoi, aoi_crs, dtype="float32", fill_value=np.na
     da = da.rio.write_transform(transform)
 
     return da
+
+def tile_aoi(aoi, aoi_crs, max_size=0.5):
+    """
+    Split a shapely geometry into tiles.
+    max_size is in degrees — converted to native CRS units automatically.
+    """
+    crs = validate_crs(aoi_crs)
+
+    if crs.is_geographic:
+        max_native = max_size  # already in degrees
+    else:
+        # Convert max_size degrees to metres at the centroid
+        cx, cy = aoi.centroid.x, aoi.centroid.y
+        to_geo = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+        lon, lat = to_geo.transform(cx, cy)
+        # 1 degree latitude ≈ 111320m, use that as approximation
+        max_native = max_size * 111320
+
+    minx, miny, maxx, maxy = aoi.bounds
+    width  = maxx - minx
+    height = maxy - miny
+
+    if width <= max_native and height <= max_native:
+        yield (0, 0), aoi
+        return
+
+    nx = int(np.ceil(width  / max_native))
+    ny = int(np.ceil(height / max_native))
+    tile_w = width  / nx
+    tile_h = height / ny
+
+    for ix in range(nx):
+        for iy in range(ny):
+            x0 = minx + ix * tile_w
+            x1 = x0 + tile_w
+            y0 = miny + iy * tile_h
+            y1 = y0 + tile_h
+            yield (ix, iy), box(x0, y0, x1, y1)
