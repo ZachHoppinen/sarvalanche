@@ -21,7 +21,6 @@ from sarvalanche.preprocessing.radiometric import linear_to_dB
 from sarvalanche.ml.SARTimeSeriesDataset import SARTimeSeriesDataset
 from sarvalanche.ml.SARTransformer import SARTransformer
 from sarvalanche.ml.losses import nll_loss
-from sarvalanche.ml.inference import predict_with_sweeping
 from sarvalanche.io.export import export_netcdf
 from sarvalanche.io.dataset import load_netcdf_to_dataset
 from sarvalanche.ml.export_weights import export_weights
