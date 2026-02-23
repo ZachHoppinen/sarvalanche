@@ -5,13 +5,11 @@ from pathlib import Path
 from typing import Optional
 
 from sarvalanche.utils.generators import iter_track_pol_combinations
-from sarvalanche.weights.combinations import combine_weights
-from sarvalanche.weights.polarizations import get_polarization_weights
-from sarvalanche.utils.validation import validate_weights_sum_to_one
-from sarvalanche.probabilities.combine import combine_probabilities
 from sarvalanche.features.mahalanobis_distance import mahalanobis_distance
 from sarvalanche.ml.inference import load_model
 from sarvalanche.probabilities.z_score import z_score_to_probability
+from sarvalanche.preprocessing.radiometric import linear_to_dB
+from sarvalanche.utils.validation import check_db_linear
 
 _DEFAULT_WEIGHTS = Path(__file__).parent.parent / 'ml' / 'weights' / 'sar_transformer_best.pth'
 
@@ -19,7 +17,6 @@ def calculate_ml_distances(
     ds: xr.Dataset,
     avalanche_date: np.datetime64,
     model_weights: Optional[Path] = _DEFAULT_WEIGHTS,
-    validate_weights: bool = True,
     device: str = 'mps',
     stride: int = 4,
     batch_size: int = 128,
@@ -61,8 +58,6 @@ def calculate_ml_distances(
         Combined ML distance (signed z-score) across all track/pol combos.
     """
     results        = []
-    resolution_weights = []
-    pol_weights    = []
     track_pol_labels = []
 
     model = load_model(model_weights)
@@ -70,6 +65,8 @@ def calculate_ml_distances(
     model.eval()
     with torch.no_grad():
         for track, pol, da in iter_track_pol_combinations(ds):
+            if check_db_linear(da) != 'dB':
+                da = linear_to_dB(da)
 
             distance, sigma_da = mahalanobis_distance(da, avalanche_date, model, device=device,
                                              stride=stride, batch_size=batch_size)
@@ -85,8 +82,6 @@ def calculate_ml_distances(
             }
 
             results.append(distance)
-            resolution_weights.append(ds['w_resolution'].sel(static_track=track))
-            pol_weights.append(get_polarization_weights(pol))
             track_pol_labels.append(f"{track}_{pol}")
 
     if not results:
@@ -99,7 +94,7 @@ def calculate_ml_distances(
         drop=True
     ).max(dim='track_pol')
 
-    probability = z_score_to_probability(combined_distance, threshold = 1.0)
+    probability = z_score_to_probability(combined_distance, threshold = 3.0)
 
     probability.attrs = {
         'source':             'sarvalanche',

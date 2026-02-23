@@ -22,4 +22,4 @@ if __name__ == '__main__':
     from sarvalanche.detection_pipeline import run_detection
 
     cache_dir = Path('/Users/zmhoppinen/Documents/sarvalanche/local/data')
-    ds = run_detection(aoi, crs, resolution, start_date, stop_date, avalanche_date, cache_dir=cache_dir, overwrite=False)
+    ds = run_detection(aoi, crs, resolution, start_date, stop_date, avalanche_date, cache_dir=cache_dir, overwrite=True)
