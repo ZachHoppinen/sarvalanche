@@ -14,6 +14,10 @@ from sarvalanche.io.export import export_netcdf
 from sarvalanche.detection.backscatter_change import calculate_empirical_backscatter_probability
 # from sarvalanche.detection.backscatter_detections import calculate_ecdf_backscatter_probability
 
+# ml mahalanobis
+from sarvalanche.detection.mahalanobis import calculate_ml_distances
+
+
 # probability combinations
 from sarvalanche.probabilities.combine import combine_probabilities
 
@@ -35,6 +39,9 @@ def get_pixelwise_probabilities(
                                                                     agreement_strength=0.8,
                                                                     min_prob_threshold=0.2)
 
+    # another based on ml predicted vs observed backscatter (mahalanobis distance)
+    ds['distance_mahalanobis'] = calculate_ml_distances(ds, avalanche_date)
+
     # Static factors are the "prior" - how likely is avalanche here in general?
     p_prior = combine_probabilities(
         xr.concat([ds['p_fcf'], ds['p_runout'], ds['p_slope'], ds['p_swe']], dim='factor'),
@@ -43,7 +50,7 @@ def get_pixelwise_probabilities(
     )
 
     # Empirical is the "likelihood" - did we detect something?
-    p_likelihood = ds['p_empirical']
+    p_likelihood = xr.ufuncs.maximum(ds['p_empirical'], ds['distance_mahalanobis'])
 
     # Standard Bayesian update (allows increases and decreases)
     p_bayesian = p_prior * p_likelihood / (

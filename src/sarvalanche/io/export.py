@@ -1,34 +1,54 @@
 import numpy as np
 import pandas as pd
 
-def export_netcdf(ds, filepath, overwrite = True):
+def _sanitize_attrs(attrs: dict) -> dict:
+    """Convert attr values to netCDF-safe types."""
+    clean = {}
+    for k, v in attrs.items():
+        if isinstance(v, pd.Timestamp):
+            clean[k] = str(v.date())
+        elif isinstance(v, np.bool_):
+            clean[k] = int(v)
+        elif isinstance(v, (np.integer,)):
+            clean[k] = int(v)
+        elif isinstance(v, (np.floating,)):
+            clean[k] = float(v)
+        elif isinstance(v, np.ndarray):
+            clean[k] = v.tolist()
+        else:
+            clean[k] = v
+    return clean
+
+
+def export_netcdf(ds, filepath, overwrite=True):
     assert filepath.suffix == '.nc'
     ds.attrs['crs'] = str(ds.rio.crs)
+
+    # Sanitize dataset-level attrs
+    ds.attrs = _sanitize_attrs(ds.attrs)
+
+    # Sanitize all variable and coordinate attrs
+    for var in list(ds.data_vars) + list(ds.coords):
+        ds[var].attrs = _sanitize_attrs(ds[var].attrs)
 
     # Reset any MultiIndex before saving
     for coord in ds.coords:
         if isinstance(ds.indexes.get(coord), pd.MultiIndex):
             ds = ds.reset_index(coord)
 
-    # Build encoding - compress all data variables
+    # Build encoding
     encoding = {}
     for var in ds.data_vars:
         encoding[var] = {'zlib': True, 'complevel': 4}
-        # Remove _FillValue from attributes if it exists (will be set in encoding)
         if '_FillValue' in ds[var].attrs:
             del ds[var].attrs['_FillValue']
-
-        # Set _FillValue in encoding for float types
         if ds[var].dtype.kind == 'f':
             encoding[var]['_FillValue'] = np.nan
 
-
-    # Explicitly encode scalar string coordinates to prevent mangling
     for coord_name in ['variable', 'band', 'spatial_ref']:
         if coord_name in ds.coords:
             coord = ds.coords[coord_name]
             if coord.dtype.kind in ['U', 'S']:
-                # Store as fixed-length string
                 encoding[coord_name] = {'dtype': f'S{coord.dtype.itemsize}'}
 
     if overwrite:

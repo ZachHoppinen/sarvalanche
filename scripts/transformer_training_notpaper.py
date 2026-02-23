@@ -436,6 +436,9 @@ if __name__ == '__main__':
                 mu, sigma      = model(baseline_batch)
                 # Val loss is pure NLL — no augmentation, no reg penalty
                 batch_val_loss = nll_loss(mu, sigma, target_batch).item()
+                if not np.isfinite(batch_val_loss):
+                    print(f'  [val] skipping non-finite batch loss: {batch_val_loss:.4f}')
+                    continue
                 val_loss      += batch_val_loss
                 val_bar.set_postfix({'val_loss': f'{batch_val_loss:.4f}'})
 

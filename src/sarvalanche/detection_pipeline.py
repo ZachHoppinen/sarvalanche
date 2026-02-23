@@ -194,7 +194,6 @@ def run_detection(
     timer.step('6.5_apply_masks')
     ds = apply_exclusion_masks(ds)
 
-
     # ================================================================
     # Step 7: Group and refine detections
     # ================================================================

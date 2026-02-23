@@ -186,7 +186,7 @@ def plot_scene(res, out_dir):
     imshow(axes[0], obs,   STYLE['cmap_sar'], vmin_sar, vmax_sar, 'Observed VV (dB)')
     imshow(axes[1], mu,    STYLE['cmap_sar'], vmin_sar, vmax_sar, 'Predicted μ (dB)')
     imshow(axes[2], sigma, STYLE['cmap_sig'], 0, min(np.nanpercentile(sigma, 99), 5), 'Predicted σ (dB)')
-    imshow(axes[3], err,   STYLE['cmap_err'], -v_err, v_err, 'Error μ−obs (dB)', symmetric=True)
+    imshow(axes[3], err/sigma,   STYLE['cmap_err'], -v_err, v_err, 'Error (μ-obs)/σ (dB)', symmetric=True)
 
     # Row 2: histograms + scatter
     ax_obs_hist = axes[4]

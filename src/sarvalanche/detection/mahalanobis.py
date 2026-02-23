@@ -1,269 +1,112 @@
-# import numpy as np
-# import xarray as xr
-# from typing import List, Optional, Dict
+import numpy as np
+import xarray as xr
+import torch
+from pathlib import Path
+from typing import Optional
 
-# from sarvalanche.utils.generators import iter_track_pol_combinations
-# from sarvalanche.probabilities.combine import combine_probabilities
-# from sarvalanche.weights.combinations import combine_weights
-# from sarvalanche.weights.polarizations import get_polarization_weights
-# from sarvalanche.utils.validation import validate_weights_sum_to_one
-# from sarvalanche.features.mahalanobis_distance import mahalanobis_distance_1d
+from sarvalanche.utils.generators import iter_track_pol_combinations
+from sarvalanche.weights.combinations import combine_weights
+from sarvalanche.weights.polarizations import get_polarization_weights
+from sarvalanche.utils.validation import validate_weights_sum_to_one
+from sarvalanche.probabilities.combine import combine_probabilities
+from sarvalanche.features.mahalanobis_distance import mahalanobis_distance
+from sarvalanche.ml.inference import load_model
+from sarvalanche.probabilities.z_score import z_score_to_probability
 
+_DEFAULT_WEIGHTS = Path(__file__).parent.parent / 'ml' / 'weights' / 'sar_transformer_best.pth'
 
-# def calculate_mahalanobis_distances(
-#     ds: xr.Dataset,
-#     avalanche_date: str,
-#     prior_window: Optional[int] = None,
-#     combination_method: str = 'weighted_mean',
-#     use_agreement_boosting: bool = False,
-#     agreement_strength: float = 0.8,
-#     min_distance_threshold: float = 2.0,
-#     validate_weights: bool = True,
-# ) -> xr.DataArray:
-#     """
-#     Calculate Mahalanobis distance across multiple orbit geometries and polarizations.
+def calculate_ml_distances(
+    ds: xr.Dataset,
+    avalanche_date: np.datetime64,
+    model_weights: Optional[Path] = _DEFAULT_WEIGHTS,
+    validate_weights: bool = True,
+    device: str = 'mps',
+    stride: int = 4,
+    batch_size: int = 128,
+) -> xr.DataArray:
+    """
+    ML-based replacement for calculate_mahalanobis_distances.
 
-#     Combines distances across all track/polarization combinations with optional
-#     agreement boosting.
+    Uses the SAR transformer to predict the expected backscatter and its
+    uncertainty, then computes a signed z-score distance per track/pol
+    combination. Combines across tracks/pols using the same weighting and
+    agreement-boosting logic as the Mahalanobis pipeline.
 
-#     Parameters
-#     ----------
-#     ds : xr.Dataset
-#         Dataset containing backscatter data and weights
-#     avalanche_date : str
-#         Date of avalanche event (e.g., '2021-01-15')
-#     prior_window : int, optional
-#         Number of prior timesteps for baseline statistics
-#     combination_method : str, default 'weighted_mean'
-#         How to combine distances:
-#         - 'weighted_mean': Weighted average using resolution/polarization weights
-#         - 'max': Take maximum absolute distance (most sensitive)
-#         - 'mean': Simple average
-#         - 'median': Median distance
-#     use_agreement_boosting : bool, default False
-#         If True, boost distance when multiple tracks/pols agree
-#     agreement_strength : float, default 0.8
-#         How much to boost for full agreement (0.0-1.0)
-#         Only used if use_agreement_boosting=True
-#     min_distance_threshold : float, default 2.0
-#         Minimum distance to consider as "detection" for agreement
-#         Only used if use_agreement_boosting=True
-#     validate_weights : bool, default True
-#         If True, validate that weights sum to 1.0
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Dataset containing VV and VH backscatter with time and track coords.
+    model : torch.nn.Module
+        Loaded SARTransformer in eval mode.
+    combination_method : str
+        'weighted_mean' | 'max' | 'mean' | 'median'
+    use_agreement_boosting : bool
+        If True, boost signal when multiple tracks/pols agree on anomaly.
+    agreement_strength : float
+        Boosting magnitude (0-1). Only used if use_agreement_boosting=True.
+    min_distance_threshold : float
+        Z-score threshold for "detection" in agreement boosting.
+    validate_weights : bool
+        Validate that weights sum to 1.0.
+    device : str
+        Torch device ('mps', 'cuda', 'cpu').
+    stride : int
+        Inference stride for sweeping window.
+    batch_size : int
+        Inference batch size.
 
-#     Returns
-#     -------
-#     xr.DataArray
-#         Combined Mahalanobis distance across all track/pol combinations
+    Returns
+    -------
+    xr.DataArray
+        Combined ML distance (signed z-score) across all track/pol combos.
+    """
+    results        = []
+    resolution_weights = []
+    pol_weights    = []
+    track_pol_labels = []
 
-#     Examples
-#     --------
-#     >>> # Standard weighted average (no agreement boosting)
-#     >>> d = calculate_mahalanobis_distances(
-#     ...     ds, '2021-01-15', combination_method='weighted_mean'
-#     ... )
+    model = load_model(model_weights)
 
-#     >>> # With agreement boosting (recommended)
-#     >>> d = calculate_mahalanobis_distances(
-#     ...     ds, '2021-01-15', use_agreement_boosting=True, agreement_strength=0.8
-#     ... )
+    model.eval()
+    with torch.no_grad():
+        for track, pol, da in iter_track_pol_combinations(ds):
 
-#     >>> # Maximum distance (most sensitive)
-#     >>> d = calculate_mahalanobis_distances(
-#     ...     ds, '2021-01-15', combination_method='max'
-#     ... )
-#     """
-#     results = []
-#     resolution_weights = []
-#     pol_weights = []
-#     track_pol_labels = []
+            distance, sigma_da = mahalanobis_distance(da, avalanche_date, model, device=device,
+                                             stride=stride, batch_size=batch_size)
 
-#     for track, pol, da in iter_track_pol_combinations(ds):
+            # Store per-combo products in dataset for reference / debugging
+            ds[f'd_{track}_{pol}_ml']    = distance
+            ds[f'sigma_{track}_{pol}_ml'] = sigma_da
 
-#         # Compute distance for this track-pol combination
-#         distance = mahalanobis_distance_1d(
-#             da,
-#             avalanche_date=avalanche_date,
-#             prior_window=prior_window
-#         ).isel(time = slice(0, 3)).mean('time')
+            ds[f'd_{track}_{pol}_ml'].attrs = {
+                'units':   'standard_deviations',
+                'source':  'sarvalanche',
+                'product': 'ml_transformer_distance',
+            }
 
-#         # Store in dataset for reference
-#         ds[f'd_{track}_{pol}_mahalanobis'] = distance
-#         ds[f'd_{track}_{pol}_mahalanobis'].attrs = {
-#             'units': 'standard_deviations',
-#             'source': 'sarvalanche',
-#             'product': 'orbit_mahalanobis_distances'
-#         }
+            results.append(distance)
+            resolution_weights.append(ds['w_resolution'].sel(static_track=track))
+            pol_weights.append(get_polarization_weights(pol))
+            track_pol_labels.append(f"{track}_{pol}")
 
-#         results.append(distance)
-#         resolution_weights.append(ds['w_resolution'].sel(static_track=track))
-#         pol_weights.append(get_polarization_weights(pol))
-#         track_pol_labels.append(f"{track}_{pol}")
+    if not results:
+        raise ValueError('No results generated by ML distance calculation.')
 
-#     if not results:
-#         raise ValueError('No results generated by Mahalanobis distance calculation.')
+    distances = xr.concat(results, dim='track_pol').assign_coords(track_pol=track_pol_labels)
 
-#     # Stack everything
-#     distances = xr.concat(results, dim="track_pol").assign_coords(track_pol=track_pol_labels)
+    combined_distance = distances.where(
+        lambda x: np.abs(x) == np.abs(distances).max(dim='track_pol'),
+        drop=True
+    ).max(dim='track_pol')
 
-#     # Combine based on method
-#     if combination_method == 'max':
-#         # Take max absolute value (most sensitive)
-#         combined_distance = distances.where(
-#             lambda x: np.abs(x) == np.abs(distances).max(dim='track_pol'),
-#             drop=True
-#         ).max(dim='track_pol')
+    probability = z_score_to_probability(combined_distance, threshold = 1.0)
 
-#     elif combination_method == 'mean':
-#         # Simple average
-#         combined_distance = distances.mean(dim='track_pol')
+    probability.attrs = {
+        'source':             'sarvalanche',
+        'units':              'probability [0, 1]',
+        'product':            'combined_ml_probability',
+        'method':             'transformer_z_score',
+        'combination_method': 'max',
+    }
 
-#     elif combination_method == 'median':
-#         # Median
-#         combined_distance = distances.median(dim='track_pol')
-
-#     elif combination_method == 'weighted_mean':
-#         # Weighted combination (like the empirical pipeline)
-#         resolution_weights = xr.concat(
-#             resolution_weights,
-#             dim='track_pol'
-#         ).assign_coords(track_pol=track_pol_labels)
-
-#         # Convert pol_weights list to DataArray
-#         pol_weights = xr.DataArray(
-#             np.array(pol_weights),
-#             dims=['track_pol'],
-#             coords={'track_pol': track_pol_labels},
-#             name='w_polarization'
-#         )
-
-#         # Combine weights (normalizes to sum to 1.0)
-#         combined_weights = combine_weights(
-#             resolution_weights,
-#             pol_weights,
-#             dim='track_pol'
-#         )
-
-#         # Validate the final combined weights
-#         if validate_weights:
-#             validate_weights_sum_to_one(combined_weights, dim='track_pol')
-
-#         if use_agreement_boosting:
-#             # Use agreement boosting via combine_probabilities on normalized distances
-#             # First normalize distances to [0, 1] range for agreement boosting
-#             # This is a bit hacky but allows us to use the same boosting logic
-#             distances_norm = np.abs(distances) / (np.abs(distances).max() + 1e-10)
-
-#             combined_distance_norm = combine_probabilities(
-#                 distances_norm,
-#                 weights=combined_weights,
-#                 method='log_odds',
-#                 dim='track_pol',
-#                 min_prob_threshold=min_distance_threshold / np.abs(distances).max().values,
-#                 agreement_strength=agreement_strength,
-#                 agreement_boosting=True
-#             )
-
-#             # Scale back to original distance units
-#             combined_distance = combined_distance_norm * np.abs(distances).max()
-#         else:
-#             # Simple weighted average
-#             combined_distance = (distances * combined_weights).sum(dim='track_pol')
-
-#     else:
-#         raise ValueError(f"Unknown combination method: {combination_method}")
-
-#     combined_distance.attrs = {
-#         'source': 'sarvalanche',
-#         'units': 'standard_deviations',
-#         'product': 'combined_mahalanobis_distance',
-#         'method': 'mahalanobis_distance',
-#         'combination_method': combination_method,
-#         'avalanche_date': avalanche_date,
-#         'agreement_boosting': int(use_agreement_boosting),
-#     }
-
-#     if use_agreement_boosting:
-#         combined_distance.attrs['agreement_strength'] = agreement_strength
-#         combined_distance.attrs['min_distance_threshold'] = min_distance_threshold
-
-#     return combined_distance
-
-
-# def compute_vote_threshold(
-#     ds: xr.Dataset,
-#     avalanche_date: str,
-#     threshold: float = 3.0,
-#     prior_window: Optional[int] = None,
-#     min_votes: int = 2
-# ) -> tuple[xr.DataArray, xr.DataArray]:
-#     """
-#     Vote-based detection: count how many track-pol combos exceed threshold.
-
-#     Parameters
-#     ----------
-#     ds : xr.Dataset
-#         Dataset containing backscatter data
-#     avalanche_date : str
-#         Date of avalanche event
-#     threshold : float, default 3.0
-#         Mahalanobis distance threshold (in standard deviations) for counting as a "vote".
-#         Positive threshold checks for increases, negative for decreases.
-#     prior_window : int, optional
-#         Number of prior timesteps for baseline statistics
-#     min_votes : int, default 2
-#         Minimum votes required for positive detection
-
-#     Returns
-#     -------
-#     detection : xr.DataArray
-#         Boolean detection (True where >= min_votes combos exceed threshold)
-#     vote_count : xr.DataArray
-#         Integer count of how many track-pol combos exceeded threshold
-#     """
-#     all_distances = []
-#     track_pol_labels = []
-
-#     for track, pol, da in iter_track_pol_combinations(ds):
-
-#         # Compute distance using your function
-#         distance = mahalanobis_distance_1d(
-#             da,
-#             avalanche_date=avalanche_date,
-#             prior_window=prior_window
-#         )
-#         all_distances.append(distance.isel(time = slice(0, 3)).mean('time'))
-#         track_pol_labels.append(f"{track}_{pol}")
-
-#     if not all_distances:
-#         raise ValueError('No valid track-polarization combinations found')
-
-#     # Stack and count votes
-#     stacked = xr.concat(all_distances, dim='track_pol').assign_coords(track_pol=track_pol_labels)
-
-#     # Count how many exceed threshold (keeping sign for directional changes)
-#     if threshold > 0:
-#         # Looking for increases (positive deviations)
-#         vote_count = (stacked > threshold).sum(dim='track_pol')
-#     else:
-#         # Looking for decreases (negative deviations)
-#         vote_count = (stacked < threshold).sum(dim='track_pol')
-
-#     detection = vote_count >= min_votes
-
-#     detection.attrs = {
-#         'source': 'sarvalanche',
-#         'units': 'boolean',
-#         'product': 'vote_detection',
-#         'threshold': threshold,
-#         'min_votes': min_votes
-#     }
-
-#     vote_count.attrs = {
-#         'source': 'sarvalanche',
-#         'units': 'count',
-#         'product': 'vote_count',
-#         'threshold': threshold
-#     }
-
-#     return detection, vote_count
+    return probability

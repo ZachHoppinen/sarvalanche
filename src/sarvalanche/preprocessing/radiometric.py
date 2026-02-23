@@ -4,7 +4,7 @@ import numpy as np
 import xarray as xr
 
 def linear_to_dB(da: xr.DataArray):
-    if da.attrs['units'].lower() == 'db':
+    if da.attrs.get('units', '').lower() == 'db':
         return da
 
     with warnings.catch_warnings():
