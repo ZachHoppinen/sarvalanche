@@ -135,7 +135,7 @@ def assemble_dataset(
 
     validate_canonical(ds, require_time = None)
 
-    return ds
+    return ds, path_list
 
 def load_netcdf_to_dataset(filepath, decode_times=True):
     assert filepath.suffix == '.nc'

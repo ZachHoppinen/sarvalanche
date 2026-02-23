@@ -141,7 +141,7 @@ def run_detection(
         elif overwrite == True:
             log.info('Netcdf found. Overwriting dataset.')
 
-        ds = assemble_dataset(
+        ds, paths_gdf = assemble_dataset(
             aoi=aoi,
             start_date=start_date,
             stop_date=stop_date,
@@ -151,6 +151,9 @@ def run_detection(
 
         log.info(f'Saving netcdf to {ds_nc}')
         export_netcdf(ds, ds_nc)
+
+        paths_gdf.to_file(ds_nc.with_suffix('.gpkg'), driver='GPKG')
+
     else:
         log.info(f'Found netcdf at {ds_nc}. Loading from cache...')
         ds = load_netcdf_to_dataset(ds_nc)
@@ -159,7 +162,9 @@ def run_detection(
 
     # 3.5 - Preprocessing
     # rtc pre-processing is a homomorphic total variation based despeckling on each time step for each pol
-    ds = preprocess_rtc(ds, tv_weight = 0.5)
+    if ds.attrs.get('preprocessed') != 'rtc_tv':
+        ds = preprocess_rtc(ds, tv_weight=0.5)
+        ds.attrs['preprocessed'] = 'rtc_tv'
 
     # ================================================================
     # Step 4: Calculate spatial domain weights

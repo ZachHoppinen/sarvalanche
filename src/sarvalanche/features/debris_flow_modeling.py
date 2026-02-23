@@ -1,4 +1,6 @@
 import numpy as np
+import pandas as pd
+import geopandas as gpd
 import xarray as xr
 
 from sarvalanche.masks.size_filter import filter_pixel_groups
@@ -28,7 +30,7 @@ def generate_runcount_alpha_angle(ds):
     )
 
     # run FlowPy
-    cell_counts_da, runout_angle_da, path_list = run_flowpy_on_mask(
+    cell_counts_da, runout_angle_da, paths_gdf = run_flowpy_on_mask(
         dem=dem_proj,
         release_mask=release_mask,
         alpha=25,
@@ -38,7 +40,7 @@ def generate_runcount_alpha_angle(ds):
     # Step 3: Attach to dataset
     ds = attach_flowpy_outputs(ds, cell_counts_da, runout_angle_da)
 
-    return ds, path_list
+    return ds, paths_gdf
 
 
 def attach_flowpy_outputs(ds, cell_counts, runout_angle):
@@ -80,6 +82,7 @@ def generate_release_mask(
         mask = mask.rio.reproject_match(reference)
 
     if aspect is not None:
+        aspect = aspect.rio.reproject_match(mask)
         a = aspect.values  # (2585, 1674) pure numpy
         diff_h = np.abs(np.arctan2(np.sin(a[:, :-1] - a[:, 1:]),
                                     np.cos(a[:, :-1] - a[:, 1:])))
@@ -108,7 +111,7 @@ def run_flowpy_on_mask(
     """
     Run FlowPy on a release mask and return cell counts & runout angle as DataArrays.
     """
-    cell_counts, runout_angle = run_flowpy(dem=dem, release=release_mask, alpha=alpha)
+    cell_counts, runout_angle, path_list = run_flowpy(dem=dem, release=release_mask, alpha=alpha)
 
     # wrap outputs as DataArrays aligned to reference
     cell_counts_da = xr.zeros_like(reference)
@@ -117,8 +120,13 @@ def run_flowpy_on_mask(
     runout_angle_da = xr.zeros_like(reference)
     runout_angle_da.data = runout_angle
 
+
+    # concat path lists into a GeoDataFrame for export
+    paths_gdf = gpd.GeoDataFrame(pd.concat(path_list, ignore_index=True), crs=path_list[0].crs)
+
     if reference is not None:
         cell_counts_da = cell_counts_da.rio.reproject_match(reference)
         runout_angle_da = runout_angle_da.rio.reproject_match(reference)
+        paths_gdf = paths_gdf.to_crs(reference.rio.crs)
 
-    return cell_counts_da, runout_angle_da
+    return cell_counts_da, runout_angle_da, paths_gdf

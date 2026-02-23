@@ -73,7 +73,7 @@ def run_flowpy(
     max_z=270,
     max_workers=12
 ):
-
+    ref_da = dem.copy()
     # Force garbage collection before starting
     gc.collect()
 
@@ -147,9 +147,11 @@ def run_flowpy(
     # split so we have 10 tasks per processes
     # release_list = fc.split_release(release, release_header, max_workers * 10)
     # use a shuffled version to reduce processing itme.
-    release_list = fc.split_release_by_points_shuffled(release, release_header, max_workers * 10)
+    # release_list = fc.split_release_by_points_shuffled(release, release_header, max_workers * 10)
+    # use a by each labeled release zone split
+    release_list = fc.split_release_by_label(release, release_header)
 
-    log.info("{} Processes started.".format(max_workers))
+    log.info("{} Processes started.".format(min(max_workers, len(release_list))))
 
     # --- prepare arguments ---
     args = [
@@ -198,8 +200,9 @@ def run_flowpy(
         flux_list.append(res[1])
         cc_list.append(res[2])
 
-        path = (cc_list>0).astype(float)
-        path_list.append(generate_path_vector(path, dem))
+        path = (res[2]>0).astype(float)
+        path_list.append(generate_path_vector(path, ref_da))
+
         z_delta_sum_list.append(res[3])
         backcalc_list.append(res[4])
         fp_ta_list.append(res[5])
