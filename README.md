@@ -549,6 +549,71 @@ def detect_debris(sigma0: xr.DataArray):
 By the time data reaches processing modules, it has been normalized to this canonical form.
 
 ---
+## ML System Architecture: Avalanche Detection from SAR Backscatter
+
+### Overview
+
+A two-stage hierarchical system that produces dual outputs: path-level avalanche probabilities and pixel-level spatial detections. The design is physically motivated, geographically transferable, and operationally interpretable.
+
+### Stage 1: Avalanche Path Delineation
+
+Connected component labeling (e.g. `scipy.ndimage.label`) is applied to the combined start zone and runout cell mask to identify discrete avalanche path objects. Each contiguous component becomes a terrain unit — a single physically meaningful node representing one avalanche path.
+
+Each path inherits aggregated statistics from its constituent pixels:
+
+- Mean and max backscatter change across the path
+- Peak and cumulative disturbance metric
+- Elevation range and mean slope
+- Dominant aspect (sin/cos encoded)
+- FCF class composition
+- Within-path variance of disturbance signal
+- Path morphology features: length, width-to-length ratio, elevation drop
+
+Start zones and runout zones should be labeled separately before linking, to avoid over-merging adjacent paths on wide open slopes.
+
+### Stage 2: Path-Level Classifier
+
+A gradient boosted model (XGBoost or LightGBM) or GP classifier trained on path-level aggregated features produces a **probability per path** that it avalanched during a given period. Inputs include static terrain features, aggregated SAR-derived disturbance statistics, and temporal features derived from the multi-track time series (e.g. days since last disturbance, cumulative disturbance over season, rate of change between acquisitions).
+
+Spatial cross-validation (leave-one-region-out or buffered CV) is essential to avoid leakage between neighboring paths.
+
+This stage produces the primary **operational output** — a per-path probability suitable for forecasting workflows.
+
+### Stage 3: Pixel-Level U-Net (Conditioned on Path Probability)
+
+A U-Net takes a physically derived raster stack as input and produces pixel-level detections of avalanche activity. Crucially, the path-level probability from Stage 2 is rasterized and included as an **input channel**, conditioning the U-Net on top-down path context before it examines pixels.
+
+Input raster stack includes:
+- Backscatter change (per acquisition or summarized)
+- Disturbance metric
+- Slope, aspect (sin/cos), curvature
+- Path-level probability (from Stage 2, rasterized)
+- FCF class
+- Runout / start zone membership
+
+Because the U-Net receives path probability as context, it only has to solve "where within this path did activity occur" rather than "is there activity here at all." Training can be focused on active paths, which significantly reduces class imbalance at the pixel level.
+
+This stage produces the secondary **mapping output** — pixel-level detections suitable for spatial validation and debris/crown localization.
+
+### Dual Output Summary
+
+| Output | Unit | Primary Use |
+|---|---|---|
+| Path probability | Per avalanche path | Forecasting, hazard assessment |
+| Pixel detections | Per raster cell | Mapping, validation, crown/debris localization |
+
+The two outputs are consistent by construction — pixel detections are conditioned on path probabilities, mirroring how a human analyst first identifies candidate paths then examines pixels within them.
+
+### Transferability
+
+Geographic transferability is improved over vanilla U-Net approaches because:
+- Input features are physically derived statistics rather than raw SAR texture
+- Path construction is driven by terrain masks with consistent physical meaning
+- No geographic identifiers or location-specific shortcuts are encoded
+
+The same pipeline applied to a new study area requires only new terrain masks (start zones, runout cells, FCF, slope) and new SAR acquisitions — the model inputs retain consistent physical meaning across regions.
+
+---
 
 ## Dependencies
 

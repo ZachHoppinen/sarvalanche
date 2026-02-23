@@ -156,8 +156,8 @@ if __name__ == '__main__':
     BATCH_SIZE     = 256
     BASE_LR        = 1e-4
     SIGMA_REG      = 0.01        # penalty weight on mean log-sigma to curb blowup
-    AUG_MASK_P     = 0.15        # probability of dropping any given timestep
-    AUG_NOISE_STD  = 0.1         # dB noise std
+    AUG_MASK_P     = 0.10        # probability of dropping any given timestep
+    AUG_NOISE_STD  = 0.05         # dB noise std
 
     TARGET_CENTERS = ['SNFAC', 'GNFAC', 'UAC', 'FAC', 'BTAC', 'CAIC']
 
@@ -350,7 +350,7 @@ if __name__ == '__main__':
 
     model = SARTransformer(
         img_size=16, patch_size=8, in_chans=2,
-        embed_dim=256, depth=4, num_heads=4,
+        embed_dim=384, depth=6, num_heads=6,
         max_seq_len=MAX_SEQ_LEN,   # ← must match dataset
     )
     model     = model.to(device)
@@ -372,6 +372,8 @@ if __name__ == '__main__':
         checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if 'scheduler_state_dict' in checkpoint:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         start_epoch   = checkpoint['epoch'] + 1
         best_val_loss = checkpoint.get('val_loss', float('inf'))
         print(f"  Resumed from epoch {checkpoint['epoch']}, best val loss: {best_val_loss:.4f}")
@@ -472,7 +474,7 @@ if __name__ == '__main__':
                 'val_loss':             avg_val_loss,
                 'model_config': {
                     'img_size': 16, 'patch_size': 8, 'in_chans': 2,
-                    'embed_dim': 256, 'depth': 4, 'num_heads': 4,
+                    'embed_dim': 384, 'depth': 6, 'num_heads': 6,
                     'max_seq_len': MAX_SEQ_LEN,
                 },
                 'zones':   list(zones.keys()),
@@ -490,7 +492,7 @@ if __name__ == '__main__':
         'val_loss':             avg_val_loss,
         'model_config': {
             'img_size': 16, 'patch_size': 8, 'in_chans': 2,
-            'embed_dim': 256, 'depth': 4, 'num_heads': 4,
+            'embed_dim': 384, 'depth': 6, 'num_heads': 6,
             'max_seq_len': MAX_SEQ_LEN,
         },
         'zones':   list(zones.keys()),
@@ -533,7 +535,7 @@ if __name__ == '__main__':
                 test_samples=len(test_dataset),
                 extra_metrics={'test_loss': avg_test_loss},
                 notes=(
-                    f"v2: cosine LR warmup restarts (T0=10, Tmult=2), "
+                    f"v3: cosine LR warmup restarts (T0=10, Tmult=2), "
                     f"temporal dropout (p={AUG_MASK_P}), flip aug, noise aug (std={AUG_NOISE_STD}), "
                     f"sigma reg (λ={SIGMA_REG}), max_seq_len={MAX_SEQ_LEN} | "
                     f"Zones: {list(zones.keys())} | Seasons: {SEASONS}"
