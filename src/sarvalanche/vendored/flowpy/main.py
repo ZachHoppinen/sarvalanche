@@ -59,6 +59,10 @@ def read_header(ds):
     header['noDataValue'] = ds.rio.nodata
     return header
 
+def generate_path_vector(path_arr, release):
+    from sarvalanche.utils.vector_utils import vectorize
+    return vectorize(path_arr, release)
+
 def run_flowpy(
     dem,
     release,
@@ -186,12 +190,16 @@ def run_flowpy(
     backcalc_list = []
     fp_ta_list = []
     sl_ta_list = []
+    path_list = []
     for i in range(len(results)):
         res = results[i]
         res = list(res)
         z_delta_list.append(res[0])
         flux_list.append(res[1])
         cc_list.append(res[2])
+
+        path = (cc_list>0).astype(float)
+        path_list.append(generate_path_vector(path, dem))
         z_delta_sum_list.append(res[3])
         backcalc_list.append(res[4])
         fp_ta_list.append(res[5])
@@ -207,8 +215,6 @@ def run_flowpy(
         fp_ta = np.maximum(fp_ta, fp_ta_list[i])
         sl_ta = np.maximum(sl_ta, sl_ta_list[i])
 
-
-
     log.info("Calculation finished")
     log.info("...")
     end = datetime.now().replace(microsecond=0)
@@ -217,8 +223,8 @@ def run_flowpy(
     # return z_delta, flux, cell_counts, z_delta_sum, backcalc, fp_ta, sl_ta
     # only return cell_counts (number of start cells that converge to a pixel)
     # fp_ta the flow path travel angle. small = long shallow runout, big = steep direct hit
-    # backcalc is
-    return cell_counts, fp_ta
+    # and path list which is a list of geopandas dataframes for each paths
+    return cell_counts, fp_ta, path_list
 
 if __name__ == "__main__":
     run_flowpy()

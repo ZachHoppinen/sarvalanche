@@ -35,6 +35,7 @@ from datetime import datetime
 from .flow_class import Cell
 import logging
 
+
 log = logging.getLogger(__name__)
 
 
@@ -174,6 +175,44 @@ def split_release_by_points_shuffled(release, header_release, pieces):
         new_release[row_list[chunk], col_list[chunk]] = 1
         release_list.append(new_release)
         log.debug(f"Release split: {len(chunk)} points")
+
+    return release_list
+
+def label_raster(da):
+
+    """
+    Label connected regions in a 2D DataArray using scipy.ndimage.label.
+    """
+    from scipy.ndimage import label as nd_label
+    labeled = nd_label(da)[0]
+    return labeled
+
+def split_release_by_label(release, header_release):
+    """Split release raster into one binary array per connected component.
+
+    Unlike the shuffled split for multiprocessing, this preserves spatial
+    coherence — each returned array contains exactly one connected start zone.
+    Caller can re-label results as they iterate to track path identity.
+    """
+    nodata = header_release.get("noDataValue")
+    if nodata:
+        release[release == nodata] = 0
+    else:
+        release[release < 0] = 0
+    release[release > 1] = 1
+
+    labeled = label_raster(release)
+    n_components = labeled.max()
+
+    if n_components == 0:
+        return []
+
+    release_list = []
+    for component_id in range(1, n_components + 1):
+        new_release = np.zeros_like(release)
+        new_release[labeled == component_id] = 1
+        release_list.append(new_release)
+        log.debug(f"Component {component_id}: {new_release.sum():.0f} pixels")
 
     return release_list
 

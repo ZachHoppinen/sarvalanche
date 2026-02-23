@@ -19,12 +19,13 @@ from sarvalanche.io.load_data import (
     get_dem,
     get_forest_cover,
     get_slope,
+    get_aspect,
     get_urban_extent,
     get_water_extent,
     get_snowmodel)
 from sarvalanche.utils.raster_utils import combine_close_images
 
-from sarvalanche.masks.debris_flow_modeling import generate_runcount_alpha_angle
+from sarvalanche.features.debris_flow_modeling import generate_runcount_alpha_angle
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +36,6 @@ def assemble_dataset(
     crs=None,
     resolution=None,
     cache_dir=Path("/tmp/sarvalanche_cache"),
-    add_flowpy = True,
     sar_only = False,
     # TODO implement dask/chunking...
     chunks = {
@@ -115,6 +115,8 @@ def assemble_dataset(
     ds["dem"] = get_dem(aoi, crs, ref_grid)
     log.info('Getting slope')
     ds["slope"] = get_slope(aoi, crs, ref_grid)
+    log.info('Getting aspect')
+    ds["aspect"] = get_aspect(aoi, crs, ref_grid)
     log.info('Getting fcf')
     ds["fcf"] = get_forest_cover(aoi, crs, ref_grid)
     log.info('Getting water cover')
@@ -127,7 +129,7 @@ def assemble_dataset(
     swe_fps = download_urls_parallel(swe_urls, cache_dir.joinpath('snowmodel'), description='Downloading UCLA Snowmodel')
     ds['swe'] = get_snowmodel(swe_fps, start_date, stop_date, ref_grid)
 
-    if add_flowpy: ds = generate_runcount_alpha_angle(ds)
+    ds, path_list = generate_runcount_alpha_angle(ds)
 
     ds['time'] = pd.to_datetime(ds['time']).tz_localize(None)
 

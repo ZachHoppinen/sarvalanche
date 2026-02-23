@@ -17,6 +17,8 @@ def generate_runcount_alpha_angle(ds):
     release_mask = generate_release_mask(
         slope=ds['slope'],
         forest_cover=ds['fcf'],
+        aspect = ds['aspect'],
+        aspect_threshold=np.pi/4,
         min_slope_deg=35,
         max_slope_deg=45,
         max_fcf=10,
@@ -26,7 +28,7 @@ def generate_runcount_alpha_angle(ds):
     )
 
     # run FlowPy
-    cell_counts_da, runout_angle_da = run_flowpy_on_mask(
+    cell_counts_da, runout_angle_da, path_list = run_flowpy_on_mask(
         dem=dem_proj,
         release_mask=release_mask,
         alpha=25,
@@ -36,7 +38,7 @@ def generate_runcount_alpha_angle(ds):
     # Step 3: Attach to dataset
     ds = attach_flowpy_outputs(ds, cell_counts_da, runout_angle_da)
 
-    return ds
+    return ds, path_list
 
 
 def attach_flowpy_outputs(ds, cell_counts, runout_angle):
@@ -56,6 +58,8 @@ def generate_release_mask(
     max_fcf: float = 10,
     min_group_size: int = 300,
     smooth: bool = True,
+    aspect: xr.DataArray = None,
+    aspect_threshold = np.pi/4,
     reference: xr.DataArray = None,
 ) -> xr.DataArray:
     """
@@ -72,14 +76,28 @@ def generate_release_mask(
     if smooth:
         mask = spatial_smooth(mask).round()
 
-
     if reference is not None:
         mask = mask.rio.reproject_match(reference)
+
+    if aspect is not None:
+        a = aspect.values  # (2585, 1674) pure numpy
+        diff_h = np.abs(np.arctan2(np.sin(a[:, :-1] - a[:, 1:]),
+                                    np.cos(a[:, :-1] - a[:, 1:])))
+        diff_v = np.abs(np.arctan2(np.sin(a[:-1, :] - a[1:, :]),
+                                    np.cos(a[:-1, :] - a[1:, :])))
+
+        aspect_break = (
+            np.pad(diff_h > aspect_threshold, ((0,0),(0,1)), constant_values=False) |
+            np.pad(diff_h > aspect_threshold, ((0,0),(1,0)), constant_values=False) |
+            np.pad(diff_v > aspect_threshold, ((0,1),(0,0)), constant_values=False) |
+            np.pad(diff_v > aspect_threshold, ((1,0),(0,0)), constant_values=False)
+        )
+        mask = mask.astype(bool) & ~xr.DataArray(aspect_break, dims=mask.dims, coords=mask.coords)
+        mask = mask.astype(float)
 
     da_out = xr.zeros_like(reference)
     da_out.data = filter_pixel_groups(mask, min_size=min_group_size)
     return da_out
-
 
 def run_flowpy_on_mask(
     dem: xr.DataArray,

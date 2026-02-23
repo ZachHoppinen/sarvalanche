@@ -10,7 +10,7 @@ def iter_track_pol_combinations(
     polarizations: Sequence[str] = ("VV", "VH"),
     track_var: str = "track",
     skip_missing: bool = True,
-) -> Iterator[tuple[Any, str, xr.DataArray, xr.DataArray | None]]:
+) -> Iterator[tuple[str, str, xr.DataArray]]:
     """
     Generator yielding (track, polarization, data, local_incidence_angle) tuples.
 
@@ -25,9 +25,6 @@ def iter_track_pol_combinations(
         Polarization channels to iterate over.
     track_var : str, default="track"
         Name of the track variable/coordinate in the dataset.
-    include_weights : bool, default=True
-        Whether to include local incidence angle and local resolution in output.
-        If False, yields None for weights.
     skip_missing : bool, default=True
         If True, skip polarizations not present in dataset.
         If False, raise KeyError for missing polarizations.

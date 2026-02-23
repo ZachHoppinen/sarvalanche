@@ -86,3 +86,56 @@ def combine_close_images(da, time_tol = pd.Timedelta('2min')):
 
     # group images closer than time difference
     return da.groupby(groups).map(mosaic_group)
+
+def label_raster(da: xr.DataArray) -> xr.DataArray:
+    """
+    Label connected regions in a 2D DataArray using scipy.ndimage.label.
+    """
+    from scipy.ndimage import label as nd_label
+
+    # Apply labeling to each time slice
+    labeled = da.copy()
+    if 'time' in da.dims:
+        for t in range(da.sizes['time']):
+            labeled.data[t] = nd_label(da.isel(time=t).data)[0]
+    else:
+        labeled.data = nd_label(da.data)[0]
+
+    return labeled
+
+
+def label_raster_with_aspect(da, aspect_da=None, aspect_threshold=np.pi/2):
+    """
+    Label connected regions in a 2D DataArray using scipy.ndimage.label.
+    Optionally breaks connectivity along large aspect changes (e.g. ridgelines).
+
+    aspect_da: DataArray of aspect in radians
+    aspect_threshold: max aspect difference to allow connectivity (default 90 degrees)
+    """
+    from scipy.ndimage import label as nd_label
+
+    data = da.values if hasattr(da, 'values') else da
+
+    if aspect_da is None:
+        labeled = nd_label(data)[0]
+        return labeled
+
+    aspect = aspect_da.values if hasattr(aspect_da, 'values') else aspect_da
+
+    # compute circular difference between horizontally and vertically adjacent pixels
+    diff_h = np.abs(np.arctan2(np.sin(aspect[:, :-1] - aspect[:, 1:]), 
+                                np.cos(aspect[:, :-1] - aspect[:, 1:])))
+    diff_v = np.abs(np.arctan2(np.sin(aspect[:-1, :] - aspect[1:, :]), 
+                                np.cos(aspect[:-1, :] - aspect[1:, :])))
+
+    # break connectivity where aspect change exceeds threshold
+    connected = data.copy().astype(bool)
+    connected[:, 1:]  &= diff_h < aspect_threshold
+    connected[:, :-1] &= diff_h < aspect_threshold
+    connected[1:, :]  &= diff_v < aspect_threshold
+    connected[:-1, :] &= diff_v < aspect_threshold
+
+    labeled = nd_label(connected)[0]
+    # restore original mask — only label pixels that were active in da
+    labeled[~data.astype(bool)] = 0
+    return labeled

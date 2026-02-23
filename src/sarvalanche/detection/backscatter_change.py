@@ -70,7 +70,7 @@ def calculate_empirical_backscatter_probability(
     pol_weights = []
     track_pol_labels = []
 
-    for track, pol, da in iter_track_pol_combinations(ds, include_weights=False):
+    for track, pol, da in iter_track_pol_combinations(ds):
 
         p = compute_track_empirical_probability(da, avalanche_date, **kwargs)
 
