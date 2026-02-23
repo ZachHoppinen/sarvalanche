@@ -11,7 +11,7 @@ def mahalanobis_distance(
     device: str = 'mps',
     stride: int = 4,
     batch_size: int = 128,
-    max_timesteps: int = 10,
+    max_timesteps: int = 15,
 ) -> tuple[xr.DataArray, xr.DataArray]:
     """
     Compute signed z-score distances for first timestep after avalanche_date.
