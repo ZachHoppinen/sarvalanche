@@ -1,7 +1,24 @@
 
-from pyproj import CRS, Transformer
+
 import numpy as np
 import xarray as xr
+from pyproj import CRS, Transformer
+from pyproj.aoi import AreaOfInterest
+from pyproj.database import query_utm_crs_info
+
+def find_utm_crs(aoi, aoi_crs):
+    """Find the UTM CRS for the center of an AOI polygon."""
+
+    to_wgs84 = Transformer.from_crs(aoi_crs, CRS.from_epsg(4326), always_xy=True)
+    lon, lat = to_wgs84.transform(aoi.centroid.x, aoi.centroid.y)
+
+    lon, lat = aoi.centroid.x, aoi.centroid.y
+    utm_info = query_utm_crs_info(
+        datum_name="WGS 84",
+        area_of_interest=AreaOfInterest(lon, lat, lon, lat),
+    )[0]
+    return CRS.from_authority(utm_info.auth_name, utm_info.code)
+
 
 def resolution_to_meters(res, crs, lat=None):
     """

@@ -1,4 +1,3 @@
-#TODO - move main logic to detection_pipeline.py and make this just take a dataset...
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -65,9 +64,19 @@ def get_pixelwise_probabilities(
     # Hard constraint: if p_runout is 0, force p_pixelwise to 0
     p_pixelwise = p_pixelwise.where(ds['p_runout'] > 0.01, 0)
 
-
+    log.debug(f'Filling NaN values in p_pixelwise with 0')
     p_pixelwise = p_pixelwise.where(~p_pixelwise.isnull(), 0)
 
-    p_pixelwise.attrs = {'source': 'sarvalance', 'units': 'percentage', 'product': 'pixel_wise_probability'}
+    p_pixelwise.attrs = {'source': 'sarvalanche', 'units': 'percentage', 'product': 'pixel_wise_probability'}
+
+    is_clipped = p_bayesian < p_likelihood
+    frac = is_clipped.mean().item()
+    log.debug(f'p_bayesian < p_likelihood in {frac*100:.1f}% of pixels')
+
+    # Are clipped pixels concentrated in high-prior areas?
+    if frac > 0:
+        mean_prior_clipped = p_prior.where(is_clipped).mean().item()
+        mean_prior_unclipped = p_prior.where(~is_clipped).mean().item()
+        log.debug(f'Mean p_prior where clipped: {mean_prior_clipped:.3f}, unclipped: {mean_prior_unclipped:.3f}')
 
     return p_pixelwise

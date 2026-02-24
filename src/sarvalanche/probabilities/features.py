@@ -160,6 +160,8 @@ def probability_swe_accumulation(
     xr.DataArray
         Probability of avalanche based on SWE accumulation, dims=(y, x)
     """
+    if 'snowmodel_time' not in swe.coords:
+        raise ValueError(f"swe DataArray missing 'snowmodel_time' coordinate, got: {list(swe.coords)}")
 
     # Convert avalanche_date to datetime
     aval_date = pd.to_datetime(avalanche_date)

@@ -1,3 +1,4 @@
+
 import numpy as np
 import xarray as xr
 import rioxarray
@@ -5,8 +6,6 @@ import rioxarray
 from pyproj import CRS, Transformer
 from shapely.ops import transform as shapely_transform
 from rasterio.transform import from_bounds
-from pyproj.aoi import AreaOfInterest
-from pyproj.database import query_utm_crs_info
 from shapely.geometry import box
 
 from sarvalanche.utils.constants import OPERA_RESOLUTION
@@ -85,15 +84,7 @@ def make_opera_reference_grid(*, aoi, aoi_crs, dtype="float32", fill_value=np.na
     aoi_crs= validate_crs(aoi_crs)
 
     # Get lon/lat of centroid
-    to_wgs84 = Transformer.from_crs(aoi_crs, CRS.from_epsg(4326), always_xy=True)
-    lon, lat = to_wgs84.transform(aoi.centroid.x, aoi.centroid.y)
-
-    # Let pyproj find the right UTM zone
-    utm_info = query_utm_crs_info(
-        datum_name="WGS 84",
-        area_of_interest=AreaOfInterest(lon, lat, lon, lat),
-    )[0]
-    utm_crs = CRS.from_authority(utm_info.auth_name, utm_info.code)
+    utm_crs = find_utm_crs(aoi, aoi_crs)
 
     # Reproject AOI to UTM
     transformer = Transformer.from_crs(aoi_crs, utm_crs, always_xy=True)

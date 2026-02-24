@@ -52,12 +52,13 @@ def preprocess_rtc(ds, tv_weight=0.1, polarizations=None, n_workers=4):
 
         # --- Post-denoising stats ---
         valid_out = np.isfinite(denoised) & (denoised > 0)
+        valid_both = valid & valid_out
         log.debug(f"  [{pol}] Output — mean: {denoised[valid_out].mean():.4f}  std: {denoised[valid_out].std():.4f}  "
                 f"min: {denoised[valid_out].min():.4f}  max: {denoised[valid_out].max():.4f}  "
                 f"nan%: {(~valid_out).mean()*100:.2f}%")
         log.debug(f"  [{pol}] Overall std reduction: "
                 f"{(1 - denoised[valid_out].std()/data[valid].std())*100:.1f}%  "
-                f"mean absolute change: {np.abs(denoised[valid_out] - data[valid_out]).mean():.4f}")
+                f"mean absolute change: {np.abs(denoised[valid_both] - data[valid_both]).mean():.4f}")
 
         # preserve attrs before overwriting
         original_attrs = ds[pol].attrs

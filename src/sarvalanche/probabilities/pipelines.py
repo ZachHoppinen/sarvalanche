@@ -41,7 +41,7 @@ def get_static_probabilities(ds, avalanche_date):
     ds['p_swe'] = probability_swe_accumulation(ds['swe'], avalanche_date)
 
     for d in ['p_fcf', 'p_runout', 'p_slope', 'p_swe']:
-        ds[d].attrs = {'source': 'sarvalance', 'units': 'percentage', 'product': 'pixel_wise_probability'}
+        ds[d].attrs = {'source': 'sarvalanche', 'units': 'percentage', 'product': 'pixel_wise_probability'}
 
     return ds
 
@@ -49,7 +49,7 @@ def group_classes(pixel_wise_probability, cache_dir, smooth = True):
     log.info('Running dense CRF processing')
     # generate U from p_total for dense CRF
     arr = pixel_wise_probability
-    if smooth == True: arr = spatial_smooth(arr)
+    if smooth: arr = spatial_smooth(arr)
     arr = np.asarray(arr, dtype='<f4')
 
     P_debris = np.clip(arr, eps, 1 - eps)
@@ -88,7 +88,7 @@ def group_classes(pixel_wise_probability, cache_dir, smooth = True):
     detections, n_labels = filter_pixel_groups(mask_da, min_size=8, return_nlabels=True)
     log.info(f'N labels found in detections: {n_labels}')
 
-    detections.attrs = {'source': 'sarvalance', 'units': 'binary', 'product': 'detection_map'}
+    detections.attrs = {'source': 'sarvalanche', 'units': 'binary', 'product': 'detection_map'}
 
 
     return detections

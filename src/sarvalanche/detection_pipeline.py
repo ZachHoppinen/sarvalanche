@@ -1,5 +1,7 @@
 from pathlib import Path
 import logging
+
+import pandas as pd
 import geopandas as gpd
 
 # io functions
@@ -48,61 +50,76 @@ log = logging.getLogger(__name__)
 
 def run_detection(
         aoi,
-        crs,
-        resolution,
-        start_date,
-        stop_date,
         avalanche_date,
         cache_dir,
+        resolution = None,
+        crs = 'EPSG:4326',
+        start_date = None,
+        stop_date = None,
         static_fp = None,
         track_gpkg = None,
         overwrite=False,
-        job_name=None):
+        job_name=None,
+        debug=False):
     """
     Run the SARvalanche detection pipeline for a given AOI and date range.
 
-    This pipeline uses backscatter change detection to identify avalanche deposits
-    in SAR imagery. The process follows these steps:
-
-    1. Validate inputs
-    2. Set up cache directory
-    3. Load or assemble SAR dataset
-    4. Calculate spatial weights
-    5. Calculate static probabilities (terrain, snow)
-    6. Calculate pixelwise probabilities using SAR data
-    7. Group and refine detections
-    8. Export results
+    Uses SAR backscatter change detection combined with terrain, snow, and
+    runout modeling to identify avalanche deposits in Sentinel-1 RTC imagery.
 
     Parameters
     ----------
     aoi : shapely.geometry.Polygon
-        Area of interest in geographic coordinates (lon/lat).
-    crs : str or int
-        Target coordinate reference system (e.g., 'EPSG:32610' or 32610).
-    resolution : int or float
-        Spatial resolution in meters.
-    start_date : str | datetime
-        Start of SAR acquisition range for analysis.
-    stop_date : str | datetime
-        End of SAR acquisition range for analysis.
-    avalanche_date : str | datetime
-        Date of the avalanche event to detect.
+        Area of interest in WGS84 geographic coordinates (lon/lat).
+    avalanche_date : str or datetime
+        Date of the avalanche event to detect (e.g. '2020-01-11').
     cache_dir : str or Path
-        Directory to cache intermediate results and outputs.
+        Directory for caching intermediate files and outputs. Created if it
+        does not exist.
+    resolution : float, optional
+        Spatial resolution for processing. Units depend on CRS: meters for
+        projected CRS, degrees for geographic. Defaults to 30m for projected
+        CRS or 1 arc second (1/3600 degrees) for geographic CRS.
+    crs : str or int, optional
+        Coordinate reference system for processing (e.g. 'EPSG:32610').
+        Defaults to 'EPSG:4326'.
+        find_utm_crs(aoi) to get the appropriate zone automatically.
+    start_date : str or datetime, optional
+        Start of SAR acquisition window. Defaults to 6 Sentinel-1 revisit
+        cycles (~72 days) before avalanche_date.
+    stop_date : str or datetime, optional
+        End of SAR acquisition window. Defaults to 3 Sentinel-1 revisit
+        cycles (~36 days) after avalanche_date.
+    static_fp : Path, optional
+        Path to a pre-built NetCDF containing static layers (DEM, slope,
+        aspect, forest cover, LIA, ANF, SWE). If provided, skips downloading
+        and computing these layers.
+    track_gpkg : Path, optional
+        Path to a GeoPackage for caching flowpy debris track outputs. Defaults
+        to the same stem as the output NetCDF with a .gpkg extension.
     overwrite : bool, optional
-        If True, recalculate everything. If False, use cached data. Default is False.
+        If True, recompute and overwrite all cached results. Default False.
     job_name : str, optional
-        Custom name for output files. If None, uses avalanche_date as filename.
+        Stem for output filenames. Defaults to avalanche_date as 'YYYY-MM-DD'.
+    debug : bool, optional
+        If True, enables DEBUG logging for the sarvalanche logger. Default False.
 
     Returns
     -------
     xr.Dataset
         Dataset with dimensions (time, y, x) containing:
-        - detections: final detection mask
-        - p_pixelwise: pixel-by-pixel probabilities
-        - p_empirical, p_fcf, p_runout, p_slope: intermediate probability layers
-        - Additional metadata and coordinates
+        - detections : binary detection mask after spatial CRF grouping
+        - p_pixelwise : combined pixel-wise avalanche probability
+        - p_empirical : SAR backscatter change probability
+        - p_fcf : forest cover probability
+        - p_runout : debris flow runout probability
+        - p_slope : slope angle probability
+        - p_swe : snow water equivalent accumulation probability
     """
+
+    if debug:
+        logging.getLogger('sarvalanche').setLevel(logging.DEBUG)
+        log.debug('Debug logging enabled')
 
     # Initialize timer - this automatically starts tracking total time
     timer = PipelineTimer()
@@ -115,13 +132,29 @@ def run_detection(
     timer.step('1_validation')
 
     log.info('Validating arguments')
-    start_date, stop_date = validate_start_end(start_date, stop_date)
     avalanche_date = validate_date(avalanche_date)
-    crs = validate_crs(crs)
-    resolution = validate_resolution(resolution)
     aoi = validate_aoi(aoi)
+
+    S1_REVISIT_DAYS = 12
+    if start_date is None:
+        start_date = avalanche_date - pd.Timedelta(days=6 * S1_REVISIT_DAYS)
+    if stop_date is None:
+        stop_date = avalanche_date + pd.Timedelta(days=3 * S1_REVISIT_DAYS)
+
+    start_date, stop_date = validate_start_end(start_date, stop_date)
+
+    crs = validate_crs(crs)
+
+    if resolution is None:
+        if crs.is_projected():
+            resolution = 30  # meters
+        else:
+            resolution = 1 / 3600  # 1 arc second in degrees
+
+    resolution = validate_resolution(resolution)
+
     cache_dir = validate_path(cache_dir, should_exist=None, make_directory=True)
-    assert overwrite in [True, False]
+    assert isinstance(overwrite, bool)
     log.info(f'Initial validation checks passed')
 
     # ================================================================
@@ -165,17 +198,18 @@ def run_detection(
         ds = load_netcdf_to_dataset(ds_nc)
 
     # add in flowpy outputs and generate track list
-    flowpy_data_vars = ['cell_counts', 'runout_angle']
     track_gpkg = ds_nc.with_suffix('.gpkg') if track_gpkg is None else track_gpkg
+    missing_flowpy_vars = not all(v in ds.data_vars for v in ['cell_counts', 'runout_angle'])
     needs_flowpy = (
         overwrite
         or not track_gpkg.exists()
         or track_gpkg.stat().st_size == 0
-        or not all(v in ds.data_vars for v in flowpy_data_vars))
+        or missing_flowpy_vars)
 
     if needs_flowpy:
         ds, paths_gdf = generate_runcount_alpha_angle(ds)
         paths_gdf.to_file(track_gpkg, driver='GPKG')
+        if missing_flowpy_vars: export_netcdf(ds, ds_nc, overwrite=True)
     else:
         paths_gdf = gpd.read_file(track_gpkg)
 
@@ -229,6 +263,7 @@ def run_detection(
     # ================================================================
     timer.step('8_export_results')
 
+    # recheck validitity before exporting results
     validate_canonical(ds)
 
     log.info(f'Saving final results to {ds_nc}')
