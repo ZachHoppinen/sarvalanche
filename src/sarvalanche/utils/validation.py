@@ -5,6 +5,8 @@ from datetime import date
 from typing import Union, Tuple, Optional, Literal
 from pathlib import Path
 from datetime import datetime
+from shapely.geometry import Polygon, Point, box
+from shapely.geometry.base import BaseGeometry
 
 import numpy as np
 import pandas as pd
@@ -403,11 +405,6 @@ def validate_start_end(start_date, end_date, *, sensor: str = "Sentinel-1"):
             )
 
     return start, end
-
-import numpy as np
-from shapely.geometry import Polygon, Point, box
-from shapely.geometry.base import BaseGeometry
-
 
 def validate_aoi(aoi):
     """

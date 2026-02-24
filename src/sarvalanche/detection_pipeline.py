@@ -146,7 +146,7 @@ def run_detection(
     crs = validate_crs(crs)
 
     if resolution is None:
-        if crs.is_projected():
+        if crs.is_projected:
             resolution = 30  # meters
         else:
             resolution = 1 / 3600  # 1 arc second in degrees
