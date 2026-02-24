@@ -39,16 +39,18 @@ def generate_runcount_alpha_angle(ds):
     )
 
     # Step 3: Attach to dataset
-    ds = attach_flowpy_outputs(ds, cell_counts_da, runout_angle_da)
+    ds = attach_flowpy_outputs(ds, cell_counts_da, runout_angle_da, release_mask)
 
     return ds, paths_gdf
 
 
-def attach_flowpy_outputs(ds, cell_counts, runout_angle):
+def attach_flowpy_outputs(ds, cell_counts, runout_angle, release_mask):
     ds['cell_counts'] = cell_counts.rio.reproject_match(ds)
     ds['cell_counts'].attrs = {'units': 'count', 'source': 'flowpy', 'product': 'cell_count'}
     ds['runout_angle'] = np.deg2rad(runout_angle.rio.reproject_match(ds))
     ds['runout_angle'].attrs = {'units': 'radians', 'source': 'flowpy', 'product': 'flow_path_alpha_angle'}
+    ds['release_zones'] = release_mask.rio.reproject_match(ds)
+    ds['release_zones'].attrs = {'units': 'binary', 'source': 'flowpy', 'product': 'avi_start_zones'}
 
     return ds
 

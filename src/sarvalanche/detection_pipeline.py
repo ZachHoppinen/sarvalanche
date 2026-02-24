@@ -1,5 +1,6 @@
 from pathlib import Path
 import logging
+import geopandas as gpd
 
 # io functions
 from sarvalanche.utils.validation import (
@@ -12,6 +13,9 @@ from sarvalanche.utils.validation import (
     validate_aoi)
 from sarvalanche.io.dataset import assemble_dataset, load_netcdf_to_dataset
 from sarvalanche.io.export import export_netcdf
+
+# flowpy
+from sarvalanche.features.debris_flow_modeling import generate_runcount_alpha_angle
 
 # preprocessing
 from sarvalanche.preprocessing.pipelines import preprocess_rtc
@@ -50,6 +54,8 @@ def run_detection(
         stop_date,
         avalanche_date,
         cache_dir,
+        static_fp = None,
+        track_gpkg = None,
         overwrite=False,
         job_name=None):
     """
@@ -139,24 +145,39 @@ def run_detection(
         if not ds_nc.exists() or ds_nc.stat().st_size == 0:
             log.info('Netcdf not found. Assembling dataset now.')
         elif overwrite == True:
-            log.info('Netcdf found. Overwriting dataset.')
+            log.info('Netcdf found. Overwriting dataset based on overwrite = True.')
 
-        ds, paths_gdf = assemble_dataset(
+        ds = assemble_dataset(
             aoi=aoi,
             start_date=start_date,
             stop_date=stop_date,
             resolution=resolution,
             crs=crs,
-            cache_dir=cache_dir)
+            cache_dir=cache_dir,
+            static_layer_nc=static_fp,
+            sar_only=False)
 
         log.info(f'Saving netcdf to {ds_nc}')
         export_netcdf(ds, ds_nc)
 
-        paths_gdf.to_file(ds_nc.with_suffix('.gpkg'), driver='GPKG')
-
     else:
         log.info(f'Found netcdf at {ds_nc}. Loading from cache...')
         ds = load_netcdf_to_dataset(ds_nc)
+
+    # add in flowpy outputs and generate track list
+    flowpy_data_vars = ['cell_counts', 'runout_angle']
+    track_gpkg = ds_nc.with_suffix('.gpkg') if track_gpkg is None else track_gpkg
+    needs_flowpy = (
+        overwrite
+        or not track_gpkg.exists()
+        or track_gpkg.stat().st_size == 0
+        or not all(v in ds.data_vars for v in flowpy_data_vars))
+
+    if needs_flowpy:
+        ds, paths_gdf = generate_runcount_alpha_angle(ds)
+        paths_gdf.to_file(track_gpkg, driver='GPKG')
+    else:
+        paths_gdf = gpd.read_file(track_gpkg)
 
     validate_canonical(ds)
 

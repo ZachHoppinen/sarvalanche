@@ -162,3 +162,16 @@ def tile_aoi(aoi, aoi_crs, max_size=0.5):
             y0 = miny + iy * tile_h
             y1 = y0 + tile_h
             yield (ix, iy), box(x0, y0, x1, y1)
+
+def grids_match(ds_a: xr.Dataset, ds_b: xr.Dataset) -> bool:
+    """Check if two datasets share the same CRS and spatial grid."""
+    crs_a = ds_a.rio.crs
+    crs_b = ds_b.rio.crs
+    if crs_a != crs_b:
+        return False
+    for coord in ("x", "y"):
+        if coord not in ds_a.coords or coord not in ds_b.coords:
+            return False
+        if not np.allclose(ds_a[coord].values, ds_b[coord].values, rtol=1e-5):
+            return False
+    return True

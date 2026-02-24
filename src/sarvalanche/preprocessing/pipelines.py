@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from sarvalanche.preprocessing.despeckling import denoise_sar_homomorphic
 from sarvalanche.utils.constants import pols
 from sarvalanche.utils.validation import check_db_linear
-
+from sarvalanche.preprocessing.radiometric import linear_to_dB
 log = logging.getLogger(__name__)
 
 def preprocess_rtc(ds, tv_weight=0.1, polarizations=None, n_workers=4):
@@ -64,5 +64,8 @@ def preprocess_rtc(ds, tv_weight=0.1, polarizations=None, n_workers=4):
         ds[pol] = xr.DataArray(denoised, coords=ds[pol].coords, dims=ds[pol].dims)
         # restore attrs
         ds[pol].attrs = original_attrs
+
+        # we know we are in linear after denoising
+        ds[pol] = linear_to_dB(ds[pol])
 
     return ds
