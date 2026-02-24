@@ -114,11 +114,11 @@ def run_flowpy(
 
     # Sanity check
     total_needed = needed_memory * 10 * max_workers
-    if total_needed > avaiable_memory * 0.8:
-        log.warning(f"WARNING: May not have enough memory!")
-        log.warning(f"Needed: {total_needed / 1e9:.2f} GB, Available: {avaiable_memory / 1e9:.2f} GB")
+    if total_needed > avaiable_memory * 0.5:
+        log.info(f"May not have enough memory!")
+        log.info(f"Needed: {total_needed / 1e9:.2f} GB, Available: {avaiable_memory * 0.5 / 1e9:.2f} GB (50% limit)")
         # Reduce workers
-        max_workers = max(1, int(avaiable_memory * 0.8 / (needed_memory * 10)))
+        max_workers = max(1, int(avaiable_memory * 0.8 / (needed_memory * 15)))
         log.info(f"Reducing to {max_workers} workers")
 
     log.info('Files read in')

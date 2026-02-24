@@ -15,6 +15,7 @@ import argparse
 import logging
 from datetime import timedelta
 from pathlib import Path
+import gc
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
@@ -279,7 +280,7 @@ def run_sarvalanche(
     bbox_str: str,
     zone_name: str,
     cache_dir: Path,
-    overwrite: bool = False,
+    overwrite: bool = True,
     static_fp = None,
 ) -> bool:
     """
@@ -320,8 +321,9 @@ def run_sarvalanche(
     except ValueError as e:
         log.error(f"Invalid bbox '{bbox_str}' for {zone_name}: {e}")
         return False
+
     try:
-        run_detection(
+        ds = run_detection(
             aoi            = aoi,
             avalanche_date = avalanche_date,
             cache_dir      = cache_dir,
@@ -329,6 +331,12 @@ def run_sarvalanche(
             overwrite      = overwrite,
             static_fp      = static_fp
         )
+
+        # ── Cleanup: release large in-memory objects before returning ────────────
+        # flowpy and SAR stacking leave large arrays allocated; explicit cleanup
+        # prevents OOM kills when running multiple zones back-to-back
+        del ds
+        gc.collect()
         return True
     except Exception as e:
         log.error(f"sarvalanche failed [{zone_name} {avalanche_date}]: {e}")

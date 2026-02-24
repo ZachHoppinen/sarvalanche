@@ -284,4 +284,10 @@ def run_detection(
     # ================================================================
     timer.summary()
 
+    # ── Cleanup: release large in-memory objects before returning ────────────
+    # flowpy and SAR stacking leave large arrays allocated; explicit cleanup
+    # prevents OOM kills when running multiple zones back-to-back
+    import gc
+    gc.collect()
+
     return ds
