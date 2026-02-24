@@ -42,8 +42,13 @@ def get_pixelwise_probabilities(
     ds['distance_mahalanobis'] = calculate_ml_distances(ds, avalanche_date)
 
     # Static factors are the "prior" - how likely is avalanche here in general?
+    # p_prior = combine_probabilities(
+    #     xr.concat([ds['p_fcf'], ds['p_runout'], ds['p_slope'], ds['p_swe']], dim='factor'),
+    #     dim='factor',
+    #     method='weighted_mean'
+    # )
     p_prior = combine_probabilities(
-        xr.concat([ds['p_fcf'], ds['p_runout'], ds['p_slope'], ds['p_swe']], dim='factor'),
+        xr.concat([ds['p_fcf'], ds['p_runout'], ds['p_slope']], dim='factor'),
         dim='factor',
         method='weighted_mean'
     )

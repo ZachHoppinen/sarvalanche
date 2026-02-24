@@ -446,5 +446,5 @@ def calculation_effect(args):
 
         startcell_idx += 1
     end = datetime.now().replace(microsecond=0)
-    log.info('\n Time needed: ' + str(end - start))
+    log.debug('\n Time needed: ' + str(end - start))
     return z_delta_array, flux_array, count_array, z_delta_sum, backcalc, fp_travelangle_array, sl_travelangle_array

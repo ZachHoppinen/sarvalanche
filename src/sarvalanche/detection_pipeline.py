@@ -138,8 +138,10 @@ def run_detection(
     S1_REVISIT_DAYS = 12
     if start_date is None:
         start_date = avalanche_date - pd.Timedelta(days=6 * S1_REVISIT_DAYS)
+        log.info(f'No start date provided. Using {start_date}')
     if stop_date is None:
         stop_date = avalanche_date + pd.Timedelta(days=3 * S1_REVISIT_DAYS)
+        log.info(f'No stop date provided. Using {stop_date}')
 
     start_date, stop_date = validate_start_end(start_date, stop_date)
 
@@ -150,6 +152,7 @@ def run_detection(
             resolution = 30  # meters
         else:
             resolution = 1 / 3600  # 1 arc second in degrees
+        log.info(f'No resolution provided. Using: {resolution}')
 
     resolution = validate_resolution(resolution)
 
@@ -271,7 +274,7 @@ def run_detection(
 
     # Export individual probability layers as GeoTIFFs for visualization
     cache_dir.joinpath("probabilities").mkdir(exist_ok=True)
-    for var in ['detections', 'p_pixelwise', 'p_empirical', 'p_fcf', 'p_runout', 'p_slope']:
+    for var in ['detections', 'p_pixelwise', 'p_empirical', 'p_fcf', 'p_runout', 'p_slope', 'release_zones', 'distance_mahalanobis']:
         output_tif = cache_dir.joinpath("probabilities", f"{ds_stem}_{var}.tif")
         log.info(f'Exporting {var} to {output_tif.name}')
         ds[var].astype(float).rio.to_raster(output_tif)

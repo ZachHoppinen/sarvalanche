@@ -92,9 +92,17 @@ def assemble_dataset(
         return ds
 
     # get snowmodel
-    swe_urls = find_earthaccess_urls(aoi, start_date, stop_date)
-    swe_fps = download_urls_parallel(swe_urls, cache_dir.joinpath('snowmodel'), description='Downloading UCLA Snowmodel')
-    ds['swe'] = get_snowmodel(swe_fps, start_date, stop_date, ref_grid)
+    # TODO fix to use different snowmodel after end date
+    # SNOWMODEL_END = pd.Timestamp("2021-09-30")
+
+    # if stop_date > SNOWMODEL_END:
+        # log.warning(f"Snowmodel data only available through {SNOWMODEL_END.date()}, filling SWE with nans")
+        # for now we give all pixels accumulation so we don't block anything...
+        # ds['swe'] = xr.full_like(ds[list(ds.data_vars)[0]].isel(time=0), fill_value=float('nan'))
+    # else:
+        # swe_urls = find_earthaccess_urls(aoi, start_date, stop_date)
+        # swe_fps = download_urls_parallel(swe_urls, cache_dir.joinpath('snowmodel'), description='Downloading UCLA Snowmodel')
+        # ds['swe'] = get_snowmodel(swe_fps, start_date, stop_date, ref_grid)
 
     if static_layer_nc is not None:
         ds = add_static_layers(ds, static_layer_nc)

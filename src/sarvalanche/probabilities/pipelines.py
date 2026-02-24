@@ -37,10 +37,11 @@ def get_static_probabilities(ds, avalanche_date):
     ds['p_slope'] = probability_slope_angle(ds['slope'])
 
     # --- 9. Compute swe accumulation probability of debris ---
-    log.info('Calculating swe accumulation based probability')
-    ds['p_swe'] = probability_swe_accumulation(ds['swe'], avalanche_date)
+    # log.info('Calculating swe accumulation based probability')
+    # ds['p_swe'] = probability_swe_accumulation(ds['swe'], avalanche_date)
 
-    for d in ['p_fcf', 'p_runout', 'p_slope', 'p_swe']:
+    # for d in ['p_fcf', 'p_runout', 'p_slope', 'p_swe']:
+    for d in ['p_fcf', 'p_runout', 'p_slope']:
         ds[d].attrs = {'source': 'sarvalanche', 'units': 'percentage', 'product': 'pixel_wise_probability'}
 
     return ds

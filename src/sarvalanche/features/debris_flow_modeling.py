@@ -13,7 +13,7 @@ def generate_runcount_alpha_angle(ds):
     # flowpy needs to run in projected coordinate system
     dem_proj = ds['dem'].rio.reproject(ds['dem'].rio.estimate_utm_crs())
 
-    min_release_area_m2 = 150 * 150 # meters
+    min_release_area_m2 = 50 * 50 # meters
     min_release_pixels = area_m2_to_pixels(dem_proj, min_release_area_m2)
 
     # generate start area
@@ -22,7 +22,7 @@ def generate_runcount_alpha_angle(ds):
         forest_cover=ds['fcf'],
         aspect = ds['aspect'],
         aspect_threshold=np.pi/8,
-        min_slope_deg=32,
+        min_slope_deg=28,
         max_slope_deg=60,
         max_fcf=10,
         min_group_size=min_release_pixels,
@@ -34,7 +34,7 @@ def generate_runcount_alpha_angle(ds):
     cell_counts_da, runout_angle_da, paths_gdf = run_flowpy_on_mask(
         dem=dem_proj,
         release_mask=release_mask,
-        alpha=25,
+        alpha=20,
         reference=dem_proj
     )
 
@@ -57,8 +57,8 @@ def attach_flowpy_outputs(ds, cell_counts, runout_angle, release_mask):
 def generate_release_mask(
     slope: xr.DataArray,
     forest_cover: xr.DataArray,
-    min_slope_deg: float = 32,
-    max_slope_deg: float = 45,
+    min_slope_deg: float = 28,
+    max_slope_deg: float = 60,
     max_fcf: float = 10,
     min_group_size: int = 100,
     smooth: bool = True,
