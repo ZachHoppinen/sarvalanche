@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 import xarray as xr
+from rasterio.enums import Resampling
 
 from sarvalanche.masks.size_filter import filter_pixel_groups
 from sarvalanche.preprocessing.spatial import spatial_smooth
@@ -12,7 +13,7 @@ def generate_runcount_alpha_angle(ds):
     # flowpy needs to run in projected coordinate system
     dem_proj = ds['dem'].rio.reproject(ds['dem'].rio.estimate_utm_crs())
 
-    min_release_area_m2 = 300 *300 # meteers
+    min_release_area_m2 = 150 * 150 # meters
     min_release_pixels = area_m2_to_pixels(dem_proj, min_release_area_m2)
 
     # generate start area
@@ -20,9 +21,9 @@ def generate_runcount_alpha_angle(ds):
         slope=ds['slope'],
         forest_cover=ds['fcf'],
         aspect = ds['aspect'],
-        aspect_threshold=np.pi/4,
-        min_slope_deg=35,
-        max_slope_deg=45,
+        aspect_threshold=np.pi/8,
+        min_slope_deg=32,
+        max_slope_deg=60,
         max_fcf=10,
         min_group_size=min_release_pixels,
         smooth=True,
@@ -51,17 +52,16 @@ def attach_flowpy_outputs(ds, cell_counts, runout_angle):
 
     return ds
 
-
 def generate_release_mask(
     slope: xr.DataArray,
     forest_cover: xr.DataArray,
-    min_slope_deg: float = 35,
+    min_slope_deg: float = 32,
     max_slope_deg: float = 45,
     max_fcf: float = 10,
-    min_group_size: int = 300,
+    min_group_size: int = 100,
     smooth: bool = True,
     aspect: xr.DataArray = None,
-    aspect_threshold = np.pi/4,
+    aspect_threshold = np.pi/8,
     reference: xr.DataArray = None,
 ) -> xr.DataArray:
     """
@@ -100,6 +100,11 @@ def generate_release_mask(
 
     da_out = xr.zeros_like(reference)
     da_out.data = filter_pixel_groups(mask, min_size=min_group_size)
+
+    valid_mask = np.isfinite(reference.values)
+    # da_out = da_out.where(valid_mask)
+    da_out = da_out.where(valid_mask, other=0.0)
+
     return da_out
 
 def run_flowpy_on_mask(

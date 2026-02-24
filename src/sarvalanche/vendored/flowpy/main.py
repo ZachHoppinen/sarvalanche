@@ -67,7 +67,7 @@ def run_flowpy(
     dem,
     release,
     *,
-    alpha=25,
+    alpha=20,
     exp=8,
     flux_threshold=3e-4,
     max_z=270,
