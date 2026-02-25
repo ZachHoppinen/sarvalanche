@@ -1,6 +1,8 @@
 
 import atexit
+import logging
 import os
+import time
 from pathlib import Path
 import tempfile
 
@@ -23,6 +25,62 @@ import warnings
 from rasterio.errors import NotGeoreferencedWarning
 # silence NotGeoreferencedWarning: Dataset has no geotransform, gcps, or rpcs. The identity matrix will be returned.
 warnings.filterwarnings('ignore', category=NotGeoreferencedWarning)
+
+log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Retry helpers
+# ---------------------------------------------------------------------------
+
+def _with_retry(fn, retries=4, initial_wait=3.0, label=""):
+    """Call fn up to `retries` times with exponential backoff.
+
+    Waits 3, 6, 12 seconds between attempts (default).  Logs a warning on
+    each failure so transient service outages are visible in the pipeline log.
+    """
+    for attempt in range(retries):
+        try:
+            return fn()
+        except Exception as e:
+            if attempt == retries - 1:
+                raise
+            wait = initial_wait * (2 ** attempt)
+            log.warning(
+                "%s: attempt %d/%d failed (%s: %s). Retrying in %.0fs...",
+                label, attempt + 1, retries, type(e).__name__, e, wait,
+            )
+            time.sleep(wait)
+
+
+def _slope_from_dem(dem: xr.DataArray) -> xr.DataArray:
+    """Compute slope in radians from a DEM DataArray using numpy gradient."""
+    transform = dem.rio.transform()
+    dx, dy = abs(transform[0]), abs(transform[4])
+    values = dem.compute().values if hasattr(dem.data, 'compute') else dem.values
+    gy, gx = np.gradient(values.astype(float), dy, dx)
+    out = xr.DataArray(
+        np.arctan(np.sqrt(gx ** 2 + gy ** 2)),
+        coords=dem.coords, dims=dem.dims,
+    )
+    if dem.rio.crs is not None:
+        out = out.rio.write_crs(dem.rio.crs)
+    return out
+
+
+def _aspect_from_dem(dem: xr.DataArray) -> xr.DataArray:
+    """Compute aspect in radians from a DEM DataArray using numpy gradient."""
+    transform = dem.rio.transform()
+    dx, dy = abs(transform[0]), abs(transform[4])
+    values = dem.compute().values if hasattr(dem.data, 'compute') else dem.values
+    gy, gx = np.gradient(values.astype(float), dy, dx)
+    out = xr.DataArray(
+        np.arctan2(-gy, gx),
+        coords=dem.coords, dims=dem.dims,
+    )
+    if dem.rio.crs is not None:
+        out = out.rio.write_crs(dem.rio.crs)
+    return out
 
 
 ALLOWED_EXTENSIONS = (".tif", ".tiff")
@@ -208,52 +266,78 @@ def _get_py3dep_map(
     *,
     to_radians=False,
 ):
-    da = py3dep.get_map(
-        layers=layer,
-        geometry=aoi,
-        crs=aoi_crs,
-        resolution=resolution,
+    da = _with_retry(
+        lambda: py3dep.get_map(layers=layer, geometry=aoi, crs=aoi_crs, resolution=resolution),
+        label=f"py3dep.get_map({layer})",
     )
     return _clean_and_match(da, ref_grid, to_radians=to_radians)
 
-def get_dem(aoi, aoi_crs, ref_grid = None, resolution=30):
-    dem = py3dep.get_dem(
-        geometry=aoi,
-        resolution=resolution,
-        crs=aoi_crs,
-    )
-    if ref_grid is not None: dem = dem.rio.reproject_match(ref_grid)
-    return dem.assign_attrs(units="m", source="py3dep", product = "elevation")
 
-def get_slope(aoi, aoi_crs, ref_grid = None, resolution=30):
-    slope = _get_py3dep_map(
-        layer="Slope Degrees",
-        aoi=aoi,
-        aoi_crs=aoi_crs,
-        ref_grid=ref_grid,
-        resolution=resolution,
-        to_radians=True,
+def get_dem(aoi, aoi_crs, ref_grid=None, resolution=30):
+    dem = _with_retry(
+        lambda: py3dep.get_dem(geometry=aoi, resolution=resolution, crs=aoi_crs),
+        label="py3dep.get_dem",
     )
-    if ref_grid is not None: slope = slope.rio.reproject_match(ref_grid)
-    return slope.assign_attrs(units="radians", source="py3dep", product = "slope")
+    if ref_grid is not None:
+        dem = dem.rio.reproject_match(ref_grid)
+    return dem.assign_attrs(units="m", source="py3dep", product="elevation")
 
-def get_aspect(aoi, aoi_crs, ref_grid = None, resolution=30):
-    aspect = _get_py3dep_map(
-        layer="Aspect Degrees",
-        aoi=aoi,
-        aoi_crs=aoi_crs,
-        ref_grid=ref_grid,
-        resolution=resolution,
-        to_radians=True,
-    )
-    if ref_grid is not None: aspect = aspect.rio.reproject_match(ref_grid)
-    return aspect.assign_attrs(units="radians", source="py3dep", product = "aspect")
 
-def get_forest_cover(aoi, aoi_crs, ref_grid = None):
+def get_slope(aoi, aoi_crs, ref_grid=None, resolution=30, dem=None):
+    try:
+        slope = _get_py3dep_map(
+            layer="Slope Degrees",
+            aoi=aoi,
+            aoi_crs=aoi_crs,
+            ref_grid=ref_grid,
+            resolution=resolution,
+            to_radians=True,
+        )
+        if ref_grid is not None:
+            slope = slope.rio.reproject_match(ref_grid)
+        return slope.assign_attrs(units="radians", source="py3dep", product="slope")
+    except Exception as e:
+        if dem is None:
+            raise
+        log.warning("py3dep slope failed after all retries (%s); computing from DEM", e)
+        slope = _slope_from_dem(dem)
+        if ref_grid is not None:
+            slope = slope.rio.reproject_match(ref_grid)
+        return slope.assign_attrs(units="radians", source="computed_from_dem", product="slope")
+
+
+def get_aspect(aoi, aoi_crs, ref_grid=None, resolution=30, dem=None):
+    try:
+        aspect = _get_py3dep_map(
+            layer="Aspect Degrees",
+            aoi=aoi,
+            aoi_crs=aoi_crs,
+            ref_grid=ref_grid,
+            resolution=resolution,
+            to_radians=True,
+        )
+        if ref_grid is not None:
+            aspect = aspect.rio.reproject_match(ref_grid)
+        return aspect.assign_attrs(units="radians", source="py3dep", product="aspect")
+    except Exception as e:
+        if dem is None:
+            raise
+        log.warning("py3dep aspect failed after all retries (%s); computing from DEM", e)
+        aspect = _aspect_from_dem(dem)
+        if ref_grid is not None:
+            aspect = aspect.rio.reproject_match(ref_grid)
+        return aspect.assign_attrs(units="radians", source="computed_from_dem", product="aspect")
+
+
+def get_forest_cover(aoi, aoi_crs, ref_grid=None):
     g = gpd.GeoSeries([aoi], crs=aoi_crs)
-    fcf = gh.nlcd_bygeom(geometry=g)[0]["canopy_2021"]
-    if ref_grid is not None: fcf = fcf.rio.reproject_match(ref_grid)
-    return fcf.assign_attrs(units="percent", source="nlcd", product = "forest_cover")
+    fcf = _with_retry(
+        lambda: gh.nlcd_bygeom(geometry=g)[0]["canopy_2021"],
+        label="nlcd_bygeom(canopy_2021)",
+    )
+    if ref_grid is not None:
+        fcf = fcf.rio.reproject_match(ref_grid)
+    return fcf.assign_attrs(units="percent", source="nlcd", product="forest_cover")
 
 def get_water_extent(aoi, aoi_crs, ref_grid=None, year=2021):
     """

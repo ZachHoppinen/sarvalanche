@@ -212,11 +212,25 @@ def run_detection(
     if needs_flowpy:
         ds, paths_gdf = generate_runcount_alpha_angle(ds)
         paths_gdf.to_file(track_gpkg, driver='GPKG')
-        if missing_flowpy_vars: export_netcdf(ds, ds_nc, overwrite=True)
+        if missing_flowpy_vars:
+            log.info(f'Saving netcdf to {ds_nc}')
+            export_netcdf(ds, ds_nc, overwrite=True)
     else:
         paths_gdf = gpd.read_file(track_gpkg)
 
     validate_canonical(ds)
+
+    # Early exit: if all pipeline outputs already exist in the cached dataset
+    # and the caller didn't request a re-run, skip all computation steps.
+    _PIPELINE_OUTPUTS = [
+        'detections', 'p_pixelwise', 'p_empirical', 'p_fcf',
+        'p_runout', 'p_slope', 'release_zones', 'distance_mahalanobis',
+    ]
+    if not overwrite and all(v in ds.data_vars for v in _PIPELINE_OUTPUTS):
+        log.info("All pipeline outputs present in cached dataset — skipping recomputation")
+        timer.summary()
+        import gc; gc.collect()
+        return ds
 
     # 3.5 - Preprocessing
     # rtc pre-processing is a homomorphic total variation based despeckling on each time step for each pol

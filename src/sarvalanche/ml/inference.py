@@ -170,7 +170,7 @@ def predict_with_sweeping_fast(model, baseline, patch_size=16, stride=8,
     no_prediction = (count == 0) & valid_mask
     if no_prediction.any():
         log.debug(f"{no_prediction.sum()} valid edge or {100*no_prediction.sum()/mu.size:.1f}% pixels had no predictions, filling...")
-        if 100*no_prediction.sum()/mu.size > 0.2: log.warning(f"{no_prediction.sum()} valid edge or {100*no_prediction.sum()/mu.size:.1f}% pixels had no predictions, filling...")
+        if no_prediction.sum()/mu.size > 0.2: log.warning(f"{no_prediction.sum()} valid edge or {100*no_prediction.sum()/mu.size:.1f}% pixels had no predictions, filling...")
         for c in range(C):
             if no_prediction.any():
                 indices = distance_transform_edt(no_prediction, return_distances=False, return_indices=True)

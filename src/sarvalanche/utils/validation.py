@@ -16,6 +16,187 @@ from pyproj import CRS
 
 from .constants import REQUIRED_ATTRS, temporal_only_vars
 
+def validate_chunks(
+    chunks: dict,
+    *,
+    n_time: Optional[int] = None,
+    ny: Optional[int] = None,
+    nx: Optional[int] = None,
+    dtype_bytes: int = 4,  # float32
+    max_chunk_mb: float = 256.0,
+    warn: bool = True,
+) -> dict:
+    """
+    Validate and hint on a Dask chunk dict for (time, y, x) datasets.
+
+    Parameters
+    ----------
+    chunks : dict
+        e.g. {'time': 1, 'y': 256, 'x': 256}
+    n_time : int, optional
+        Total number of time steps. Used to warn about oversized time chunks.
+    ny : int, optional
+        Total number of y pixels.
+    nx : int, optional
+        Total number of x pixels.
+    dtype_bytes : int
+        Bytes per element. Default 4 (float32). Use 8 for float64.
+    max_chunk_mb : float
+        Warn if a single chunk exceeds this size in MB. Default 256 MB.
+    warn : bool
+        If True, emit warnings. If False, raise ValueError on problems.
+
+    Returns
+    -------
+    dict
+        The validated (and possibly corrected) chunks dict.
+
+    Raises
+    ------
+    ValueError
+        If chunks is missing required keys or contains invalid values,
+        or if warn=False and any hint condition is triggered.
+    """
+    hints = []
+
+    # --- Required keys ---
+    for key in ('time', 'y', 'x'):
+        if key not in chunks:
+            raise ValueError(
+                f"chunks is missing required key '{key}'. "
+                f"Expected dict with keys 'time', 'y', 'x'. Got: {list(chunks.keys())}"
+            )
+
+    time_c = chunks['time']
+    y_c    = chunks['y']
+    x_c    = chunks['x']
+
+    # --- Type and value checks ---
+    for key, val in [('time', time_c), ('y', y_c), ('x', x_c)]:
+        if not isinstance(val, int) or val < 1:
+            raise ValueError(
+                f"chunks['{key}'] must be a positive integer, got {val!r}. "
+                f"Use -1 or the full dimension size to mean 'no chunking along this dim'."
+            )
+
+    # --- Chunk size in MB ---
+    chunk_elements = time_c * y_c * x_c
+    chunk_mb = (chunk_elements * dtype_bytes) / (1024 ** 2)
+    if chunk_mb > max_chunk_mb:
+        hints.append(
+            f"Chunk size is {chunk_mb:.1f} MB (time={time_c}, y={y_c}, x={x_c}, "
+            f"{dtype_bytes}-byte dtype). This exceeds the {max_chunk_mb:.0f} MB recommended "
+            f"maximum and may cause memory pressure. Consider reducing x/y to 128 or time to 1."
+        )
+
+    # --- Too small chunks — overhead dominates ---
+    # Replace the too-small check with:
+    spatial_chunk_mb = (y_c * x_c * dtype_bytes) / (1024 ** 2)
+    if chunk_mb < 1.0 and time_c > 1:
+        # Only warn if time chunking is also small — time=1 is intentional
+        hints.append(
+            f"Chunk size is only {chunk_mb*1024:.1f} KB. Very small chunks create excessive "
+            f"Dask graph overhead. Try x=256, y=256 as a minimum spatial chunk size."
+        )
+    elif spatial_chunk_mb < 0.25 and time_c == 1:
+        hints.append(
+            f"Spatial chunk is only {spatial_chunk_mb*1024:.1f} KB (y={y_c}, x={x_c}). "
+            f"With time=1 (intentional for SAR), spatial chunks should be at least 256x256 "
+            f"to avoid Dask overhead. Current spatial chunk size is very small."
+        )
+    # --- Time chunking ---
+    if time_c > 10:
+        hints.append(
+            f"chunks['time']={time_c} is large. For SAR time series, time=1 keeps memory "
+            f"flat (one scene at a time). Larger time chunks only help if your operations "
+            f"explicitly need multiple time steps simultaneously (e.g. rolling windows)."
+        )
+
+    if n_time is not None and time_c > n_time:
+        hints.append(
+            f"chunks['time']={time_c} exceeds the dataset's n_time={n_time}. "
+            f"This will create a single chunk along time — effectively no chunking. "
+            f"Set time={n_time} explicitly or time=1 for maximum laziness."
+        )
+
+    # --- Spatial chunking vs actual grid size ---
+    if ny is not None and y_c > ny:
+        hints.append(
+            f"chunks['y']={y_c} exceeds the grid height ny={ny}. "
+            f"xarray will silently clamp this to {ny}, creating one chunk along y. "
+            f"Set y={ny} explicitly or use a smaller value like y=256."
+        )
+
+    if nx is not None and x_c > nx:
+        hints.append(
+            f"chunks['x']={x_c} exceeds the grid width nx={nx}. "
+            f"xarray will silently clamp this to {nx}, creating one chunk along x. "
+            f"Set x={nx} explicitly or use a smaller value like x=256."
+        )
+
+    # --- Non-square spatial chunks ---
+    if x_c != y_c:
+        hints.append(
+            f"chunks['x']={x_c} != chunks['y']={y_c}. Non-square spatial chunks work fine "
+            f"but square chunks (e.g. 256x256) are conventional and often better for "
+            f"spatial operations like reprojection and convolution."
+        )
+
+    # --- Spatial chunks not a power of 2 ---
+    def _is_power_of_2(n):
+        return n > 0 and (n & (n - 1)) == 0
+
+    if not _is_power_of_2(x_c):
+        hints.append(
+            f"chunks['x']={x_c} is not a power of 2. Powers of 2 (128, 256, 512) align "
+            f"well with most raster tile schemes and can improve I/O performance."
+        )
+    if not _is_power_of_2(y_c):
+        hints.append(
+            f"chunks['y']={y_c} is not a power of 2. Powers of 2 (128, 256, 512) align "
+            f"well with most raster tile schemes and can improve I/O performance."
+        )
+
+    # --- Chunks not aligning with grid (causes the xarray warning you saw) ---
+    if ny is not None and ny % y_c != 0:
+        hints.append(
+            f"Grid height ny={ny} is not evenly divisible by chunks['y']={y_c}. "
+            f"This will produce an uneven final chunk and triggers xarray's "
+            f"'inconsistent chunks' warning. Consider y={_best_divisor(ny, y_c)} instead."
+        )
+
+    if nx is not None and nx % x_c != 0:
+        hints.append(
+            f"Grid width nx={nx} is not evenly divisible by chunks['x']={x_c}. "
+            f"This will produce an uneven final chunk and triggers xarray's "
+            f"'inconsistent chunks' warning. Consider x={_best_divisor(nx, x_c)} instead."
+        )
+
+    if n_time is not None and n_time % time_c != 0:
+        hints.append(
+            f"n_time={n_time} is not evenly divisible by chunks['time']={time_c}. "
+            f"This produces an uneven final time chunk. Consider time=1 or time={_best_divisor(n_time, time_c)}."
+        )
+
+    # --- Emit or raise ---
+    if hints:
+        message = "Chunk validation hints:\n" + "\n".join(f"  [{i+1}] {h}" for i, h in enumerate(hints))
+        if warn:
+            warnings.warn(message, UserWarning, stacklevel=2)
+        else:
+            raise ValueError(message)
+
+    return chunks
+
+
+def _best_divisor(n: int, target: int) -> int:
+    """Find the largest divisor of n that is <= target."""
+    best = 1
+    for d in range(1, target + 1):
+        if n % d == 0:
+            best = d
+    return best
+
 def validate_geotiff_quick(filepath):
     """Quick validation - just check if file opens and can read first tile"""
     try:

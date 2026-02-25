@@ -4,7 +4,7 @@ import pandas as pd
 import xarray as xr
 import logging
 
-from sarvalanche.utils.validation import validate_start_end, validate_aoi, validate_crs, validate_resolution, validate_canonical, validate_path
+from sarvalanche.utils.validation import validate_start_end, validate_aoi, validate_crs, validate_resolution, validate_canonical, validate_path, validate_chunks
 
 from sarvalanche.utils.grid import make_reference_grid, make_opera_reference_grid
 
@@ -38,10 +38,7 @@ def assemble_dataset(
     static_layer_nc = None,
     sar_only = False,
     # TODO implement dask/chunking...
-    chunks = {
-    'time': 1,      # 1 time steps at once
-    'x': 256,       # 256x256 spatial tiles
-    'y': 256}
+    chunks = None
 ) -> xr.Dataset:
     """
     Assemble SAR + auxiliary datasets for avalanche detection.
@@ -62,6 +59,10 @@ def assemble_dataset(
     aoi = validate_aoi(aoi)
     crs = validate_crs(crs)
     resolution = validate_resolution(resolution, crs=crs)
+    if chunks is None:
+        chunks = {'time': 1, 'x': 256, 'y': 256}
+    validate_chunks(chunks)
+
 
     # --- 2. Create reference grid ---
     # TODO convert to opera grid for less reprojecting...
@@ -130,9 +131,9 @@ def assemble_dataset(
     log.info('Getting DEM')
     ds["dem"] = get_dem(aoi, crs, ref_grid)
     log.info('Getting slope')
-    ds["slope"] = get_slope(aoi, crs, ref_grid)
+    ds["slope"] = get_slope(aoi, crs, ref_grid, dem=ds["dem"])
     log.info('Getting aspect')
-    ds["aspect"] = get_aspect(aoi, crs, ref_grid)
+    ds["aspect"] = get_aspect(aoi, crs, ref_grid, dem=ds["dem"])
     log.info('Getting fcf')
     ds["fcf"] = get_forest_cover(aoi, crs, ref_grid)
     log.info('Getting water cover')
@@ -141,20 +142,17 @@ def assemble_dataset(
     ds["urban_mask"] = get_urban_extent(aoi, crs, ref_grid)
 
     # add chunking
-    static_layers = [['dem', 'slope', 'aspect', 'fcf', 'water_mask', 'urban_mask']]
-    for layer in static_layers:
-        ds[layer] = ds[layer].chunk(chunks.pop('time'))
+    spatial_chunks = {'x': chunks.get('x', 256), 'y': chunks.get('y', 256)}
+    for layer in ['dem', 'slope', 'aspect', 'fcf', 'water_mask', 'urban_mask']:
+        ds[layer] = ds[layer].chunk(spatial_chunks)
+
+    ds = ds.unify_chunks()  # add this
 
     validate_canonical(ds, require_time = None)
 
     log.debug(f'Dataset dimension: {ds.dims}')
     log.debug(f'Dataset coords: {ds.coords}')
     log.debug(f'Dataset data_vars: {ds.data_vars}')
-    # With:
-    try:
-        ds = ds.unify_chunks()
-    except Exception:
-        pass
     log.debug(f'Dataset chunks: {ds.chunks}')
 
     return ds
@@ -211,5 +209,6 @@ def add_static_layers(ds: xr.Dataset, static_nc_fp: Path) -> xr.Dataset:
         log.debug("CRS and grid match — skipping reprojection.")
 
     ds = ds.merge(static_subset)
+    ds = ds.unify_chunks()
 
     return ds

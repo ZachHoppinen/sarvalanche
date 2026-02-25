@@ -74,14 +74,4 @@ def get_pixelwise_probabilities(
 
     p_pixelwise.attrs = {'source': 'sarvalanche', 'units': 'percentage', 'product': 'pixel_wise_probability'}
 
-    is_clipped = p_bayesian < p_likelihood
-    frac = is_clipped.compute().mean().item()
-    log.debug(f'p_bayesian < p_likelihood in {frac*100:.1f}% of pixels')
-
-    # Are clipped pixels concentrated in high-prior areas?
-    if frac > 0:
-        mean_prior_clipped = p_prior.where(is_clipped).mean().compute().item()
-        mean_prior_unclipped = p_prior.where(~is_clipped).mean().compute().item()
-        log.debug(f'Mean p_prior where clipped: {mean_prior_clipped:.3f}, unclipped: {mean_prior_unclipped:.3f}')
-
     return p_pixelwise
