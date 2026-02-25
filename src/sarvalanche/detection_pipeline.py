@@ -45,6 +45,7 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logging.getLogger('asf_search').setLevel(logging.WARNING)  # or logging.ERROR
+logging.getLogger('rasterio.session').setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
 

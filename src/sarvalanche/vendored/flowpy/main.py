@@ -31,8 +31,6 @@ import concurrent.futures
 import logging
 from xml.etree import ElementTree as ET
 from tqdm.auto import tqdm
-import gc
-
 # Flow-Py Libraries
 # import raster_io as io
 from .Simulation import Simulation as Sim
@@ -65,7 +63,6 @@ def _worker_init(dem, header):
     _SHARED['header'] = header
     from sarvalanche.vendored.flowpy.flow_math_numba import warmup_numba
     warmup_numba()
-
 
 def _run_calculation(args):
     """Worker task.
@@ -115,8 +112,6 @@ def run_flowpy(
     max_workers=12
 ):
     ref_da = dem.copy()
-    # Force garbage collection before starting
-    gc.collect()
 
     log.info("Starting...")
 
@@ -145,17 +140,26 @@ def run_flowpy(
     avaiable_memory = psutil.virtual_memory().available
     needed_memory = dem.nbytes
 
-    log.info(f"Available memory: {avaiable_memory / 1e9:.2f} GB")
-    log.info(f"DEM size: {needed_memory / 1e9:.2f} GB")
-    log.info(f"Estimated memory per worker: {needed_memory * 10 / 1e9:.2f} GB")
+    # Per-worker memory is much more than DEM size alone:
+    #   - DEM duplicated in each spawned worker process (~1×)
+    #   - flowpy creates ~15 intermediate arrays of DEM size (~15×)
+    #   - 7 result arrays returned per task (~7×)
+    #   - Python process overhead + IPC buffers
+    # 25× is conservative; floor of 0.5 GB for small DEMs so we don't
+    # underestimate on tiny test grids.
+    per_worker_estimate = max(needed_memory * 25, 0.5e9)
 
-    # Sanity check
-    total_needed = needed_memory * 10 * max_workers
-    if total_needed > avaiable_memory * 0.5:
+    log.info(f"Available memory: {avaiable_memory / 1e9:.2f} GB")
+    log.info(f"DEM size: {needed_memory / 1e9:.3f} GB")
+    log.info(f"Estimated memory per worker: {per_worker_estimate / 1e9:.2f} GB")
+
+    # Sanity check — use 60 % of available as safe ceiling
+    total_needed = per_worker_estimate * max_workers
+    if total_needed > avaiable_memory * 0.6:
         log.info(f"May not have enough memory!")
-        log.info(f"Needed: {total_needed / 1e9:.2f} GB, Available: {avaiable_memory * 0.5 / 1e9:.2f} GB (50% limit)")
-        # Reduce workers
-        max_workers = max(1, int(avaiable_memory * 0.8 / (needed_memory * 15)))
+        log.info(f"Needed: {total_needed / 1e9:.2f} GB, Available × 60%%: {avaiable_memory * 0.6 / 1e9:.2f} GB")
+        # Reduce workers: target ≤ 50 % of available memory
+        max_workers = max(1, int(avaiable_memory * 0.5 / per_worker_estimate))
         log.info(f"Reducing to {max_workers} workers")
 
     log.info('Files read in')
@@ -168,15 +172,9 @@ def run_flowpy(
     fp_ta = np.zeros_like(dem)
     sl_ta = np.zeros_like(dem)
 
-    # avaiable_memory = psutil.virtual_memory()[1]
-    # needed_memory = sys.getsizeof(dem)
-
-    # max_number_procces = int(avaiable_memory / (needed_memory * 10))
-
-
     log.info(
-        "There are {} GBytes of Memory available and {} gBytes needed per process. Max. Nr. of Processes = {}".format(
-            avaiable_memory /1e9, needed_memory*10/1e9, max_workers))
+        "There are %.2f GBytes of Memory available and %.2f GBytes estimated per worker. Max. Nr. of Processes = %d",
+        avaiable_memory / 1e9, per_worker_estimate / 1e9, max_workers)
 
     # Calculation
     log.info('Multiprocessing starts, available cores: %d', cpu_count())
@@ -186,15 +184,37 @@ def run_flowpy(
     # use a shuffled version to reduce processing itme.
     # release_list = fc.split_release_by_points_shuffled(release, release_header, max_workers * 10)
     # use a by each labeled release zone split
-    release_list = fc.split_release_by_label(release, release_header)
+    # Build one sparse (row, col) index array per connected release zone WITHOUT
+    # ever materialising N full DEM-sized arrays simultaneously.
+    #
+    # The old approach was:
+    #   release_list = split_release_by_label(...)   # N × DEM_size in RAM!
+    #   sparse_list  = [np.argwhere(r > 0) for r in release_list]
+    #   del release_list
+    #
+    # For 3 452 zones on a large DEM (e.g. 8 MB each) that peaks at ~27 GB
+    # before a single worker starts.  Instead we label once (one int32 DEM-
+    # sized array) and extract coordinates zone-by-zone:
+    from scipy.ndimage import label as _nd_label
 
-    # Convert each DEM-sized release mask to a compact (N, 2) int32 array of
-    # (row, col) pixel indices.  This drops IPC queue pressure from
-    # N_zones × 2 × DEM_size down to N_zones × n_pixels_per_zone × 8 bytes
-    # (typically kilobytes vs. gigabytes for large AOIs).
-    sparse_list = [np.argwhere(r > 0).astype(np.int32) for r in release_list]
-    del release_list  # free N × DEM_size before spawning workers
-    gc.collect()
+    # Apply the same nodata / clipping that split_release_by_label does
+    nodata = release_header.get("noDataValue")
+    if nodata:
+        release[release == nodata] = 0
+    else:
+        release[release < 0] = 0
+    release[release > 1] = 1
+
+    labeled, n_zones = _nd_label(release > 0)   # single int32 DEM-sized array
+    log.info("Found %d release zones", n_zones)
+
+    sparse_list = []
+    for zone_id in range(1, n_zones + 1):
+        coords = np.argwhere(labeled == zone_id).astype(np.int32)
+        if len(coords):
+            sparse_list.append(coords)
+
+    del labeled  # free the single int32 label array — done with it
 
     log.info("{} Processes started.".format(min(max_workers, len(sparse_list))))
     # --- prepare arguments (small per-task tuples only) ---
@@ -212,46 +232,19 @@ def run_flowpy(
 
     log.info("Starting flow calculation (%d tasks, %d workers)", n_tasks, n_workers)
 
-    # Profile the largest release zone (worst case)
-    largest_arg = max(args, key=lambda a: len(a[0]))
-
-    PROFILE = False  # flip to True when profiling
-    if PROFILE:
-        import cProfile
-        import pstats
-        import io
-
-        pr = cProfile.Profile()
-        pr.enable()
-        # Reconstruct full args for direct call (bypasses _SHARED)
-        pixels_p, _a, _e, _ft, _mz = largest_arg
-        release_p = np.zeros_like(dem, dtype=np.float64)
-        release_p[pixels_p[:, 0], pixels_p[:, 1]] = 1.0
-        fc.calculation_effect((dem, header, release_p, alpha, exp, flux_threshold, max_z))
-        pr.disable()
-
-        s = io.StringIO()
-        ps = pstats.Stats(pr, stream=s).sort_stats('cumulative')
-        ps.print_stats(20)
-        log.info("Profile results:\n%s", s.getvalue())
-
     path_list = []
 
-    with concurrent.futures.ProcessPoolExecutor(
-        max_workers=n_workers,
-        initializer=_worker_init,
-        initargs=(dem, header),   # DEM sent once per worker, not once per task
-    ) as executor:
+    executor = concurrent.futures.ProcessPoolExecutor(
+            max_workers=n_workers,
+            initializer=_worker_init,
+            initargs=(dem, header),
+        )
+    try:
         futures = {executor.submit(_run_calculation, arg): i for i, arg in enumerate(args)}
         del args
 
-        # Aggregate each result the moment it arrives.
-        # Previously all N result tuples (N × 7 × DEM arrays) were kept in
-        # memory at once, then copied into per-field lists before aggregation
-        # — peak usage was ~N × 15 × DEM.  Streaming reduces this to
-        # O(max_workers × DEM), regardless of how many release zones exist.
         for future in tqdm(concurrent.futures.as_completed(futures), total=n_tasks,
-                           desc="FlowPy calculation", unit="task"):
+                        desc="FlowPy calculation", unit="task"):
             res = future.result()
             z_delta     = np.maximum(z_delta,     res[0])
             flux        = np.maximum(flux,         res[1])
@@ -263,16 +256,12 @@ def run_flowpy(
 
             path = (res[2] > 0).astype(float)
             path_list.append(generate_path_vector(path, ref_da))
+            futures.pop(future)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
-            del res  # release the 7-array tuple immediately
-            gc.collect()
-
-    log.info('Calculation finished, getting results.')
-
-    log.info("Calculation finished")
-    log.info("...")
     end = datetime.now().replace(microsecond=0)
-    log.info('Calculation needed: ' + str(end - start) + ' seconds')
+    log.info('Calculation finished in %s', end - start)
 
     # return z_delta, flux, cell_counts, z_delta_sum, backcalc, fp_ta, sl_ta
     # only return cell_counts (number of start cells that converge to a pixel)

@@ -2,7 +2,6 @@ import numpy as np
 import math
 from datetime import datetime
 import logging
-import sys
 
 from sarvalanche.vendored.flowpy.flow_core import (
     split_release_by_label,
@@ -236,7 +235,6 @@ def calculation_effect(args):
         log.debug('Calculating Startcell: %d of %d = %.2f%%',
                   startcell_idx + 1, len(row_list),
                   (startcell_idx + 1) / len(row_list) * 100)
-        sys.stdout.flush()
 
         row_idx = row_list[startcell_idx]
         col_idx = col_list[startcell_idx]
@@ -291,6 +289,12 @@ def calculation_effect(args):
             z_delta_sum[r, c]         += cell.z_delta
             fp_travelangle_array[r, c] = max(fp_travelangle_array[r, c], cell.max_gamma)
             sl_travelangle_array[r, c] = max(sl_travelangle_array[r, c], cell.sl_gamma)
+
+        # Break reference cycles before dropping cell_list
+        for cell in cell_list:
+            cell.parent = []
+        del cell_list
+        del cell_index
 
         startcell_idx += 1
 
