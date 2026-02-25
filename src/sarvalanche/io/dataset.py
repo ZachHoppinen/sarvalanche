@@ -150,6 +150,11 @@ def assemble_dataset(
     log.debug(f'Dataset dimension: {ds.dims}')
     log.debug(f'Dataset coords: {ds.coords}')
     log.debug(f'Dataset data_vars: {ds.data_vars}')
+    # With:
+    try:
+        ds = ds.unify_chunks()
+    except Exception:
+        pass
     log.debug(f'Dataset chunks: {ds.chunks}')
 
     return ds

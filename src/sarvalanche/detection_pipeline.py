@@ -220,8 +220,6 @@ def run_detection(
 
     # 3.5 - Preprocessing
     # rtc pre-processing is a homomorphic total variation based despeckling on each time step for each pol
-    print(ds.attrs)
-    print(ds.attrs.get('preprocessed'))
     if ds.attrs.get('preprocessed') != 'rtc_tv':
         ds = preprocess_rtc(ds, tv_weight=0.5)
         ds.attrs['preprocessed'] = 'rtc_tv'

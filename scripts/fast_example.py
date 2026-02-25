@@ -25,6 +25,6 @@ if __name__ == '__main__':
     # ds = assemble_dataset(aoi, start_date, stop_date, crs, resolution, cache_dir)
     resolution = resolution_to_degrees(20, validate_crs(crs))
     # ds = run_detection(aoi, crs = crs, resolution = resolution, start_date=start_date, stop_date=stop_date,cache_dir=cache_dir, avalanche_date='2020-01-11', overwrite=False, static_fp='/Users/zmhoppinen/Documents/sarvalanche/local/data/2020-01-11.nc', debug=True)
-    ds = run_detection(aoi, avalanche_date='2020-01-11', overwrite=False, cache_dir=cache_dir) #static_fp='/Users/zmhoppinen/Documents/sarvalanche/local/data/2020-01-11.nc'
+    ds = run_detection(aoi, avalanche_date='2020-01-11', overwrite=True, cache_dir=cache_dir) #static_fp='/Users/zmhoppinen/Documents/sarvalanche/local/data/2020-01-11.nc'
     ds['detections'].plot()
     plt.show()

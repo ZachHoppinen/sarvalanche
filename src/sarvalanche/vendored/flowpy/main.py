@@ -172,8 +172,6 @@ def run_flowpy(
 
     log.info("Starting flow calculation (%d tasks, %d workers)", n_tasks, n_workers)
 
-    results = [None] * n_tasks  # placeholder
-
     # Profile the largest release zone (worst case)
     largest_arg = max(args, key=lambda a: np.sum(a[2] > 0))
 
@@ -193,48 +191,37 @@ def run_flowpy(
         ps.print_stats(20)
         log.info("Profile results:\n%s", s.getvalue())
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
-        # submit all tasks
-        future_to_idx = {executor.submit(_run_calculation, arg): i for i, arg in enumerate(args)}
-
-        # update progress bar as tasks complete
-        for future in tqdm(concurrent.futures.as_completed(future_to_idx), total=n_tasks,
-                        desc="FlowPy calculation", unit="task"):
-            idx = future_to_idx[future]
-            results[idx] = future.result()  # store result in original order
-
-    z_delta_list = []
-    flux_list = []
-    cc_list = []
-    z_delta_sum_list = []
-    backcalc_list = []
-    fp_ta_list = []
-    sl_ta_list = []
     path_list = []
-    for i in range(len(results)):
-        res = results[i]
-        res = list(res)
-        z_delta_list.append(res[0])
-        flux_list.append(res[1])
-        cc_list.append(res[2])
 
-        path = (res[2]>0).astype(float)
-        path_list.append(generate_path_vector(path, ref_da))
+    with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
+        # Submit all tasks, then free the args list so release arrays aren't
+        # held in both args and the executor's IPC queue simultaneously.
+        futures = {executor.submit(_run_calculation, arg): i for i, arg in enumerate(args)}
+        del args
 
-        z_delta_sum_list.append(res[3])
-        backcalc_list.append(res[4])
-        fp_ta_list.append(res[5])
-        sl_ta_list.append(res[6])
+        # Aggregate each result the moment it arrives.
+        # Previously all N result tuples (N × 7 × DEM arrays) were kept in
+        # memory at once, then copied into per-field lists before aggregation
+        # — peak usage was ~N × 15 × DEM.  Streaming reduces this to
+        # O(max_workers × DEM), regardless of how many release zones exist.
+        for future in tqdm(concurrent.futures.as_completed(futures), total=n_tasks,
+                           desc="FlowPy calculation", unit="task"):
+            res = future.result()
+            z_delta     = np.maximum(z_delta,     res[0])
+            flux        = np.maximum(flux,         res[1])
+            cell_counts += res[2]
+            z_delta_sum += res[3]
+            backcalc    = np.maximum(backcalc,     res[4])
+            fp_ta       = np.maximum(fp_ta,        res[5])
+            sl_ta       = np.maximum(sl_ta,        res[6])
+
+            path = (res[2] > 0).astype(float)
+            path_list.append(generate_path_vector(path, ref_da))
+
+            del res  # release the 7-array tuple immediately
+            gc.collect()
 
     log.info('Calculation finished, getting results.')
-    for i in range(len(z_delta_list)):
-        z_delta = np.maximum(z_delta, z_delta_list[i])
-        flux = np.maximum(flux, flux_list[i])
-        cell_counts += cc_list[i]
-        z_delta_sum += z_delta_sum_list[i]
-        backcalc = np.maximum(backcalc, backcalc_list[i])
-        fp_ta = np.maximum(fp_ta, fp_ta_list[i])
-        sl_ta = np.maximum(sl_ta, sl_ta_list[i])
 
     log.info("Calculation finished")
     log.info("...")
