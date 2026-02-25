@@ -65,13 +65,13 @@ def predict_with_sweeping_fast(model, baseline, patch_size=16, stride=8,
     if device is None:
         if torch.backends.mps.is_available():
             device = torch.device('mps')
-            print("Using MPS (Apple Silicon GPU)")
+            log.info("Using MPS (Apple Silicon GPU)")
         elif torch.cuda.is_available():
             device = torch.device('cuda')
-            print("Using CUDA GPU")
+            log.info("Using CUDA GPU")
         else:
             device = torch.device('cpu')
-            print("Using CPU")
+            log.info("Using CPU")
     else:
         device = torch.device(device)
 

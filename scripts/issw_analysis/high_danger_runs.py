@@ -280,7 +280,7 @@ def run_sarvalanche(
     bbox_str: str,
     zone_name: str,
     cache_dir: Path,
-    overwrite: bool = True,
+    overwrite: bool = False,
     static_fp = None,
 ) -> bool:
     """
@@ -322,25 +322,25 @@ def run_sarvalanche(
         log.error(f"Invalid bbox '{bbox_str}' for {zone_name}: {e}")
         return False
 
-    try:
-        ds = run_detection(
-            aoi            = aoi,
-            avalanche_date = avalanche_date,
-            cache_dir      = cache_dir,
-            job_name       = job_name,
-            overwrite      = overwrite,
-            static_fp      = static_fp
-        )
+    # try:
+    ds = run_detection(
+        aoi            = aoi,
+        avalanche_date = avalanche_date,
+        cache_dir      = cache_dir,
+        job_name       = job_name,
+        overwrite      = overwrite,
+        static_fp      = static_fp
+    )
 
-        # ── Cleanup: release large in-memory objects before returning ────────────
-        # flowpy and SAR stacking leave large arrays allocated; explicit cleanup
-        # prevents OOM kills when running multiple zones back-to-back
-        del ds
-        gc.collect()
-        return True
-    except Exception as e:
-        log.error(f"sarvalanche failed [{zone_name} {avalanche_date}]: {e}")
-        return False
+    # ── Cleanup: release large in-memory objects before returning ────────────
+    # flowpy and SAR stacking leave large arrays allocated; explicit cleanup
+    # prevents OOM kills when running multiple zones back-to-back
+    del ds
+    gc.collect()
+    return True
+    # except Exception as e:
+        # log.error(f"sarvalanche failed [{zone_name} {avalanche_date}]: {e}")
+        # return False
 
 
 def run_sarvalanche_for_peaks(

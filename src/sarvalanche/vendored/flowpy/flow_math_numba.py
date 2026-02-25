@@ -13,9 +13,12 @@ Usage in CellFast:
     )
 """
 
+import logging
 import numpy as np
 import math
 from numba import njit
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -330,4 +333,4 @@ def warmup_numba(cellsize=10.0, alpha=20.0, exp=8, flux_threshold=3e-4, max_z=27
         lut,
         1, 1
     )
-    print("Numba warmup complete.")
+    log.debug("Numba warmup complete.")

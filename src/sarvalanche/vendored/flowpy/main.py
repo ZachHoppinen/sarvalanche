@@ -42,9 +42,48 @@ from sarvalanche.vendored.flowpy.flow_math_numba import warmup_numba
 
 log = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Worker process state
+# ---------------------------------------------------------------------------
+
+# Each worker process populates this dict once via _worker_init.
+# The DEM and header are sent to each worker exactly once (in the initializer),
+# rather than being re-pickled into every task's IPC message.
+_SHARED = {}
+
+
+def _worker_init(dem, header):
+    """Initializer called once per worker process.
+
+    Stores the (large) DEM and header in process-local globals so that task
+    args only need to carry the tiny per-zone release pixel indices.
+    Also warms up Numba JIT inside each worker — required on macOS/Windows
+    where the 'spawn' start method means workers don't inherit the parent's
+    compiled functions.
+    """
+    _SHARED['dem'] = dem
+    _SHARED['header'] = header
+    from sarvalanche.vendored.flowpy.flow_math_numba import warmup_numba
+    warmup_numba()
+
+
 def _run_calculation(args):
-    """Wrapper for multiprocessing worker."""
-    return fc.calculation_effect(args)
+    """Worker task.
+
+    `args` is now (pixel_indices, alpha, exp, flux_threshold, max_z) where
+    pixel_indices is a small (n_pixels, 2) int32 array of (row, col) pairs.
+    The full DEM and header come from _SHARED, populated by _worker_init.
+
+    This replaces the old pattern of pickling the full DEM array into every
+    single task message — for 200 release zones on an 8 MB DEM that was
+    200 × 2 × 8 MB = 3.2 GB sitting in the IPC queue simultaneously.
+    """
+    pixel_indices, alpha, exp, flux_threshold, max_z = args
+    dem    = _SHARED['dem']
+    header = _SHARED['header']
+    release = np.zeros_like(dem, dtype=np.float64)
+    release[pixel_indices[:, 0], pixel_indices[:, 1]] = 1.0
+    return fc.calculation_effect((dem, header, release, alpha, exp, flux_threshold, max_z))
 
 def read_header(ds):
     #Reads in the header of the raster file, input: filepath
@@ -149,31 +188,32 @@ def run_flowpy(
     # use a by each labeled release zone split
     release_list = fc.split_release_by_label(release, release_header)
 
-    log.info("{} Processes started.".format(min(max_workers, len(release_list))))
-    # --- prepare arguments ---
-    args = [
-        (
-            dem,
-            header,
-            release_pixel,
-            alpha,
-            exp,
-            flux_threshold,
-            max_z,
-        )
-        for release_pixel in release_list
-    ]
+    # Convert each DEM-sized release mask to a compact (N, 2) int32 array of
+    # (row, col) pixel indices.  This drops IPC queue pressure from
+    # N_zones × 2 × DEM_size down to N_zones × n_pixels_per_zone × 8 bytes
+    # (typically kilobytes vs. gigabytes for large AOIs).
+    sparse_list = [np.argwhere(r > 0).astype(np.int32) for r in release_list]
+    del release_list  # free N × DEM_size before spawning workers
+    gc.collect()
 
-    warmup_numba()  # JIT compiles before workers spin up
+    log.info("{} Processes started.".format(min(max_workers, len(sparse_list))))
+    # --- prepare arguments (small per-task tuples only) ---
+    args = [
+        (pixels, alpha, exp, flux_threshold, max_z)
+        for pixels in sparse_list
+    ]
+    del sparse_list
+
+    warmup_numba()  # JIT compile in parent (inherited by fork workers on Linux)
+    log.info("Numba warmup complete.")
 
     n_tasks = len(args)
-    # n_workers = min(mp.cpu_count(), max_number_procces, n_tasks)
     n_workers = min(max_workers, n_tasks)
 
     log.info("Starting flow calculation (%d tasks, %d workers)", n_tasks, n_workers)
 
     # Profile the largest release zone (worst case)
-    largest_arg = max(args, key=lambda a: np.sum(a[2] > 0))
+    largest_arg = max(args, key=lambda a: len(a[0]))
 
     PROFILE = False  # flip to True when profiling
     if PROFILE:
@@ -183,7 +223,11 @@ def run_flowpy(
 
         pr = cProfile.Profile()
         pr.enable()
-        fc.calculation_effect(largest_arg)
+        # Reconstruct full args for direct call (bypasses _SHARED)
+        pixels_p, _a, _e, _ft, _mz = largest_arg
+        release_p = np.zeros_like(dem, dtype=np.float64)
+        release_p[pixels_p[:, 0], pixels_p[:, 1]] = 1.0
+        fc.calculation_effect((dem, header, release_p, alpha, exp, flux_threshold, max_z))
         pr.disable()
 
         s = io.StringIO()
@@ -193,9 +237,11 @@ def run_flowpy(
 
     path_list = []
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
-        # Submit all tasks, then free the args list so release arrays aren't
-        # held in both args and the executor's IPC queue simultaneously.
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=n_workers,
+        initializer=_worker_init,
+        initargs=(dem, header),   # DEM sent once per worker, not once per task
+    ) as executor:
         futures = {executor.submit(_run_calculation, arg): i for i, arg in enumerate(args)}
         del args
 

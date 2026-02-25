@@ -1,9 +1,12 @@
 # src/sarvalanche/__main__.py
 import argparse
+import logging
 from shapely.geometry import box
 from datetime import datetime
 
 from sarvalanche.detection_pipeline import detect_avalanche_debris
+
+log = logging.getLogger(__name__)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run SARvalanche detection")
@@ -36,7 +39,7 @@ def main():
     if args.output:
         debris_mask.to_netcdf(args.output)
     else:
-        print("Detection complete. No output file provided.")
+        log.info("Detection complete. No output file provided.")
 
 if __name__ == "__main__":
     main()
