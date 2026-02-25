@@ -39,10 +39,9 @@ def assemble_dataset(
     sar_only = False,
     # TODO implement dask/chunking...
     chunks = {
-    'time': 5,      # 5 time steps at once
+    'time': 1,      # 1 time steps at once
     'x': 256,       # 256x256 spatial tiles
     'y': 256}
-
 ) -> xr.Dataset:
     """
     Assemble SAR + auxiliary datasets for avalanche detection.
@@ -77,7 +76,7 @@ def assemble_dataset(
     ds = xr.Dataset()
     for filetype in RTC_FILETYPES:
         subtype_files = [f for f in fps if f.stem.endswith(filetype)]
-        da = load_reproject_concat_rtc(subtype_files, ref_grid, filetype)
+        da = load_reproject_concat_rtc(subtype_files, ref_grid, filetype, chunks)
         da = combine_close_images(da.sortby("time"))
         da.attrs = {'units': 'linear', 'source': SENTINEL1, 'product': RTC}
         ds[filetype] = da
@@ -112,8 +111,8 @@ def assemble_dataset(
     static_urls = find_asf_urls(aoi, start_date = None, stop_date = None, product_type=RTC_STATIC)
     static_fps = download_urls_parallel(static_urls, cache_dir.joinpath('opera'), description='Downloading S1 static RTC files')
     lia_fps, anf_fps = [f for f in static_fps if str(f).endswith('local_incidence_angle.tif')], [f for f in static_fps if str(f).endswith('rtc_anf_gamma0_to_beta0.tif')]
-    lia = load_reproject_concat_rtc(lia_fps, ref_grid, "lia")
-    anf = load_reproject_concat_rtc(anf_fps, ref_grid, "anf")
+    lia = load_reproject_concat_rtc(lia_fps, ref_grid, "lia", chunks)
+    anf = load_reproject_concat_rtc(anf_fps, ref_grid, "anf", chunks)
     # we need to fill nans in anf and lia for weighting...
 
     def combine_track(track_da):
@@ -141,7 +140,17 @@ def assemble_dataset(
     log.info('Getting urban')
     ds["urban_mask"] = get_urban_extent(aoi, crs, ref_grid)
 
+    # add chunking
+    static_layers = [['dem', 'slope', 'aspect', 'fcf', 'water_mask', 'urban_mask']]
+    for layer in static_layers:
+        ds[layer] = ds[layer].chunk(chunks.pop('time'))
+
     validate_canonical(ds, require_time = None)
+
+    log.debug(f'Dataset dimension: {ds.dims}')
+    log.debug(f'Dataset coords: {ds.coords}')
+    log.debug(f'Dataset data_vars: {ds.data_vars}')
+    log.debug(f'Dataset chunks: {ds.chunks}')
 
     return ds
 
@@ -149,7 +158,7 @@ def load_netcdf_to_dataset(filepath, decode_times=True):
     filepath = validate_path(filepath, should_exist=True)
     assert filepath.suffix == '.nc'
 
-    ds = xr.open_dataset(filepath, decode_times=decode_times)
+    ds = xr.open_dataset(filepath, decode_times=decode_times, chunks = 'auto')
 
     if 'crs' in ds.attrs:
         ds = ds.rio.write_crs(ds.attrs['crs'], inplace=True)
@@ -161,6 +170,7 @@ def load_netcdf_to_dataset(filepath, decode_times=True):
         ds = ds.drop_vars(scalar_coords_to_drop)
 
     return ds
+
 def add_static_layers(ds: xr.Dataset, static_nc_fp: Path) -> xr.Dataset:
     """
     Load static/auxiliary layers from a NetCDF file and add them to an existing dataset.

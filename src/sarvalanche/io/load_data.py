@@ -1,17 +1,23 @@
 
+import atexit
+import os
 from pathlib import Path
-import pandas as pd
+import tempfile
+
 import numpy as np
+import pandas as pd
+import geopandas as gpd
 import xarray as xr
-import rasterio
-from sarvalanche.utils.constants import SENTINEL1, OPERA_RTC
 import py3dep
 import pygeohydro as gh
 import rasterio
 from rasterio.warp import reproject, Resampling
+import dask.array as da
 from concurrent.futures import ThreadPoolExecutor
 from tqdm.auto import tqdm
-import geopandas as gpd
+
+
+from sarvalanche.utils.constants import SENTINEL1, OPERA_RTC
 
 import warnings
 from rasterio.errors import NotGeoreferencedWarning
@@ -30,58 +36,73 @@ RTC_RAW_TO_CANONICAL = {
     "PLATFORM": "platform",
 }
 
-def preallocate_output(times, y, x, dtype, crs, transform, nodata, time_coords=None):
-    """
-    Preallocate an xarray.DataArray for output.
+# def preallocate_output(times, y, x, dtype, crs, transform, nodata, time_coords=None):
+#     """
+#     Preallocate an xarray.DataArray for output.
 
-    Parameters
-    ----------
-    times : array-like
-        Time coordinates.
-    y : array-like
-        Y coordinates.
-    x : array-like
-        X coordinates.
-    dtype : numpy dtype
-        Data type of the array.
-    crs : CRS
-        Coordinate reference system (pyproj CRS or string).
-    transform : affine.Affine
-        Geotransform for rasterio/rioxarray.
-    time_coords : dict of array-like, optional
-        Optional coordinates to attach along the time dimension.
-        Keys are coordinate names, values are arrays of same length as `times`.
+#     Parameters
+#     ----------
+#     times : array-like
+#         Time coordinates.
+#     y : array-like
+#         Y coordinates.
+#     x : array-like
+#         X coordinates.
+#     dtype : numpy dtype
+#         Data type of the array.
+#     crs : CRS
+#         Coordinate reference system (pyproj CRS or string).
+#     transform : affine.Affine
+#         Geotransform for rasterio/rioxarray.
+#     time_coords : dict of array-like, optional
+#         Optional coordinates to attach along the time dimension.
+#         Keys are coordinate names, values are arrays of same length as `times`.
 
-    Returns
-    -------
-    xarray.DataArray
-    """
-    data = np.full((len(times), len(y), len(x)), nodata, dtype=dtype)
+#     Returns
+#     -------
+#     xarray.DataArray
+#     """
+#     # in ram
+#     # data = np.full((len(times), len(y), len(x)), nodata, dtype=dtype)
 
-    coords = {
-        "time": times,
-        "y": y,
-        "x": x,
-    }
+#     # mem mapped
+#     tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.dat')
+#     data = np.memmap(tmp.name, dtype=dtype, mode='w+',
+#                     shape=(len(times), len(y), len(x)))
 
-    # Add additional time dimension coordinates if provided
-    if time_coords is not None:
-        for name, values in time_coords.items():
-            if len(values) != len(times):
-                raise ValueError(f"Length of time coordinate '{name}' ({len(values)}) does not match length of times ({len(times)})")
-            coords[name] = ("time", values)
+#     coords = {
+#         "time": times,
+#         "y": y,
+#         "x": x,
+#     }
 
-    da = xr.DataArray(
-        data,
-        dims=("time", "y", "x"),
-        coords=coords,
-    )
+#     # Add additional time dimension coordinates if provided
+#     if time_coords is not None:
+#         for name, values in time_coords.items():
+#             if len(values) != len(times):
+#                 raise ValueError(f"Length of time coordinate '{name}' ({len(values)}) does not match length of times ({len(times)})")
+#             coords[name] = ("time", values)
 
-    # Attach spatial reference info (requires rioxarray)
-    da = da.rio.write_crs(crs)
-    da = da.rio.write_transform(transform)
-    da = da.rio.write_nodata(nodata)
-    return da
+#     da = xr.DataArray(
+#         data,
+#         dims=("time", "y", "x"),
+#         coords=coords,
+#     )
+
+#     # Attach spatial reference info (requires rioxarray)
+#     da = da.rio.write_crs(crs)
+#     da = da.rio.write_transform(transform)
+#     da = da.rio.write_nodata(nodata)
+#     return da
+
+tmp_files = []
+
+def _make_mmap(shape, dtype, suffix):
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    tmp_files.append(tmp.name)
+    return np.memmap(tmp.name, dtype=dtype, mode='w+', shape=shape)
+
+atexit.register(lambda: [os.unlink(f) for f in tmp_files if os.path.exists(f)])
 
 def read_rtc_attrs(fp):
     attrs = {}
@@ -96,8 +117,7 @@ def read_rtc_attrs(fp):
         attrs['time'] = pd.to_datetime(tags.get("ZERO_DOPPLER_START_TIME"))
     return attrs
 
-
-def load_reproject_concat_rtc(fps, ref_grid, pol):
+def load_reproject_concat_rtc(fps, ref_grid, pol, chunks):
     attributes = [read_rtc_attrs(fp) for fp in fps]
     times = [a['time'] for a in attributes]
     tracks = [int(a['track']) for a in attributes]
@@ -105,40 +125,26 @@ def load_reproject_concat_rtc(fps, ref_grid, pol):
     platforms = [a['platform'] for a in attributes]
 
     with rasterio.open(fps[0]) as src:
-        dtype = src.dtypes[0]
+        dtype = 'float32'
         nodata = src.nodata
 
-    out = preallocate_output(
-        times,
-        ref_grid.y,
-        ref_grid.x,
-        dtype,
-        ref_grid.rio.crs,
-        ref_grid.rio.transform(),
-        nodata,
-        time_coords={'track': tracks, 'direction': directions, 'platform': platforms}
-    )
+    ny, nx = len(ref_grid.y), len(ref_grid.x)
+    nt = len(fps)
+
+    # --- memmap: full array on disk, filled slice by slice ---
+    mmap = _make_mmap(shape=(nt, ny, nx), dtype = dtype, suffix = f'_{pol}.dat')
+    # tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f'_{pol}.dat')
+    # mmap = np.memmap(tmp.name, dtype=dtype, mode='w+', shape=(nt, ny, nx))
 
     dst_transform = ref_grid.rio.transform()
     dst_crs = ref_grid.rio.crs
-    dst_shape = (len(ref_grid.y), len(ref_grid.x))
-    if dst_transform is None or dst_transform.is_identity:
-        raise ValueError("Destination transform is invalid")
-
+    dst_shape = (ny, nx)
 
     def reproject_one(fp_idx):
         fp, idx = fp_idx
-
         with rasterio.open(fp) as src:
-            if src.transform is None or src.transform.is_identity:
-                raise ValueError(f"File is not georeferenced: {fp}")
-
-            if src.crs is None:
-                raise ValueError(f"File has no CRS: {fp}")
-
-            img = src.read(1).astype(dtype).astype("float32")
-            dst = np.full(dst_shape, np.nan, dtype="float32")
-
+            img = src.read(1).astype(dtype)
+            dst = np.full(dst_shape, np.nan, dtype=dtype)
             reproject(
                 source=img,
                 destination=dst,
@@ -152,15 +158,29 @@ def load_reproject_concat_rtc(fps, ref_grid, pol):
             )
         return idx, dst
 
-    # Parallel reprojection
-    from concurrent.futures import ThreadPoolExecutor
-    from tqdm import tqdm
-
     with ThreadPoolExecutor(max_workers=4) as ex:
         for idx, dst in tqdm(ex.map(reproject_one, [(fp, i) for i, fp in enumerate(fps)]),
-                             total=len(fps),
-                             desc=f"Reprojecting + stacking {pol}"):
-            out[idx, :, :] = dst
+                             total=nt, desc=f"Reprojecting {pol}"):
+            mmap[idx] = dst
+
+    mmap.flush()
+
+    # --- wrap memmap in Dask with spatial chunks ---
+    dask_arr = da.from_array(mmap, chunks=chunks)
+
+    coords = {
+        "time": times,
+        "y": ref_grid.y.values,
+        "x": ref_grid.x.values,
+        "track": ("time", tracks),
+        "direction": ("time", directions),
+        "platform": ("time", platforms),
+    }
+
+    out = xr.DataArray(dask_arr, dims=("time", "y", "x"), coords=coords)
+    out = out.rio.write_crs(ref_grid.rio.crs)
+    out = out.rio.write_transform(dst_transform)
+    out = out.rio.write_nodata(np.nan)
 
     return out
 
