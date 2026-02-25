@@ -22,6 +22,7 @@ Created on Mon May  7 14:23:00 2018
 # import standard libraries
 import os
 import sys
+import signal
 import psutil
 import numpy as np
 from datetime import datetime
@@ -39,6 +40,18 @@ from . import flow_core_fast as fc
 from sarvalanche.vendored.flowpy.flow_math_numba import warmup_numba
 
 log = logging.getLogger(__name__)
+
+def _cleanup_executor(executor):
+    """Force-kill all worker processes."""
+    try:
+        for pid, process in executor._processes.items():
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    except Exception:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # Worker process state
@@ -222,6 +235,16 @@ def run_flowpy(
         (pixels, alpha, exp, flux_threshold, max_z)
         for pixels in sparse_list
     ]
+    # run biggest zones first.
+    args.sort(key=lambda a: len(a[0]))
+    # Log the distribution of zone sizes
+    sizes = [len(a[0]) for a in args]
+    log.info("Zone size stats: min=%d, max=%d, mean=%.1f, p95=%d, p99=%d",
+            min(sizes), max(sizes), 
+            np.mean(sizes),
+            int(np.percentile(sizes, 95)),
+            int(np.percentile(sizes, 99)))
+
     del sparse_list
 
     warmup_numba()  # JIT compile in parent (inherited by fork workers on Linux)
@@ -239,6 +262,15 @@ def run_flowpy(
             initializer=_worker_init,
             initargs=(dem, header),
         )
+    _active_executor = executor  # module-level reference
+
+    def _signal_handler(signum, frame):
+        _cleanup_executor(_active_executor)
+        sys.exit(1)
+
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
+
     try:
         futures = {executor.submit(_run_calculation, arg): i for i, arg in enumerate(args)}
         del args
@@ -259,6 +291,9 @@ def run_flowpy(
             futures.pop(future)
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)  # restore default
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+
 
     end = datetime.now().replace(microsecond=0)
     log.info('Calculation finished in %s', end - start)

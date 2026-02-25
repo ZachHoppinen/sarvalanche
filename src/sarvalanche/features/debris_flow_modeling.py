@@ -4,7 +4,7 @@ import pandas as pd
 import geopandas as gpd
 import xarray as xr
 from rasterio.enums import Resampling
-from scipy.ndimage import binary_closing
+from scipy.ndimage import binary_dilation, binary_closing
 
 from sarvalanche.masks.size_filter import filter_pixel_groups
 from sarvalanche.preprocessing.spatial import spatial_smooth
@@ -18,19 +18,22 @@ def generate_runcount_alpha_angle(ds):
     dem_proj = ds['dem'].rio.reproject(ds['dem'].rio.estimate_utm_crs())
     log.debug("generate_runcount_alpha_angle: DEM shape=%s", dem_proj.shape)
 
-    min_release_area_m2 = 50 * 50 # meters
+    min_release_area_m2 = 50 * 50   # meters
+    max_release_area_m2 = 4000 * 2000  # cap at 4km×2 km
     min_release_pixels = area_m2_to_pixels(dem_proj, min_release_area_m2)
+    max_release_pixels = area_m2_to_pixels(dem_proj, max_release_area_m2)
 
     # generate start area
     release_mask = generate_release_mask(
         slope=ds['slope'],
         forest_cover=ds['fcf'],
-        aspect = ds['aspect'],
-        aspect_threshold=np.pi/2,
+        aspect=ds['aspect'],
+        aspect_threshold=np.pi/4,   # 45° — splits across aspect sectors
         min_slope_deg=25,
         max_slope_deg=60,
         max_fcf=10,
         min_group_size=min_release_pixels,
+        max_group_size=max_release_pixels,
         smooth=True,
         reference=dem_proj
     )
@@ -59,65 +62,11 @@ def attach_flowpy_outputs(ds, cell_counts, runout_angle, release_mask):
 
     return ds
 
-# def generate_release_mask(
-#     slope: xr.DataArray,
-#     forest_cover: xr.DataArray,
-#     min_slope_deg: float = 25,
-#     max_slope_deg: float = 60,
-#     max_fcf: float = 10,
-#     min_group_size: int = 100,
-#     smooth: bool = True,
-#     aspect: xr.DataArray = None,
-#     aspect_threshold = np.pi/8,
-#     reference: xr.DataArray = None,
-# ) -> xr.DataArray:
-#     """
-#     Generate a release mask based on slope, forest cover, and optional filtering.
-
-#     Returns a DataArray of 0/1 values aligned to `reference` CRS/grid.
-#     """
-#     mask = (
-#         (slope > np.deg2rad(min_slope_deg)) &
-#         (slope < np.deg2rad(max_slope_deg)) &
-#         (forest_cover < max_fcf)
-#     ).astype(float)
-
-#     if smooth:
-#         mask = spatial_smooth(mask).round()
-
-#     if reference is not None:
-#         mask = mask.rio.reproject_match(reference)
-
-#     if aspect is not None:
-#         aspect = aspect.rio.reproject_match(mask)
-#         a = aspect.values  # (2585, 1674) pure numpy
-#         diff_h = np.abs(np.arctan2(np.sin(a[:, :-1] - a[:, 1:]),
-#                                     np.cos(a[:, :-1] - a[:, 1:])))
-#         diff_v = np.abs(np.arctan2(np.sin(a[:-1, :] - a[1:, :]),
-#                                     np.cos(a[:-1, :] - a[1:, :])))
-
-#         aspect_break = (
-#             np.pad(diff_h > aspect_threshold, ((0,0),(0,1)), constant_values=False) |
-#             np.pad(diff_h > aspect_threshold, ((0,0),(1,0)), constant_values=False) |
-#             np.pad(diff_v > aspect_threshold, ((0,1),(0,0)), constant_values=False) |
-#             np.pad(diff_v > aspect_threshold, ((1,0),(0,0)), constant_values=False)
-#         )
-#         mask = mask.astype(bool) & ~xr.DataArray(aspect_break, dims=mask.dims, coords=mask.coords)
-#         mask = mask.astype(float)
-
-#     da_out = xr.zeros_like(reference)
-#     da_out.data = filter_pixel_groups(mask, min_size=min_group_size)
-
-#     valid_mask = np.isfinite(reference.values)
-#     # da_out = da_out.where(valid_mask)
-#     da_out = da_out.where(valid_mask, other=0.0)
-
-#     return da_out
 
 def run_flowpy_on_mask(
     dem: xr.DataArray,
     release_mask: xr.DataArray,
-    alpha: float = 25,
+    alpha: float = 20,
     reference: xr.DataArray = None,
 ) -> tuple[xr.DataArray, xr.DataArray]:
     """
@@ -157,24 +106,26 @@ def generate_release_mask(
     max_slope_deg: float = 60,
     max_fcf: float = 10,
     min_group_size: int = 10,
+    max_group_size: int = None,
     smooth: bool = True,
     aspect: xr.DataArray = None,
-    aspect_threshold: float = np.pi / 2,   # ~90° — only split at true ridgelines
+    aspect_threshold: float = np.pi / 4,   # 45° — splits across aspect sectors, not just N↔S ridges
     reference: xr.DataArray = None,
 ) -> xr.DataArray:
     """
     Generate a release mask based on slope, forest cover, and optional
-    ridgeline splitting.
+    ridgeline/aspect splitting.
 
-    Changes from previous version:
-    - aspect_threshold default raised to π/2 (90°) — only breaks at real
-      ridgelines, not noisy slope interior variation
-    - binary_closing applied after aspect splitting to reconnect fragments
-      caused by single noisy pixels
-    - aspect break used as a hard barrier (sets mask=0 at break pixels)
-      rather than fragmenting via 4-directional padding, which was too aggressive
-    - filter_pixel_groups runs last, after closing, so min_group_size acts
-      on the final connected regions not pre-close fragments
+    Parameters
+    ----------
+    aspect_threshold : float
+        Maximum circular aspect difference (radians) allowed between adjacent
+        pixels before they are split into separate release zones.  π/4 (45°)
+        catches both true ridgelines and subtle terrain breaks between aspect
+        sectors.  Increase toward π/2 if the mask becomes too fragmented.
+    max_group_size : int or None
+        If set, blobs larger than this pixel count are discarded.  Useful to
+        cap oversized zones that result from undetected ridgeline merges.
     """
 
     # ── 1. Base slope + forest mask ──────────────────────────────────────────
@@ -190,24 +141,25 @@ def generate_release_mask(
     if reference is not None:
         mask = mask.rio.reproject_match(reference)
 
-    # ── 2. Ridgeline splitting via aspect breaks ─────────────────────────────
-    # Only break at pixels where aspect changes sharply (true ridgelines),
-    # not at the minor variation within a uniform slope face.
-    # At 30m resolution, π/2 (90°) is a reasonable threshold — a ridge
-    # separating N-facing and S-facing slopes will exceed this easily,
-    # but normal within-slope aspect noise (~10-30°) will not.
+    # ── 2. Ridgeline / aspect-break splitting ────────────────────────────────
+    # Zero out pixels on both sides of any edge where aspect changes more than
+    # aspect_threshold.  This creates a clean 2-pixel-wide barrier that scipy
+    # 4-connectivity cannot bridge, reliably separating adjacent slope faces.
+    #
+    # NOTE: no binary_closing after this step — closing would bridge the ridge
+    # gaps we just created and re-merge zones across ridgelines.
     if aspect is not None:
         aspect = aspect.rio.reproject_match(mask)
         a = aspect.values
 
-        # Compute angular difference between adjacent pixels
+        # Circular difference between each horizontally / vertically adjacent pair
         diff_h = np.abs(np.arctan2(np.sin(a[:, :-1] - a[:, 1:]),
                                     np.cos(a[:, :-1] - a[:, 1:])))
         diff_v = np.abs(np.arctan2(np.sin(a[:-1, :] - a[1:, :]),
                                     np.cos(a[:-1, :] - a[1:, :])))
 
-        # A pixel is a ridgeline if it borders a sharp aspect change
-        # Use OR of both sides so the ridge pixel itself gets masked
+        # Mark both pixels of each high-diff edge so the barrier is at least
+        # 2 pixels wide (sufficient to split with 4-connected labeling).
         ridge_h = (
             np.pad(diff_h > aspect_threshold, ((0,0),(0,1)), constant_values=False) |
             np.pad(diff_h > aspect_threshold, ((0,0),(1,0)), constant_values=False)
@@ -218,18 +170,20 @@ def generate_release_mask(
         )
         ridge_mask = ridge_h | ridge_v
 
-        # Zero out ridge pixels in the release mask — this splits zones
-        # at ridgelines without fragmenting interior slope pixels
+        # Dilate the ridge barrier by 1 pixel so the final gap is at least
+        # 3 pixels wide (2 from bilateral marking + 1 from dilation).
+        ridge_mask = binary_dilation(ridge_mask, structure=np.ones((3, 3), dtype=bool))
+
+        log.debug("generate_release_mask: ridge pixels=%d (%.1f%% of mask)",
+                  ridge_mask.sum(), 100 * ridge_mask.mean())
+
         mask_arr = mask.values.astype(bool)
         mask_arr[ridge_mask] = False
 
-        # ── 3. Close small gaps caused by noisy ridge pixels ─────────────────
-        # A single noisy aspect pixel can punch a hole through a valid slope.
-        # binary_closing with a 3x3 structure reconnects fragments separated
-        # by 1-2 pixel gaps while preserving true ridgeline breaks (which are
-        # wider than 1-2 pixels at 30m)
-        structure = np.ones((5, 5), dtype=bool)
-        mask_arr = binary_closing(mask_arr, structure=structure)
+        # A 2×2 closing heals single noisy-aspect holes punched through valid
+        # slope faces.  It can only bridge 1-pixel gaps — smaller than the
+        # 3-pixel ridge barrier above — so ridgelines are never reconnected.
+        mask_arr = binary_closing(mask_arr, structure=np.ones((2, 2), dtype=bool))
 
         mask = xr.DataArray(
             mask_arr.astype(float),
@@ -237,9 +191,9 @@ def generate_release_mask(
             coords=mask.coords,
         )
 
-    # ── 4. Remove small disconnected patches ─────────────────────────────────
+    # ── 3. Remove small / large disconnected patches ─────────────────────────
     da_out = xr.zeros_like(reference)
-    da_out.data = filter_pixel_groups(mask, min_size=min_group_size)
+    da_out.data = filter_pixel_groups(mask, min_size=min_group_size, max_size=max_group_size)
 
     valid_mask = np.isfinite(reference.values)
     da_out = da_out.where(valid_mask, other=0.0)
