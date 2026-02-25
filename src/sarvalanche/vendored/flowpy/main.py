@@ -106,7 +106,7 @@ def run_flowpy(
 
     # Check actual available memory
     avaiable_memory = psutil.virtual_memory().available
-    needed_memory = dem.nbytes  # More accurate than sys.getsizeof
+    needed_memory = dem.nbytes
 
     log.info(f"Available memory: {avaiable_memory / 1e9:.2f} GB")
     log.info(f"DEM size: {needed_memory / 1e9:.2f} GB")
@@ -138,8 +138,8 @@ def run_flowpy(
 
 
     log.info(
-        "There are {} Bytes of Memory avaiable and {} Bytes needed per process. Max. Nr. of Processes = {}".format(
-            avaiable_memory, needed_memory*10, max_workers))
+        "There are {} GBytes of Memory available and {} gBytes needed per process. Max. Nr. of Processes = {}".format(
+            avaiable_memory /1e9, needed_memory*10/1e9, max_workers))
 
     # Calculation
     log.info('Multiprocessing starts, available cores: %d', cpu_count())
