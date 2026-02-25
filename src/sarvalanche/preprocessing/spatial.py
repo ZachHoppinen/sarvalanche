@@ -1,6 +1,9 @@
+import logging
 import numpy as np
 import xarray as xr
 from scipy.ndimage import gaussian_filter, median_filter
+
+log = logging.getLogger(__name__)
 
 def spatial_smooth(
     da: xr.DataArray,
@@ -30,6 +33,8 @@ def spatial_smooth(
     xr.DataArray
         Smoothed DataArray with same coords and dims as input.
     """
+
+    log.debug("spatial_smooth: shape=%s, method=%s", da.shape, method)
 
     # Move spatial dims to last two axes for filtering
     da_swapped = da.transpose(..., y_dim, x_dim)

@@ -4,9 +4,12 @@ Resolution-based weighting for SAR detection system.
 Weights are normalized to sum to 1.0 along the specified dimension.
 """
 
+import logging
 import xarray as xr
 import numpy as np
 from typing import Optional, Union, Literal
+
+log = logging.getLogger(__name__)
 
 
 def get_local_resolution_weights(
@@ -47,6 +50,13 @@ def get_local_resolution_weights(
         >>> # Weights sum to 1.0 along time dimension for each orbit
     """
 
+    log.debug(
+        "get_local_resolution_weights: resolution values range [%.2f, %.2f], dim=%s",
+        float(local_resolution.min()),
+        float(local_resolution.max()),
+        dim,
+    )
+
     # Validate input
     if not np.all(np.isfinite(local_resolution.values)):
         raise ValueError(
@@ -60,7 +70,7 @@ def get_local_resolution_weights(
             "Resolution represents physical distance - use absolute values."
         )
 
-    # Auto-detect dimension if not specified
+    # Auto-detect dimension if not specified — log the detected dim after resolution
     if dim is None:
         if 'time' in local_resolution.dims:
             dim = 'time'
@@ -96,5 +106,12 @@ def get_local_resolution_weights(
 
     # Rename for clarity
     weights = weights.rename('w_resolution')
+
+    log.debug(
+        "get_local_resolution_weights: detected dim=%s, weight range [%.4f, %.4f]",
+        dim,
+        float(weights.min()),
+        float(weights.max()),
+    )
 
     return weights

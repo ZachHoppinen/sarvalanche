@@ -1,5 +1,6 @@
 # sarvalanche/utils/validation.py
 
+import logging
 import warnings
 from datetime import date
 from typing import Union, Tuple, Optional, Literal
@@ -15,6 +16,8 @@ import rasterio
 from pyproj import CRS
 
 from .constants import REQUIRED_ATTRS, temporal_only_vars
+
+log = logging.getLogger(__name__)
 
 def validate_chunks(
     chunks: dict,
@@ -240,8 +243,8 @@ def validate_geotiff_thorough(filepath):
         if any(x in error_str for x in ['TIFF', 'IReadBlock', 'ReadEncodedTile', 'Read failed']):
             return False  # Definitely corrupted
         else:
-            # Truly unknown error - print and reject to be safe
-            print(f"⚠️  Unknown error validating {filepath.name}: {e}")
+            # Truly unknown error - log and reject to be safe
+            log.warning("Unknown error validating %s: %s", filepath.name, e)
             return False  # Reject on unknown errors too
 
 
@@ -408,6 +411,11 @@ def validate_canonical(
     """
     if isinstance(data, xr.DataArray):
         validate_canonical_da(data, require_time=require_time)
+        log.debug(
+            "validate_canonical passed: dims=%s, vars=n/a, has_time=%s",
+            data.dims,
+            "time" in data.dims,
+        )
     elif isinstance(data, xr.Dataset):
         for name, da in data.data_vars.items():
             only_time = True if name in temporal_only_vars else False
@@ -415,6 +423,11 @@ def validate_canonical(
                 validate_canonical_da(da, require_time=require_time, only_time=only_time)
             except Exception as e:
                 raise ValueError(f"Validation failed for variable '{name}': {e}") from e
+        log.debug(
+            "validate_canonical passed: vars=%s, has_time=%s",
+            list(data.data_vars),
+            "time" in data.dims,
+        )
     else:
         raise TypeError("Input must be either an xarray.DataArray or xr.Dataset")
 

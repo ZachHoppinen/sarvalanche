@@ -1,7 +1,9 @@
+import logging
 import numpy as np
 import pandas as pd
 import xarray as xr
 
+log = logging.getLogger(__name__)
 
 def get_temporal_weights(
     times_1: xr.DataArray,
@@ -45,6 +47,8 @@ def get_temporal_weights(
     >>> # weights.sum() == 1.0
     """
 
+    log.debug("get_temporal_weights: n_times=%d, tau_days=%s", times_1.size, tau_days)
+
     # Handle the two cases
     if isinstance(times_2, xr.DataArray):
         # Case 1: Element-wise pairing between two DataArrays
@@ -78,6 +82,12 @@ def get_temporal_weights(
         dims=[dim_name],
         coords={dim_name: times_1.values},
         name="w_temporal",
+    )
+
+    log.debug(
+        "get_temporal_weights: weight range [%.4f, %.4f]",
+        float(result.min()),
+        float(result.max()),
     )
 
     return result

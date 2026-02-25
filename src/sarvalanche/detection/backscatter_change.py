@@ -1,8 +1,11 @@
 
+import logging
 import numpy as np
 import xarray as xr
 
 from sarvalanche.utils.generators import iter_track_pol_combinations
+
+log = logging.getLogger(__name__)
 
 # from sarvalanche.probabilities.ecdf import compute_track_ecdf_probability
 from sarvalanche.probabilities.empirical import compute_track_empirical_probability
@@ -70,7 +73,9 @@ def calculate_empirical_backscatter_probability(
     pol_weights = []
     track_pol_labels = []
 
+    log.debug("calculate_empirical_backscatter_probability: starting track/pol iteration")
     for track, pol, da in iter_track_pol_combinations(ds):
+        log.debug("Processing track=%s, pol=%s", track, pol)
 
         p = compute_track_empirical_probability(da, avalanche_date, **kwargs)
 
@@ -113,6 +118,14 @@ def calculate_empirical_backscatter_probability(
         min_prob_threshold=min_prob_threshold,
         agreement_strength=agreement_strength,
         agreement_boosting = use_agreement_boosting
+    )
+
+    log.debug(
+        "calculate_empirical_backscatter_probability: %d track/pol combos processed, "
+        "probability range [%.4f, %.4f]",
+        len(track_pol_labels),
+        float(p_empirical.min()),
+        float(p_empirical.max()),
     )
 
     p_empirical.attrs = {

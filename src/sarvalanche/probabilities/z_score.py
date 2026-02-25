@@ -1,6 +1,9 @@
+import logging
 import numpy as np
 import xarray as xr
 from scipy.stats import norm
+
+log = logging.getLogger(__name__)
 
 def z_score_to_probability(distance: xr.DataArray, threshold: float = 2.0) -> xr.DataArray:
     """
@@ -12,6 +15,7 @@ def z_score_to_probability(distance: xr.DataArray, threshold: float = 2.0) -> xr
 
     threshold=2.0 (default) means z=+2 → p=0.5, z=+3 → p~0.88, z=+4 → p~0.98
     """
+    log.debug("z_score_to_probability: threshold=%s", threshold)
     prob = xr.apply_ufunc(
         lambda z: 1 / (1 + np.exp(-(z - threshold))),
         distance,

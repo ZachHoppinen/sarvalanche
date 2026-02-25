@@ -209,8 +209,8 @@ def compute_mahalanobis_with_sweeping(model, da, avalanche_date, stride=4, devic
     prior = da.sel(time=slice(None, avalanche_date))
     post = da.sel(time=slice(avalanche_date, None))
 
-    print(f"Using {len(prior.time)} baseline images")
-    print(f"Image size: {prior.shape[-2]} x {prior.shape[-1]}")
+    log.info("Using %d baseline images", len(prior.time))
+    log.debug("Image size: %d x %d", prior.shape[-2], prior.shape[-1])
 
     # Predict distribution using sweeping
     mu, sigma = predict_with_sweeping(

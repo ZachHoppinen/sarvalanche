@@ -23,12 +23,15 @@ Example
 import argparse
 import importlib.metadata
 import json
+import logging
 import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
+
+log = logging.getLogger(__name__)
 
 
 WEIGHTS_DIR = Path(__file__).parent.parent / "ml" / "weights"
@@ -38,7 +41,7 @@ def get_sarvalanche_version() -> str:
     try:
         return importlib.metadata.version("sarvalanche")
     except importlib.metadata.PackageNotFoundError:
-        print("Warning: sarvalanche package not found, using 'unknown' for version")
+        log.warning("sarvalanche package not found, using 'unknown' for version")
         return "unknown"
 
 
@@ -120,7 +123,7 @@ def write_sidecar(
     lines += ["", "=" * 60]
 
     path.write_text("\n".join(lines) + "\n")
-    print(f"Sidecar written  : {path}")
+    log.info("Sidecar written: %s", path)
 
 
 def export_weights(
@@ -173,16 +176,16 @@ def export_weights(
     if dest.exists():
         response = input(f"{dest.name} already exists. Overwrite? [y/N]: ")
         if response.strip().lower() != "y":
-            print("Export cancelled.")
+            log.info("Export cancelled.")
             sys.exit(0)
 
     # Load checkpoint to extract metadata (cpu-safe)
-    print(f"Loading checkpoint: {checkpoint_path}")
+    log.info("Loading checkpoint: %s", checkpoint_path)
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     checkpoint_meta = extract_checkpoint_metadata(checkpoint)
 
     shutil.copy2(checkpoint_path, dest)
-    print(f"Checkpoint copied : {dest}")
+    log.info("Checkpoint copied: %s", dest)
 
     write_sidecar(
         path=sidecar_path,

@@ -48,6 +48,8 @@ def combine_weights(
     if len(weights) == 0:
         raise ValueError("Must provide at least one weight")
 
+    log.debug("combine_weights: combining %d weight inputs, dim=%s", len(weights), dim)
+
     # Multiply all weights together
     w_combined = reduce(operator.mul, weights)
 
@@ -94,6 +96,12 @@ def combine_weights(
 
     w_normalized = w_normalized.rename("w_total")
 
+    log.debug(
+        "combine_weights: output range [%.4f, %.4f]",
+        float(w_normalized.min()),
+        float(w_normalized.max()),
+    )
+
     return w_normalized
 
 def weighted_mean(
@@ -104,4 +112,5 @@ def weighted_mean(
     """
     Compute weighted mean over xarray dimension.
     """
+    log.debug("weighted_mean: reducing over dim=%s", dim)
     return da.weighted(weights).mean(dim)

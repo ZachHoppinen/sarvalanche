@@ -1,3 +1,4 @@
+import logging
 import torch
 from torch.utils.data import Dataset
 import torch.multiprocessing as mp
@@ -6,6 +7,8 @@ import xarray as xr
 from pathlib import Path
 from tqdm.auto import tqdm
 import zarr
+
+log = logging.getLogger(__name__)
 
 
 class SARTimeSeriesDataset(Dataset):
@@ -33,7 +36,7 @@ class SARTimeSeriesDataset(Dataset):
             T, H, W = self._get_shape(scene)
 
             if T < min_seq_len + 1:
-                print(f"  Skipping scene {scene_idx}: only {T} timesteps")
+                log.debug("Skipping scene %d: only %d timesteps", scene_idx, T)
                 continue
 
             for y in range(0, H - patch_size + 1, self.stride):

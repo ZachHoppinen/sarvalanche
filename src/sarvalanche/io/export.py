@@ -1,5 +1,8 @@
+import logging
 import numpy as np
 import pandas as pd
+
+log = logging.getLogger(__name__)
 
 def _sanitize_attrs(attrs: dict) -> dict:
     """Convert attr values to netCDF-safe types."""
@@ -55,4 +58,7 @@ def export_netcdf(ds, filepath, overwrite=True):
         if filepath.exists():
             filepath.unlink()
 
+    log.info("Writing netCDF: %s", filepath)
     ds.to_netcdf(filepath, encoding=encoding)
+    size_mb = filepath.stat().st_size / (1024 ** 2)
+    log.info("Wrote %s (%.2f MB)", filepath.name, size_mb)

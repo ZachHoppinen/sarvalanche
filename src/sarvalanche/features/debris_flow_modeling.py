@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -10,9 +11,12 @@ from sarvalanche.preprocessing.spatial import spatial_smooth
 from sarvalanche.utils.projections import area_m2_to_pixels
 from sarvalanche.vendored.flowpy import run_flowpy
 
+log = logging.getLogger(__name__)
+
 def generate_runcount_alpha_angle(ds):
     # flowpy needs to run in projected coordinate system
     dem_proj = ds['dem'].rio.reproject(ds['dem'].rio.estimate_utm_crs())
+    log.debug("generate_runcount_alpha_angle: DEM shape=%s", dem_proj.shape)
 
     min_release_area_m2 = 50 * 50 # meters
     min_release_pixels = area_m2_to_pixels(dem_proj, min_release_area_m2)
@@ -119,6 +123,13 @@ def run_flowpy_on_mask(
     """
     Run FlowPy on a release mask and return cell counts & runout angle as DataArrays.
     """
+    n_release = int((release_mask > 0).sum())
+    log.info("run_flowpy_on_mask: release zone count=%d, DEM shape=%s, alpha=%s",
+             n_release, dem.shape, alpha)
+
+    if n_release == 0:
+        log.info("run_flowpy_on_mask: no release zones found, returning early")
+
     cell_counts, runout_angle, path_list = run_flowpy(dem=dem, release=release_mask, alpha=alpha)
 
     # wrap outputs as DataArrays aligned to reference

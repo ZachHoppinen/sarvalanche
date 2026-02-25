@@ -1,9 +1,12 @@
 
+import logging
 import numpy as np
 import pandas as pd
 import xarray as xr
 
 from scipy.special import expit
+
+log = logging.getLogger(__name__)
 
 def probability_backscatter_change(
     diff: xr.DataArray,
@@ -11,6 +14,8 @@ def probability_backscatter_change(
     threshold_db: float = 1.5
 ) -> xr.DataArray:
     """Convert backscatter change to probability using stable sigmoid."""
+    log.debug("probability_backscatter_change: logistic_slope=%s, threshold_db=%s",
+              logistic_slope, threshold_db)
 
     # expit(x) = 1 / (1 + exp(-x)) but numerically stable
     prob = xr.apply_ufunc(
@@ -44,6 +49,7 @@ def probability_forest_cover(fcf: xr.DataArray,
     xr.DataArray
         Probability of avalanche debris based on forest, dims=(y,x)
     """
+    log.debug("probability_forest_cover: midpoint=%s, slope=%s", midpoint, slope)
 
     # Convert 0-100 FCF to probability: low forest = high probability
     prob = 1 / (1 + np.exp(slope * (fcf - midpoint)))
@@ -78,6 +84,9 @@ def probability_cell_counts(cell_counts: xr.DataArray,
     xr.DataArray
         Probability map (0-1) for debris likelihood based on model
     """
+
+    log.debug("probability_cell_counts: midpoint=%s, slope=%s, use_log=%s",
+              midpoint, slope, use_log)
 
     if use_log:
         counts_scaled = np.log1p(cell_counts)  # log(1 + x)
@@ -118,6 +127,7 @@ def probability_slope_angle(slope_angle: xr.DataArray,
     xr.DataArray
         Probability of avalanche debris based on forest, dims=(y,x)
     """
+    log.debug("probability_slope_angle: midpoint=%s, slope=%s", midpoint, slope)
     if slope_angle.max() < 4 * np.pi: slope_angle = np.rad2deg(slope_angle)
 
     # Convert 0-90 slope to probability: low slope = high probability
@@ -160,14 +170,17 @@ def probability_swe_accumulation(
     xr.DataArray
         Probability of avalanche based on SWE accumulation, dims=(y, x)
     """
+    log.debug("probability_swe_accumulation: accumulation_days=%d, midpoint=%s, slope=%s",
+              accumulation_days, midpoint, slope)
+
     if 'snowmodel_time' not in swe.coords:
         raise ValueError(f"swe DataArray missing 'snowmodel_time' coordinate, got: {list(swe.coords)}")
 
     # Convert avalanche_date to datetime
     aval_date = pd.to_datetime(avalanche_date)
 
-    # Calculate start date for accumulation period
     start_date = aval_date - pd.Timedelta(days=accumulation_days)
+    log.debug("probability_swe_accumulation: date range %s to %s", start_date, aval_date)
 
     # Get SWE at avalanche date and at start of accumulation period
     swe_end = swe.sel(snowmodel_time=aval_date, method='nearest')

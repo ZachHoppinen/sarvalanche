@@ -1,5 +1,8 @@
+import logging
 import numpy as np
 from skimage.restoration import denoise_tv_chambolle
+
+log = logging.getLogger(__name__)
 
 def denoise_sar_homomorphic(da, tv_weight=0.1):
     """
@@ -28,6 +31,9 @@ def denoise_sar_homomorphic(da, tv_weight=0.1):
 
     # Build valid pixel mask
     valid = np.isfinite(arr) & (arr > 0)
+    valid_fraction = valid.sum() / valid.size
+    log.debug("denoise_sar_homomorphic: valid pixel fraction=%.3f (%d/%d)",
+              valid_fraction, valid.sum(), valid.size)
 
     # Mean fill invalid pixels
     arr_filled = np.where(valid, arr, np.nanmean(arr[valid]))

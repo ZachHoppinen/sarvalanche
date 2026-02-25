@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import xarray as xr
 import torch
@@ -10,6 +11,8 @@ from sarvalanche.ml.inference import load_model
 from sarvalanche.probabilities.z_score import z_score_to_probability
 from sarvalanche.preprocessing.radiometric import linear_to_dB
 from sarvalanche.utils.validation import check_db_linear
+
+log = logging.getLogger(__name__)
 
 _DEFAULT_WEIGHTS = Path(__file__).parent.parent / 'ml' / 'weights' / 'sar_transformer_best.pth'
 
@@ -60,11 +63,14 @@ def calculate_ml_distances(
     results        = []
     track_pol_labels = []
 
+    log.info("calculate_ml_distances: loading model from %s", model_weights)
     model = load_model(model_weights)
+    log.info("calculate_ml_distances: using device=%s", device)
 
     model.eval()
     with torch.no_grad():
         for track, pol, da in iter_track_pol_combinations(ds):
+            log.debug("calculate_ml_distances: processing track=%s, pol=%s", track, pol)
             if check_db_linear(da) != 'dB':
                 da = linear_to_dB(da)
 

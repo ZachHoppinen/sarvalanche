@@ -65,6 +65,11 @@ def combine_probabilities(
             f"Unknown method: {method}. Use 'weighted_mean' or 'log_odds'."
         )
 
+    log.debug(
+        "combine_probabilities: method=%s, n_inputs=%d, dim=%s, agreement_boosting=%s",
+        method, probs.sizes[dim], dim, agreement_boosting,
+    )
+
     # Set default weights if not provided
     if weights is None:
         n = probs.sizes[dim]
@@ -112,4 +117,10 @@ def combine_probabilities(
         # Handle no valid sources
         p_combined = xr.where(n_valid > 0, p_combined, 0.0)
 
-    return p_combined.clip(0, 1)
+    result = p_combined.clip(0, 1)
+    log.debug(
+        "combine_probabilities: output range [%.4f, %.4f]",
+        float(result.min()),
+        float(result.max()),
+    )
+    return result

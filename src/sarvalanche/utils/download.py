@@ -51,18 +51,19 @@ def download_urls(urls, out_directory, reprocess=False, retries = 3):
         out_fp = out_directory.joinpath(Path(url).name)
 
         if out_fp.exists() and out_fp.stat().st_size != 0 and not reprocess:
+            log.debug("Cache hit, skipping download: %s", out_fp.name)
             download_fps.append(out_fp)
             continue
 
         for attempt in range(retries):
             try:
                 download_url(url, out_directory, session=session)
+                log.debug("Download complete: %s", out_fp.name)
                 break  # success, exit retry loop
             except Exception as e:
                 if attempt == retries-1:  # last attempt
                     raise e
-                # optionally print warning
-                print(f"Retry {attempt+1} failed for {url}: {e}")
+                log.warning("Retry %d failed for %s: %s", attempt + 1, url, e)
                 time.sleep(2)  # wait before retrying
 
         download_fps.append(out_fp)

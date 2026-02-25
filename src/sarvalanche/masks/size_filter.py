@@ -1,6 +1,9 @@
+import logging
 import numpy as np
 import xarray as xr
 from scipy.ndimage import label
+
+log = logging.getLogger(__name__)
 
 def filter_pixel_groups(
     da: xr.DataArray,
@@ -34,12 +37,27 @@ def filter_pixel_groups(
     # sizes[0] is background, ignore it
     sizes[0] = 0
 
+    nonzero_sizes = sizes[sizes > 0]
+    if nonzero_sizes.size > 0:
+        log.debug(
+            "filter_pixel_groups: n_labels=%d, size range [%d, %d], mean=%.1f",
+            n_labels, int(nonzero_sizes.min()), int(nonzero_sizes.max()), float(nonzero_sizes.mean()),
+        )
+    else:
+        log.debug("filter_pixel_groups: n_labels=%d (no foreground regions)", n_labels)
+
     # --- determine which labels to remove ---
     remove_labels = np.zeros_like(sizes, dtype=bool)
     if min_size is not None:
         remove_labels |= (sizes < min_size)
     if max_size is not None:
         remove_labels |= (sizes > max_size)
+
+    n_removed = int(remove_labels.sum())
+    log.debug(
+        "filter_pixel_groups: removing %d labels (min_size=%s, max_size=%s)",
+        n_removed, min_size, max_size,
+    )
 
     # --- apply mask ---
     cleaned = arr.copy()
