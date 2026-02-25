@@ -4,7 +4,7 @@ import pandas as pd
 import geopandas as gpd
 import xarray as xr
 from rasterio.enums import Resampling
-from scipy.ndimage import binary_dilation, binary_closing
+from scipy.ndimage import binary_dilation, binary_closing, label as ndlabel
 
 from sarvalanche.masks.size_filter import filter_pixel_groups
 from sarvalanche.preprocessing.spatial import spatial_smooth
@@ -110,6 +110,9 @@ def generate_release_mask(
     smooth: bool = True,
     aspect: xr.DataArray = None,
     aspect_threshold: float = np.pi / 4,   # 45° — splits across aspect sectors, not just N↔S ridges
+    strict_aspect_threshold: float = np.pi / 8,   # 22.5° — tighter split for oversized zones
+    strict_min_slope_deg: float = 30,
+    strict_max_slope_deg: float = 45,
     reference: xr.DataArray = None,
 ) -> xr.DataArray:
     """
@@ -124,8 +127,12 @@ def generate_release_mask(
         catches both true ridgelines and subtle terrain breaks between aspect
         sectors.  Increase toward π/2 if the mask becomes too fragmented.
     max_group_size : int or None
-        If set, blobs larger than this pixel count are discarded.  Useful to
-        cap oversized zones that result from undetected ridgeline merges.
+        If set, blobs larger than this pixel count are re-processed with
+        stricter aspect and slope criteria rather than discarded outright.
+    strict_aspect_threshold : float
+        Aspect threshold used when re-processing oversized zones (default π/8).
+    strict_min_slope_deg, strict_max_slope_deg : float
+        Slope range used when re-processing oversized zones (default 30–45°).
     """
 
     # ── 1. Base slope + forest mask ──────────────────────────────────────────
@@ -191,11 +198,70 @@ def generate_release_mask(
             coords=mask.coords,
         )
 
-    # ── 3. Remove small / large disconnected patches ─────────────────────────
-    da_out = xr.zeros_like(reference)
-    da_out.data = filter_pixel_groups(mask, min_size=min_group_size, max_size=max_group_size)
+    # ── 3. Size filtering — keep normal zones, re-process oversized ones ─────
+    # Apply DEM nodata mask BEFORE labeling so NaN holes don't fragment zones
+    # after the size filter has already run (which would let sub-threshold
+    # shards through into flowpy).
+    arr = mask.values.astype(bool)
+    if reference is not None:
+        arr &= np.isfinite(reference.values)
+    labeled, _ = ndlabel(arr)
+    sizes = np.bincount(labeled.ravel())
+    sizes[0] = 0  # background
 
-    valid_mask = np.isfinite(reference.values)
-    da_out = da_out.where(valid_mask, other=0.0)
+    # Normal-sized zones pass the standard min/max filter
+    keep_normal = sizes >= min_group_size
+    if max_group_size is not None:
+        keep_normal &= sizes <= max_group_size
+    normal_arr = np.isin(labeled, np.where(keep_normal)[0])
+
+    # Oversized zones: re-run with stricter aspect + slope instead of discarding
+    strict_arr = np.zeros_like(normal_arr)
+    if max_group_size is not None and aspect is not None:
+        large_labels = np.where((sizes > 0) & (sizes > max_group_size))[0]
+        if len(large_labels) > 0:
+            log.debug(
+                "generate_release_mask: %d oversized zones — re-processing with "
+                "strict_aspect=%.4f rad, slope=[%g, %g]°",
+                len(large_labels), strict_aspect_threshold,
+                strict_min_slope_deg, strict_max_slope_deg,
+            )
+            large_region = np.isin(labeled, large_labels)
+
+            # Strict slope filter (reproject slope to match mask CRS)
+            slope_proj = slope.rio.reproject_match(mask)
+            strict_slope = (
+                (slope_proj.values > np.deg2rad(strict_min_slope_deg)) &
+                (slope_proj.values < np.deg2rad(strict_max_slope_deg))
+            )
+
+            # Strict aspect-based ridgeline splitting — reuse `a` from step 2
+            diff_h = np.abs(np.arctan2(np.sin(a[:, :-1] - a[:, 1:]),
+                                        np.cos(a[:, :-1] - a[:, 1:])))
+            diff_v = np.abs(np.arctan2(np.sin(a[:-1, :] - a[1:, :]),
+                                        np.cos(a[:-1, :] - a[1:, :])))
+            strict_ridge_h = (
+                np.pad(diff_h > strict_aspect_threshold, ((0,0),(0,1)), constant_values=False) |
+                np.pad(diff_h > strict_aspect_threshold, ((0,0),(1,0)), constant_values=False)
+            )
+            strict_ridge_v = (
+                np.pad(diff_v > strict_aspect_threshold, ((0,1),(0,0)), constant_values=False) |
+                np.pad(diff_v > strict_aspect_threshold, ((1,0),(0,0)), constant_values=False)
+            )
+            strict_ridge = binary_dilation(
+                strict_ridge_h | strict_ridge_v, structure=np.ones((3, 3), dtype=bool)
+            )
+
+            reprocessed = large_region & strict_slope & ~strict_ridge
+            strict_da = xr.DataArray(reprocessed.astype(float), dims=mask.dims, coords=mask.coords)
+            strict_arr = filter_pixel_groups(strict_da, min_size=min_group_size).values.astype(bool)
+            log.debug(
+                "generate_release_mask: strict re-processing retained %d pixels from oversized zones",
+                strict_arr.sum(),
+            )
+
+    combined = (normal_arr | strict_arr).astype(float)
+    da_out = xr.zeros_like(reference)
+    da_out.data = combined
 
     return da_out

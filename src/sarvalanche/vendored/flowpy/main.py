@@ -240,7 +240,7 @@ def run_flowpy(
     # Log the distribution of zone sizes
     sizes = [len(a[0]) for a in args]
     log.info("Zone size stats: min=%d, max=%d, mean=%.1f, p95=%d, p99=%d",
-            min(sizes), max(sizes), 
+            min(sizes), max(sizes),
             np.mean(sizes),
             int(np.percentile(sizes, 95)),
             int(np.percentile(sizes, 99)))
