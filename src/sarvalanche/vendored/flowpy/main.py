@@ -36,7 +36,9 @@ import gc
 # Flow-Py Libraries
 # import raster_io as io
 from .Simulation import Simulation as Sim
-from . import flow_core as fc
+# from . import flow_core as fc
+from . import flow_core_fast as fc
+from sarvalanche.vendored.flowpy.flow_math_numba import warmup_numba
 
 log = logging.getLogger(__name__)
 
@@ -80,9 +82,6 @@ def run_flowpy(
     log.info("Starting...")
 
     start = datetime.now().replace(microsecond=0)
-    calc_bool = False
-    # Create result directory
-    time_string = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Start of Calculation
     log.info('Start Calculation')
@@ -100,7 +99,6 @@ def run_flowpy(
     else:
         raise ValueError("Error: Release Layer doesn't match DEM!")
 
-    infra = np.zeros_like(dem)
     if not isinstance(dem, np.ndarray): dem = dem.compute().values
     if not isinstance(release, np.ndarray): release = release.compute().values
 
@@ -152,7 +150,6 @@ def run_flowpy(
     release_list = fc.split_release_by_label(release, release_header)
 
     log.info("{} Processes started.".format(min(max_workers, len(release_list))))
-
     # --- prepare arguments ---
     args = [
         (
@@ -167,6 +164,8 @@ def run_flowpy(
         for release_pixel in release_list
     ]
 
+    warmup_numba()  # JIT compiles before workers spin up
+
     n_tasks = len(args)
     # n_workers = min(mp.cpu_count(), max_number_procces, n_tasks)
     n_workers = min(max_workers, n_tasks)
@@ -174,6 +173,25 @@ def run_flowpy(
     log.info("Starting flow calculation (%d tasks, %d workers)", n_tasks, n_workers)
 
     results = [None] * n_tasks  # placeholder
+
+    # Profile the largest release zone (worst case)
+    largest_arg = max(args, key=lambda a: np.sum(a[2] > 0))
+
+    PROFILE = False  # flip to True when profiling
+    if PROFILE:
+        import cProfile
+        import pstats
+        import io
+
+        pr = cProfile.Profile()
+        pr.enable()
+        fc.calculation_effect(largest_arg)
+        pr.disable()
+
+        s = io.StringIO()
+        ps = pstats.Stats(pr, stream=s).sort_stats('cumulative')
+        ps.print_stats(20)
+        log.info("Profile results:\n%s", s.getvalue())
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
         # submit all tasks

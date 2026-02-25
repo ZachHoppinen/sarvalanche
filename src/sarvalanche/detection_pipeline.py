@@ -193,8 +193,8 @@ def run_detection(
             static_layer_nc=static_fp,
             sar_only=False)
 
-        log.info(f'Saving netcdf to {ds_nc}')
-        export_netcdf(ds, ds_nc)
+        # log.info(f'Saving netcdf to {ds_nc}')
+        # export_netcdf(ds, ds_nc)
 
     else:
         log.info(f'Found netcdf at {ds_nc}. Loading from cache...')
