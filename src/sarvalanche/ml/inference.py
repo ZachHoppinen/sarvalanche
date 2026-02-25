@@ -95,7 +95,7 @@ def predict_with_sweeping_fast(model, baseline, patch_size=16, stride=8,
 
     # Create validity mask - pixels valid across ALL time and channels
     valid_mask = np.all(np.isfinite(baseline_np), axis=(0, 1))  # (H, W)
-    log.info(f"Valid pixels: {valid_mask.sum()} / {valid_mask.size} ({100*valid_mask.sum()/valid_mask.size:.1f}%)")
+    log.debug(f"Valid pixels: {valid_mask.sum()} / {valid_mask.size} ({100*valid_mask.sum()/valid_mask.size:.1f}%)")
 
     # Fill NaNs with mean of valid data (model can't process NaN)
     if not np.all(valid_mask):
@@ -129,7 +129,7 @@ def predict_with_sweeping_fast(model, baseline, patch_size=16, stride=8,
             patches.append(baseline_filled[:, :, i:i+patch_size, j:j+patch_size])
             positions.append((i, j))
 
-    log.info(f"Processing {len(patches)}/{total_patches} patches (skipped {skipped_patches}, {100*skipped_patches/total_patches:.1f}%)")
+    log.debug(f"Processing {len(patches)}/{total_patches} patches (skipped {skipped_patches}, {100*skipped_patches/total_patches:.1f}%)")
 
     patches = np.array(patches)
 
@@ -169,7 +169,8 @@ def predict_with_sweeping_fast(model, baseline, patch_size=16, stride=8,
     # Handle valid pixels that got no predictions (edges near invalid areas)
     no_prediction = (count == 0) & valid_mask
     if no_prediction.any():
-        log.warning(f"{no_prediction.sum()} valid edge or {100*no_prediction.sum()/mu.size:.1f}% pixels had no predictions, filling...")
+        log.debug(f"{no_prediction.sum()} valid edge or {100*no_prediction.sum()/mu.size:.1f}% pixels had no predictions, filling...")
+        if 100*no_prediction.sum()/mu.size > 0.2: log.warning(f"{no_prediction.sum()} valid edge or {100*no_prediction.sum()/mu.size:.1f}% pixels had no predictions, filling...")
         for c in range(C):
             if no_prediction.any():
                 indices = distance_transform_edt(no_prediction, return_distances=False, return_indices=True)
