@@ -15,7 +15,7 @@ import pygeohydro as gh
 import rasterio
 from rasterio.warp import reproject, Resampling
 import dask.array as da
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm.auto import tqdm
 
 
@@ -217,9 +217,11 @@ def load_reproject_concat_rtc(fps, ref_grid, pol, chunks):
         return idx, dst
 
     with ThreadPoolExecutor(max_workers=4) as ex:
-        for idx, dst in tqdm(ex.map(reproject_one, [(fp, i) for i, fp in enumerate(fps)]),
-                             total=nt, desc=f"Reprojecting {pol}"):
+        futures = {ex.submit(reproject_one, (fp, i)): i for i, fp in enumerate(fps)}
+        for fut in tqdm(as_completed(futures), total=nt, desc=f"Reprojecting {pol}"):
+            idx, dst = fut.result()
             mmap[idx] = dst
+            del dst
 
     mmap.flush()
 

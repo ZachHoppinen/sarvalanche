@@ -58,9 +58,6 @@ def mosaic_group(sub: xr.DataArray) -> xr.DataArray:
         attrs=merged.attrs
     )
 
-    # drop fully NaN rows/cols
-    merged = merged.dropna('x', how='all').dropna('y', how='all')
-
     return merged
 
 

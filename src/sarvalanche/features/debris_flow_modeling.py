@@ -18,7 +18,7 @@ def generate_runcount_alpha_angle(ds):
     dem_proj = ds['dem'].rio.reproject(ds['dem'].rio.estimate_utm_crs())
     log.debug("generate_runcount_alpha_angle: DEM shape=%s", dem_proj.shape)
 
-    min_release_area_m2 = 50 * 50   # meters
+    min_release_area_m2 = 150 * 150   # meters
     max_release_area_m2 = 4000 * 2000  # cap at 4km×2 km
     min_release_pixels = area_m2_to_pixels(dem_proj, min_release_area_m2)
     max_release_pixels = area_m2_to_pixels(dem_proj, max_release_area_m2)

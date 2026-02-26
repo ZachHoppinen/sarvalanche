@@ -19,3 +19,5 @@ dependencies:
   - pytorch
   - timm
   - numba
+  - pyshed
+  - xrspatial
