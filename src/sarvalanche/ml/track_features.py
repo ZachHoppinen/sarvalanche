@@ -5,10 +5,29 @@ import re
 import numpy as np
 import geopandas as gpd
 import xarray as xr
+from rasterio.features import geometry_mask as _geom_mask
+from rasterio.transform import from_bounds as _from_bounds
+from scipy.ndimage import zoom as _zoom
 
 log = logging.getLogger(__name__)
 
-# Static 2D terrain/physical variables — raw values, no probability transforms
+# ── Patch extraction constants ─────────────────────────────────────────────────
+# Ordered channel list for extract_track_patch() output.
+PATCH_CHANNELS: list[str] = [
+    'distance_mahalanobis',  # 0 — primary detection signal
+    'p_empirical',           # 1 — empirical detection probability
+    'fcf',                   # 2 — forest cover fraction
+    'slope',                 # 3 — terrain slope (radians)
+    'northing',              # 4 — relative y position in patch, [-1 (bottom), +1 (top)]
+    'easting',               # 5 — relative x position in patch, [-1 (left), +1 (right)]
+    'track_mask',            # 6 — 1 inside track polygon, 0 outside
+]
+N_PATCH_CHANNELS: int = len(PATCH_CHANNELS)  # 7
+
+_PATCH_DATA_VARS: list[str] = ['distance_mahalanobis', 'p_empirical', 'fcf', 'slope']
+_TARGET_VAR: str = 'p_pixelwise'  # soft segmentation target for CNN training
+
+# ── Static 2D terrain/physical variables — raw values, no probability transforms
 STATIC_FEATURE_VARS: list[str] = [
     'fcf',         # forest cover fraction              (replaces p_fcf)
     'cell_counts', # FlowPy flow accumulation           (replaces p_runout)
@@ -170,3 +189,209 @@ def extract_track_features(
 
     features['area_pixels'] = float(area_pixels) if area_pixels is not None else np.nan
     return features
+
+
+def _patch_transform(ref_da: xr.DataArray, size: int):
+    """Compute the affine transform mapping pixel coords to CRS coords for a patch.
+
+    Returns the ``rasterio.transform.Affine`` for a ``(size, size)`` grid
+    spanning the bounding box of ``ref_da`` (with half-pixel padding).
+    """
+    x_vals = ref_da.x.values
+    y_vals = ref_da.y.values
+    dx = abs(float(x_vals[1] - x_vals[0])) if len(x_vals) > 1 else 30.0
+    dy = abs(float(y_vals[1] - y_vals[0])) if len(y_vals) > 1 else 30.0
+    west  = float(x_vals.min()) - dx / 2
+    east  = float(x_vals.max()) + dx / 2
+    south = float(y_vals.min()) - dy / 2
+    north = float(y_vals.max()) + dy / 2
+    return _from_bounds(west, south, east, north, size, size)
+
+
+def extract_track_patch(
+    row: gpd.GeoSeries,
+    ds: xr.Dataset,
+    size: int = 64,
+    buffer: float = 500.0,
+) -> np.ndarray:
+    """
+    Extract a (C, size, size) float32 raster patch centred on a track polygon.
+
+    Channel order matches ``PATCH_CHANNELS`` (indices 0-6):
+    distance_mahalanobis, p_empirical, fcf, slope,
+    northing (top=+1, bottom=-1), easting (left=-1, right=+1), track_mask.
+
+    Northing and easting are always the canonical coordinate grid and are
+    independent of raster values.  Missing data channels are filled with 0.
+
+    Parameters
+    ----------
+    row : gpd.GeoSeries
+        Single track row; ``.geometry`` must be in the same CRS as ``ds``.
+    ds : xr.Dataset
+        Dataset reprojected to match the track CRS.
+    size : int
+        Square output patch side length in pixels.
+    buffer : float
+        Context buffer in CRS units (metres for UTM) around the track bbox.
+
+    Returns
+    -------
+    np.ndarray of shape (N_PATCH_CHANNELS, size, size)
+    """
+    geom = row.geometry
+    minx, miny, maxx, maxy = geom.bounds
+
+    clip_sel = dict(
+        x=slice(minx - buffer, maxx + buffer),
+        y=slice(maxy + buffer, miny - buffer),  # y descending (raster convention)
+    )
+
+    # Find a reference variable to determine native clipped shape
+    ref_var = next((v for v in _PATCH_DATA_VARS if v in ds.data_vars), None)
+    if ref_var is None:
+        log.warning("extract_track_patch: none of %s found in dataset", _PATCH_DATA_VARS)
+        return np.zeros((N_PATCH_CHANNELS, size, size), dtype=np.float32)
+
+    ref_da = ds[ref_var].sel(**clip_sel)
+    H, W = ref_da.shape
+
+    if H < 2 or W < 2:
+        log.debug("extract_track_patch: clipped region too small (%d×%d), returning zeros", H, W)
+        return np.zeros((N_PATCH_CHANNELS, size, size), dtype=np.float32)
+
+    out = np.zeros((N_PATCH_CHANNELS, size, size), dtype=np.float32)
+    zoom_y, zoom_x = size / H, size / W
+
+    # Channels 0-3: raster data variables
+    for ch, var in enumerate(_PATCH_DATA_VARS):
+        if var not in ds.data_vars:
+            continue
+        arr = ds[var].sel(**clip_sel).values.astype(np.float32)
+        arr = np.nan_to_num(arr, nan=0.0)
+        out[ch] = _zoom(arr, (zoom_y, zoom_x), order=1) if arr.shape != (size, size) else arr
+
+    # Channel 4: northing — linear top=+1 → bottom=-1 (constant across all samples)
+    north_vec = np.linspace(1.0, -1.0, size, dtype=np.float32)
+    out[4] = np.broadcast_to(north_vec[:, np.newaxis], (size, size)).copy()
+
+    # Channel 5: easting — linear left=-1 → right=+1
+    east_vec = np.linspace(-1.0, 1.0, size, dtype=np.float32)
+    out[5] = np.broadcast_to(east_vec[np.newaxis, :], (size, size)).copy()
+
+    # Channel 6: polygon mask at target resolution
+    transform = _patch_transform(ref_da, size)
+    out[6] = (~_geom_mask([geom], out_shape=(size, size), transform=transform,
+                           all_touched=True)).astype(np.float32)
+
+    return out
+
+
+def extract_track_patch_with_target(
+    row: gpd.GeoSeries,
+    ds: xr.Dataset,
+    size: int = 64,
+    buffer: float = 500.0,
+    debris_shapes: gpd.GeoDataFrame | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Extract a patch and its ``p_pixelwise`` soft segmentation target.
+
+    Returns the same ``(C, size, size)`` patch as ``extract_track_patch`` plus a
+    ``(1, size, size)`` target map from ``p_pixelwise``, used for training the
+    segmentation head. If ``p_pixelwise`` is not in the dataset the target is
+    all zeros.
+
+    When ``debris_shapes`` is provided (a GeoDataFrame of manually drawn debris
+    polygons), they are rasterized onto the patch grid and blended with the
+    ``p_pixelwise`` target via element-wise max, reinforcing the training signal
+    with manual annotations.
+
+    Parameters
+    ----------
+    row, ds, size, buffer
+        Same as ``extract_track_patch``.
+    debris_shapes : gpd.GeoDataFrame or None
+        Optional drawn debris polygons for this track. Must be in the same CRS
+        as ``ds``. Geometries that don't intersect the patch are harmless.
+
+    Returns
+    -------
+    patch : np.ndarray of shape (N_PATCH_CHANNELS, size, size)
+    target : np.ndarray of shape (1, size, size)
+    """
+    patch = extract_track_patch(row, ds, size=size, buffer=buffer)
+
+    target = np.zeros((1, size, size), dtype=np.float32)
+    if _TARGET_VAR not in ds.data_vars:
+        log.debug("extract_track_patch_with_target: %s not in dataset", _TARGET_VAR)
+        return patch, target
+
+    geom = row.geometry
+    minx, miny, maxx, maxy = geom.bounds
+    clip_sel = dict(
+        x=slice(minx - buffer, maxx + buffer),
+        y=slice(maxy + buffer, miny - buffer),
+    )
+
+    ref_var = next((v for v in _PATCH_DATA_VARS if v in ds.data_vars), None)
+    ref_da = ds[ref_var].sel(**clip_sel) if ref_var else None
+
+    arr = ds[_TARGET_VAR].sel(**clip_sel).values.astype(np.float32)
+    arr = np.nan_to_num(arr, nan=0.0)
+    H, W = arr.shape
+    if H >= 2 and W >= 2:
+        zoom_y, zoom_x = size / H, size / W
+        target[0] = _zoom(arr, (zoom_y, zoom_x), order=1) if arr.shape != (size, size) else arr
+
+    # Blend manually drawn debris shapes via element-wise max
+    if debris_shapes is not None and not debris_shapes.empty and ref_da is not None:
+        rH, rW = ref_da.shape
+        if rH >= 2 and rW >= 2:
+            transform = _patch_transform(ref_da, size)
+            geoms = list(debris_shapes.geometry)
+            shape_mask = (~_geom_mask(geoms, out_shape=(size, size),
+                                      transform=transform,
+                                      all_touched=True)).astype(np.float32)
+            target[0] = np.maximum(target[0], shape_mask)
+
+    return patch, target
+
+
+# ── Segmentation feature aggregation ─────────────────────────────────────────
+
+_SEG_FEATURE_NAMES: list[str] = [
+    'seg_mean', 'seg_max', 'seg_p75', 'seg_p90', 'seg_p95', 'seg_frac_above_05',
+]
+
+
+def aggregate_seg_features(
+    seg_map: np.ndarray,
+    track_mask: np.ndarray,
+) -> dict[str, float]:
+    """
+    Aggregate a segmentation map within the track polygon mask into scalar features.
+
+    Parameters
+    ----------
+    seg_map : np.ndarray of shape (H, W)
+        Sigmoid-activated segmentation probabilities.
+    track_mask : np.ndarray of shape (H, W)
+        Binary mask (1 inside track polygon, 0 outside).
+
+    Returns
+    -------
+    dict with keys: seg_mean, seg_max, seg_p75, seg_p90, seg_p95, seg_frac_above_05
+    """
+    vals = seg_map[track_mask > 0.5]
+    if vals.size == 0:
+        return {k: np.nan for k in _SEG_FEATURE_NAMES}
+
+    return {
+        'seg_mean': float(np.nanmean(vals)),
+        'seg_max': float(np.nanmax(vals)),
+        'seg_p75': float(np.nanpercentile(vals, 75)),
+        'seg_p90': float(np.nanpercentile(vals, 90)),
+        'seg_p95': float(np.nanpercentile(vals, 95)),
+        'seg_frac_above_05': float((vals > 0.5).sum() / len(vals)),
+    }
