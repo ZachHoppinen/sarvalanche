@@ -282,6 +282,7 @@ def run_sarvalanche(
     cache_dir: Path,
     overwrite: bool = False,
     static_fp = None,
+    track_gpkg = None,
 ) -> bool:
     """
     Run sarvalanche detection for a single zone and date.
@@ -298,6 +299,9 @@ def run_sarvalanche(
     cache_dir      : Root cache directory passed to run_detection. All
                      intermediate and final files land here.
     overwrite      : Re-run even if {job_name}.nc already exists
+    track_gpkg     : Path to an existing flowpy .gpkg to reuse across dates.
+                     Flowpy outputs depend only on static terrain, so the same
+                     .gpkg is valid for every date within a zone.
 
     Returns
     -------
@@ -329,7 +333,8 @@ def run_sarvalanche(
         cache_dir      = cache_dir,
         job_name       = job_name,
         overwrite      = overwrite,
-        static_fp      = static_fp
+        static_fp      = static_fp,
+        track_gpkg     = track_gpkg,
     )
 
     # ── Cleanup: release large in-memory objects before returning ────────────
@@ -386,7 +391,11 @@ def run_sarvalanche_for_peaks(
 
         for zone_name, zone_info in zones.items():
             safe_name = zone_name.replace(" ", "_").replace("/", "-")
-            static_fp = next(sarvalanche_dir.glob(f"*{safe_name}*.nc"), None)
+            static_fp  = next(sarvalanche_dir.glob(f"*{safe_name}*.nc"),   None)
+            # Flowpy output depends only on static terrain (DEM, slope, aspect,
+            # forest cover) — reuse the first .gpkg found for this zone across
+            # all dates rather than re-running flowpy every time.
+            track_gpkg = next(sarvalanche_dir.glob(f"*{safe_name}*.gpkg"), None)
             obs_count = len(window_obs)   # could filter further by spatial intersection if needed
 
             # Run sarvalanche — cache_dir is the root for all job outputs
@@ -395,7 +404,8 @@ def run_sarvalanche_for_peaks(
                 bbox_str       = zone_info["bbox_str"],
                 zone_name      = zone_name,
                 cache_dir      = sarvalanche_dir,
-                static_fp      = static_fp
+                static_fp      = static_fp,
+                track_gpkg     = track_gpkg,
             )
 
             run_log.append({

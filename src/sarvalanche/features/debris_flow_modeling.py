@@ -13,10 +13,61 @@ from sarvalanche.vendored.flowpy import run_flowpy
 
 log = logging.getLogger(__name__)
 
+
+def _apply_linear_split(mask_arr, field_arr, threshold):
+    """
+    Zero out pixels on both sides of edges where ``field_arr`` changes
+    sharply (> ``threshold``), then heal single-pixel holes with a 2×2
+    binary closing.
+
+    Parameters
+    ----------
+    mask_arr : np.ndarray of bool
+        Current release-zone binary mask.
+    field_arr : np.ndarray of float
+        Scalar terrain field (e.g. TPI or curvature).  NaN values are
+        treated as zero for differencing.
+    threshold : float
+        Minimum absolute difference between adjacent pixels to trigger a
+        split.
+
+    Returns
+    -------
+    np.ndarray of bool
+    """
+    f = np.where(np.isfinite(field_arr), field_arr, 0.0)
+
+    diff_h = np.abs(f[:, :-1] - f[:, 1:])
+    diff_v = np.abs(f[:-1, :] - f[1:, :])
+
+    split_mask = binary_dilation(
+        (
+            np.pad(diff_h > threshold, ((0, 0), (0, 1)), constant_values=False) |
+            np.pad(diff_h > threshold, ((0, 0), (1, 0)), constant_values=False) |
+            np.pad(diff_v > threshold, ((0, 1), (0, 0)), constant_values=False) |
+            np.pad(diff_v > threshold, ((1, 0), (0, 0)), constant_values=False)
+        ),
+        structure=np.ones((3, 3), dtype=bool),
+    )
+
+    result = mask_arr.copy()
+    result[split_mask] = False
+    return binary_closing(result, structure=np.ones((2, 2), dtype=bool))
+
 def generate_runcount_alpha_angle(ds):
+    from sarvalanche.utils.terrain import (
+        compute_tpi, compute_curvature, compute_flow_accumulation,
+        multiscale_ridgeline_tpi,
+    )
+
     # flowpy needs to run in projected coordinate system
     dem_proj = ds['dem'].rio.reproject(ds['dem'].rio.estimate_utm_crs())
     log.debug("generate_runcount_alpha_angle: DEM shape=%s", dem_proj.shape)
+
+    tpi        = compute_tpi(dem_proj, radius_m=300.0)
+    curv       = compute_curvature(dem_proj)
+    flow_accum = compute_flow_accumulation(dem_proj)
+    ridge      = multiscale_ridgeline_tpi(dem_proj, fine_radius_m=200.0, coarse_radius_m=1000.0)
 
     min_release_area_m2 = 150 * 150   # meters
     max_release_area_m2 = 4000 * 2000  # cap at 4km×2 km
@@ -35,7 +86,20 @@ def generate_runcount_alpha_angle(ds):
         min_group_size=min_release_pixels,
         max_group_size=max_release_pixels,
         smooth=True,
-        reference=dem_proj
+        reference=dem_proj,
+        flow_accum=flow_accum,
+        max_flow_accum=1000,
+        tpi=tpi,
+        tpi_split_threshold=20.0,
+        strict_tpi_split_threshold=10.0,
+        curvature=curv,
+        curvature_split_threshold=1.0,
+        strict_curvature_split_threshold=0.5,
+        tpi_fine=ridge['tpi_fine'],
+        tpi_coarse=ridge['tpi_coarse'],
+        tpi_ridge_threshold=2.0,
+        tpi_coarse_min=-5.0,
+        strict_tpi_ridge_threshold=5.0,
     )
 
     # run FlowPy
@@ -114,6 +178,22 @@ def generate_release_mask(
     strict_min_slope_deg: float = 30,
     strict_max_slope_deg: float = 45,
     reference: xr.DataArray = None,
+    flow_accum: xr.DataArray = None,
+    max_flow_accum: float = None,
+    tpi: xr.DataArray = None,
+    min_tpi: float = None,
+    max_tpi: float = None,
+    tpi_split_threshold: float = None,
+    strict_tpi_split_threshold: float = None,
+    curvature: xr.DataArray = None,
+    curvature_split_threshold: float = None,
+    strict_curvature_split_threshold: float = None,
+    tpi_fine: xr.DataArray = None,
+    tpi_coarse: xr.DataArray = None,
+    tpi_ridge_threshold: float = 2.0,
+    tpi_coarse_min: float = -5.0,
+    strict_tpi_ridge_threshold: float = None,
+    strict_tpi_coarse_min: float = None,
 ) -> xr.DataArray:
     """
     Generate a release mask based on slope, forest cover, and optional
@@ -133,6 +213,43 @@ def generate_release_mask(
         Aspect threshold used when re-processing oversized zones (default π/8).
     strict_min_slope_deg, strict_max_slope_deg : float
         Slope range used when re-processing oversized zones (default 30–45°).
+    flow_accum : xr.DataArray or None
+        D8 flow accumulation raster.  Used to exclude channel pixels.
+    max_flow_accum : float or None
+        Pixels with flow accumulation above this threshold are excluded.
+    tpi : xr.DataArray or None
+        Topographic Position Index raster.
+    min_tpi : float or None
+        Pixels with TPI below this value are excluded (valley floors).
+    max_tpi : float or None
+        Pixels with TPI above this value are excluded (ridge crests).
+    tpi_split_threshold : float or None
+        Absolute TPI difference between adjacent pixels that triggers a split.
+    strict_tpi_split_threshold : float or None
+        Tighter TPI split threshold used when re-processing oversized zones.
+    curvature : xr.DataArray or None
+        Total curvature raster.
+    curvature_split_threshold : float or None
+        Absolute curvature difference that triggers a split.
+    strict_curvature_split_threshold : float or None
+        Tighter curvature split threshold used when re-processing oversized zones.
+    tpi_fine : xr.DataArray or None
+        Fine-scale TPI (from ``multiscale_ridgeline_tpi``).  Used together
+        with ``tpi_coarse`` to detect ridgeline pixels for splitting.
+    tpi_coarse : xr.DataArray or None
+        Coarse-scale TPI (from ``multiscale_ridgeline_tpi``).
+    tpi_ridge_threshold : float
+        Minimum fine-scale TPI (metres) to classify a pixel as a ridgeline
+        (default 2.0 m).
+    tpi_coarse_min : float
+        Coarse-scale TPI must exceed this value; rejects valley-side bumps
+        (default −5.0 m).
+    strict_tpi_ridge_threshold : float or None
+        Stricter fine-TPI threshold for oversized zone reprocessing.
+        Falls back to ``tpi_ridge_threshold`` if ``None``.
+    strict_tpi_coarse_min : float or None
+        Stricter coarse-TPI minimum for oversized zone reprocessing.
+        Falls back to ``tpi_coarse_min`` if ``None``.
     """
 
     # ── 1. Base slope + forest mask ──────────────────────────────────────────
@@ -148,7 +265,36 @@ def generate_release_mask(
     if reference is not None:
         mask = mask.rio.reproject_match(reference)
 
-    # ── 2. Ridgeline / aspect-break splitting ────────────────────────────────
+    # ── 2. Reproject terrain layers to mask grid (once) ──────────────────────
+    fa_proj        = flow_accum.rio.reproject_match(mask) if flow_accum is not None else None
+    tpi_proj       = tpi.rio.reproject_match(mask)        if tpi       is not None else None
+    curv_proj      = curvature.rio.reproject_match(mask)  if curvature is not None else None
+    tpif_proj      = tpi_fine.rio.reproject_match(mask)   if tpi_fine  is not None else None
+    tpic_proj      = tpi_coarse.rio.reproject_match(mask) if tpi_coarse is not None else None
+
+    # ── 3. Flow accumulation filter ───────────────────────────────────────────
+    if fa_proj is not None and max_flow_accum is not None:
+        fa_vals = fa_proj.values
+        exclude = np.isfinite(fa_vals) & (fa_vals > max_flow_accum)
+        log.debug(
+            "generate_release_mask: flow_accum filter excluded %d pixels (max_flow_accum=%g)",
+            exclude.sum(), max_flow_accum,
+        )
+        mask_arr_fa = mask.values.copy()
+        mask_arr_fa[exclude] = 0.0
+        mask = xr.DataArray(mask_arr_fa, dims=mask.dims, coords=mask.coords)
+
+    # ── 4. TPI filter ─────────────────────────────────────────────────────────
+    if tpi_proj is not None:
+        tpi_vals = tpi_proj.values
+        mask_arr_tpi = mask.values.copy()
+        if max_tpi is not None:
+            mask_arr_tpi[np.isfinite(tpi_vals) & (tpi_vals > max_tpi)] = 0.0
+        if min_tpi is not None:
+            mask_arr_tpi[np.isfinite(tpi_vals) & (tpi_vals < min_tpi)] = 0.0
+        mask = xr.DataArray(mask_arr_tpi, dims=mask.dims, coords=mask.coords)
+
+    # ── 5. Ridgeline / aspect-break splitting ─────────────────────────────────
     # Zero out pixels on both sides of any edge where aspect changes more than
     # aspect_threshold.  This creates a clean 2-pixel-wide barrier that scipy
     # 4-connectivity cannot bridge, reliably separating adjacent slope faces.
@@ -198,7 +344,38 @@ def generate_release_mask(
             coords=mask.coords,
         )
 
-    # ── 3. Size filtering — keep normal zones, re-process oversized ones ─────
+    # ── 5.5. Multi-scale TPI ridgeline splitting ──────────────────────────────
+    # Pixels classified as ridgelines (high fine-TPI, not deep in a large valley)
+    # are dilated into a 3-pixel barrier and zeroed out, exactly like the aspect
+    # ridge barrier above.  A 2×2 closing follows to heal single-pixel noise holes.
+    if tpif_proj is not None and tpic_proj is not None:
+        tpi_ridge = (
+            (tpif_proj.values > tpi_ridge_threshold) &
+            (tpic_proj.values > tpi_coarse_min)
+        )
+        tpi_ridge_barrier = binary_dilation(tpi_ridge, structure=np.ones((3, 3), dtype=bool))
+        log.debug(
+            "generate_release_mask: TPI ridgeline barrier=%d pixels (threshold=%.1f m, coarse_min=%.1f m)",
+            tpi_ridge_barrier.sum(), tpi_ridge_threshold, tpi_coarse_min,
+        )
+        mask_arr = mask.values.astype(bool)
+        mask_arr[tpi_ridge_barrier] = False
+        mask_arr = binary_closing(mask_arr, structure=np.ones((2, 2), dtype=bool))
+        mask = xr.DataArray(mask_arr.astype(float), dims=mask.dims, coords=mask.coords)
+
+    # ── 6. Curvature splitting ────────────────────────────────────────────────
+    if curv_proj is not None and curvature_split_threshold is not None:
+        mask_arr = mask.values.astype(bool)
+        mask_arr = _apply_linear_split(mask_arr, curv_proj.values, curvature_split_threshold)
+        mask = xr.DataArray(mask_arr.astype(float), dims=mask.dims, coords=mask.coords)
+
+    # ── 7. TPI splitting ──────────────────────────────────────────────────────
+    if tpi_proj is not None and tpi_split_threshold is not None:
+        mask_arr = mask.values.astype(bool)
+        mask_arr = _apply_linear_split(mask_arr, tpi_proj.values, tpi_split_threshold)
+        mask = xr.DataArray(mask_arr.astype(float), dims=mask.dims, coords=mask.coords)
+
+    # ── 8. Size filtering — keep normal zones, re-process oversized ones ─────
     # Apply DEM nodata mask BEFORE labeling so NaN holes don't fragment zones
     # after the size filter has already run (which would let sub-threshold
     # shards through into flowpy).
@@ -253,6 +430,26 @@ def generate_release_mask(
             )
 
             reprocessed = large_region & strict_slope & ~strict_ridge
+
+            if tpif_proj is not None and tpic_proj is not None:
+                rt = strict_tpi_ridge_threshold if strict_tpi_ridge_threshold is not None else tpi_ridge_threshold
+                cm = strict_tpi_coarse_min      if strict_tpi_coarse_min      is not None else tpi_coarse_min
+                tpi_ridge = (
+                    (tpif_proj.values > rt) &
+                    (tpic_proj.values > cm)
+                )
+                tpi_ridge_dilated = binary_dilation(tpi_ridge, structure=np.ones((3, 3), dtype=bool))
+                reprocessed = reprocessed & ~tpi_ridge_dilated
+                reprocessed = binary_closing(reprocessed, structure=np.ones((2, 2), dtype=bool))
+
+            if curv_proj is not None and (curvature_split_threshold or strict_curvature_split_threshold):
+                thresh = strict_curvature_split_threshold or curvature_split_threshold
+                reprocessed = _apply_linear_split(reprocessed, curv_proj.values, thresh)
+
+            if tpi_proj is not None and (tpi_split_threshold or strict_tpi_split_threshold):
+                thresh = strict_tpi_split_threshold or tpi_split_threshold
+                reprocessed = _apply_linear_split(reprocessed, tpi_proj.values, thresh)
+
             strict_da = xr.DataArray(reprocessed.astype(float), dims=mask.dims, coords=mask.coords)
             strict_arr = filter_pixel_groups(strict_da, min_size=min_group_size).values.astype(bool)
             log.debug(
