@@ -326,16 +326,19 @@ def run_sarvalanche(
         log.error(f"Invalid bbox '{bbox_str}' for {zone_name}: {e}")
         return False
 
-    # try:
-    ds = run_detection(
-        aoi            = aoi,
-        avalanche_date = avalanche_date,
-        cache_dir      = cache_dir,
-        job_name       = job_name,
-        overwrite      = overwrite,
-        static_fp      = static_fp,
-        track_gpkg     = track_gpkg,
-    )
+    try:
+        ds = run_detection(
+            aoi            = aoi,
+            avalanche_date = avalanche_date,
+            cache_dir      = cache_dir,
+            job_name       = job_name,
+            overwrite      = overwrite,
+            static_fp      = static_fp,
+            track_gpkg     = track_gpkg,
+        )
+    except Exception as e:
+        log.error(f"sarvalanche failed [{zone_name} {avalanche_date}]: {e}")
+        return False
 
     # ── Cleanup: release large in-memory objects before returning ────────────
     # flowpy and SAR stacking leave large arrays allocated; explicit cleanup
@@ -343,9 +346,6 @@ def run_sarvalanche(
     del ds
     gc.collect()
     return True
-    # except Exception as e:
-        # log.error(f"sarvalanche failed [{zone_name} {avalanche_date}]: {e}")
-        # return False
 
 
 def run_sarvalanche_for_peaks(

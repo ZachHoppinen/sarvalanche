@@ -4,7 +4,7 @@ import pandas as pd
 import geopandas as gpd
 import xarray as xr
 from rasterio.enums import Resampling
-from scipy.ndimage import binary_dilation, binary_closing, label as ndlabel
+from scipy.ndimage import binary_dilation, binary_closing, binary_fill_holes, label as ndlabel
 
 from sarvalanche.masks.size_filter import filter_pixel_groups
 from sarvalanche.preprocessing.spatial import spatial_smooth
@@ -55,51 +55,26 @@ def _apply_linear_split(mask_arr, field_arr, threshold):
     return binary_closing(result, structure=np.ones((2, 2), dtype=bool))
 
 def generate_runcount_alpha_angle(ds):
-    from sarvalanche.utils.terrain import (
-        compute_tpi, compute_curvature, compute_flow_accumulation,
-        multiscale_ridgeline_tpi,
-    )
+    from sarvalanche.utils.terrain import compute_flow_accumulation
 
     # flowpy needs to run in projected coordinate system
     dem_proj = ds['dem'].rio.reproject(ds['dem'].rio.estimate_utm_crs())
     log.debug("generate_runcount_alpha_angle: DEM shape=%s", dem_proj.shape)
 
-    tpi        = compute_tpi(dem_proj, radius_m=300.0)
-    curv       = compute_curvature(dem_proj)
     flow_accum = compute_flow_accumulation(dem_proj)
-    ridge      = multiscale_ridgeline_tpi(dem_proj, fine_radius_m=200.0, coarse_radius_m=1000.0)
-
-    min_release_area_m2 = 150 * 150   # meters
-    max_release_area_m2 = 4000 * 2000  # cap at 4km×2 km
-    min_release_pixels = area_m2_to_pixels(dem_proj, min_release_area_m2)
-    max_release_pixels = area_m2_to_pixels(dem_proj, max_release_area_m2)
 
     # generate start area
-    release_mask = generate_release_mask(
+    release_mask = generate_release_mask_simple(
         slope=ds['slope'],
-        forest_cover=ds['fcf'],
-        aspect=ds['aspect'],
-        aspect_threshold=np.pi/4,   # 45° — splits across aspect sectors
-        min_slope_deg=25,
-        max_slope_deg=60,
-        max_fcf=10,
-        min_group_size=min_release_pixels,
-        max_group_size=max_release_pixels,
-        smooth=True,
-        reference=dem_proj,
+        dem=dem_proj,
         flow_accum=flow_accum,
-        max_flow_accum=1000,
-        tpi=tpi,
-        tpi_split_threshold=20.0,
-        strict_tpi_split_threshold=10.0,
-        curvature=curv,
-        curvature_split_threshold=1.0,
-        strict_curvature_split_threshold=0.5,
-        tpi_fine=ridge['tpi_fine'],
-        tpi_coarse=ridge['tpi_coarse'],
-        tpi_ridge_threshold=2.0,
-        tpi_coarse_min=-5.0,
-        strict_tpi_ridge_threshold=5.0,
+        forest_cover=ds['fcf'],
+        tpi_fine_threshold=20,
+        tpi_fine_radius_m=150,
+        tpi_coarse_threshold=55,
+        max_flow_accum_channel=10,
+        max_fcf=20,
+        reference=dem_proj,
     )
 
     # run FlowPy
@@ -162,6 +137,188 @@ def run_flowpy_on_mask(
         paths_gdf = paths_gdf.to_crs(reference.rio.crs)
 
     return cell_counts_da, runout_angle_da, paths_gdf
+
+def generate_release_mask_simple(
+    slope: xr.DataArray,
+    dem: xr.DataArray,
+    flow_accum: xr.DataArray,
+    forest_cover: xr.DataArray = None,
+    min_slope_deg: float = 28.0,
+    max_slope_deg: float = 70.0,
+    max_fcf: float = 5.0,
+    max_flow_accum_channel: float = 10.0,
+    smooth: bool = True,
+    tpi_fine_radius_m: float = 150.0,
+    tpi_fine_threshold: float = 15.0,
+    tpi_coarse_radius_m: float = 300.0,
+    tpi_coarse_threshold: float = 30.0,
+    min_release_area_m2: float = 100 * 100,
+    max_release_area_m2: float = 5000 * 5000,
+    reference: xr.DataArray = None,
+) -> xr.DataArray:
+    """
+    Streamlined release zone mask using slope, flow accumulation, and TPI ridgelines.
+
+    Steps
+    -----
+    1. Keep pixels with slope in [min_slope_deg, max_slope_deg].
+    2. Exclude forested pixels (forest_cover >= max_fcf).
+    3. Exclude channel pixels (flow_accum > max_flow_accum_channel).
+    4. Identify ridgeline pixels as those satisfying ALL THREE:
+         - flow_accum <= 1 (headwater — no upstream cells)
+         - TPI(tpi_fine_radius_m)   >= tpi_fine_threshold
+         - TPI(tpi_coarse_radius_m) >= tpi_coarse_threshold
+    5. Dilate ridgelines into a 3-pixel barrier and zero them out, splitting
+       the mask along ridge crests.
+    6. Remove isolated single pixels (connected components of size 1).
+    7. Fill enclosed holes — any run of zero pixels completely surrounded by
+       release pixels (including narrow ridgeline gaps) is filled back in.
+
+    Parameters
+    ----------
+    slope : xr.DataArray
+        Slope raster in radians.  Must have a projected CRS.
+    dem : xr.DataArray
+        Elevation raster used to compute TPI.  Must have a projected CRS.
+    flow_accum : xr.DataArray
+        D8 flow accumulation (number of upstream cells including self).
+    forest_cover : xr.DataArray or None
+        Forest cover fraction raster (0–100 scale).  If None, no FCF filter
+        is applied.
+    min_slope_deg, max_slope_deg : float
+        Slope range (degrees) for the base mask (default 28–70°).
+    max_fcf : float
+        Pixels with forest_cover >= max_fcf are excluded (default 5).
+    max_flow_accum_channel : float
+        Pixels with flow_accum above this are treated as channel pixels and
+        excluded (default 10).
+    smooth : bool
+        If True, apply spatial smoothing + rounding to the base mask before
+        ridgeline splitting (default True).
+    tpi_fine_radius_m : float
+        Neighbourhood radius for the fine-scale TPI used in ridge detection
+        (default 150 m).
+    tpi_fine_threshold : float
+        Minimum fine-scale TPI (m) to qualify as a ridgeline (default 15 m).
+    tpi_coarse_radius_m : float
+        Neighbourhood radius for the coarse-scale TPI used in ridge detection
+        (default 300 m).
+    tpi_coarse_threshold : float
+        Minimum coarse-scale TPI (m) to qualify as a ridgeline (default 30 m).
+    min_release_area_m2 : float
+        Zones smaller than this area (m²) are dropped (default 10 000 m² = 100×100 m).
+    max_release_area_m2 : float
+        Zones larger than this area (m²) are dropped (default 25 000 000 m² = 5 km×5 km).
+    reference : xr.DataArray or None
+        If provided, all inputs are reprojected to this grid before processing
+        and the output is aligned to it.
+
+    Returns
+    -------
+    xr.DataArray
+        Binary release mask (1 = release zone, 0 = no release) aligned to
+        ``reference`` if given, otherwise to the input ``slope`` grid.
+    """
+    from sarvalanche.utils.terrain import compute_tpi
+
+    # ── 1. Reproject continuous inputs to reference grid ─────────────────────
+    if reference is not None:
+        slope_r  = slope.rio.reproject_match(reference)
+        fa_r     = flow_accum.rio.reproject_match(reference)
+        dem_r    = dem.rio.reproject_match(reference)
+        fcf_r    = forest_cover.rio.reproject_match(reference) if forest_cover is not None else None
+    else:
+        slope_r = slope
+        fa_r    = flow_accum
+        dem_r   = dem
+        fcf_r   = forest_cover
+
+    fa_vals = fa_r.values
+
+    # ── 2. Base slope mask ────────────────────────────────────────────────────
+    mask_arr = (
+        (slope_r.values > np.deg2rad(min_slope_deg)) &
+        (slope_r.values < np.deg2rad(max_slope_deg))
+    )
+
+    # ── 2.5. Forest cover exclusion ───────────────────────────────────────────
+    if fcf_r is not None:
+        mask_arr &= fcf_r.values < max_fcf
+        log.debug(
+            "generate_release_mask_simple: after FCF filter (max_fcf=%.0f): %d px",
+            max_fcf, mask_arr.sum(),
+        )
+
+    # ── 3. Channel exclusion ──────────────────────────────────────────────────
+    mask_arr &= ~(np.isfinite(fa_vals) & (fa_vals > max_flow_accum_channel))
+    log.debug(
+        "generate_release_mask_simple: after slope+channel filter: %d px",
+        mask_arr.sum(),
+    )
+
+    # ── 3.5. Spatial smoothing ────────────────────────────────────────────────
+    if smooth:
+        mask_da = xr.DataArray(mask_arr.astype(float), dims=slope_r.dims, coords=slope_r.coords)
+        mask_arr = spatial_smooth(mask_da).round().values.astype(bool)
+
+    # ── 4. Ridgeline detection (all three conditions must hold) ───────────────
+    tpi_fine   = compute_tpi(dem_r, radius_m=tpi_fine_radius_m)
+    tpi_coarse = compute_tpi(dem_r, radius_m=tpi_coarse_radius_m)
+
+    ridgeline = (
+        np.isfinite(fa_vals) & (fa_vals <= 1.0) &
+        (tpi_fine.values   >= tpi_fine_threshold) |
+        (tpi_coarse.values >= tpi_coarse_threshold)
+    )
+    log.debug(
+        "generate_release_mask_simple: ridgeline pixels=%d (fa<=1 & tpi_fine>=%.0f & tpi_coarse>=%.0f)",
+        ridgeline.sum(), tpi_fine_threshold, tpi_coarse_threshold,
+    )
+
+    # ── 5. Dilate ridgeline into a 3-pixel barrier and zero it out ────────────
+    ridgeline_barrier = binary_dilation(ridgeline, structure=np.ones((3, 3), dtype=bool))
+    mask_arr[ridgeline_barrier] = False
+
+    # ── 6. Remove isolated single pixels ─────────────────────────────────────
+    labeled, _ = ndlabel(mask_arr)
+    sizes = np.bincount(labeled.ravel())
+    sizes[0] = 0
+    single_labels = np.where(sizes == 1)[0]
+    mask_arr[np.isin(labeled, single_labels)] = False
+    log.debug(
+        "generate_release_mask_simple: removed %d isolated single pixels",
+        len(single_labels),
+    )
+
+    # ── 7. Fill enclosed holes ────────────────────────────────────────────────
+    filled = binary_fill_holes(mask_arr)
+    n_filled = int(filled.sum()) - int(mask_arr.sum())
+    log.debug("generate_release_mask_simple: hole filling added %d pixels", n_filled)
+    mask_arr = filled
+
+    # ── 8. Size filter ────────────────────────────────────────────────────────
+    min_px = area_m2_to_pixels(dem_r, min_release_area_m2)
+    max_px = area_m2_to_pixels(dem_r, max_release_area_m2)
+    labeled, _ = ndlabel(mask_arr)
+    sizes = np.bincount(labeled.ravel())
+    sizes[0] = 0
+    keep = (sizes >= min_px) & (sizes <= max_px)
+    mask_arr = keep[labeled]
+    log.debug(
+        "generate_release_mask_simple: size filter min=%d px max=%d px → %d zones kept",
+        min_px, max_px, int(keep.sum()),
+    )
+
+    # ── 10. Wrap and return ───────────────────────────────────────────────────
+    if reference is not None:
+        out = xr.zeros_like(reference)
+        out.data = mask_arr.astype(float)
+    else:
+        out = xr.DataArray(
+            mask_arr.astype(float), dims=slope_r.dims, coords=slope_r.coords
+        )
+    return out
+
 
 def generate_release_mask(
     slope: xr.DataArray,
@@ -263,7 +420,7 @@ def generate_release_mask(
         mask = spatial_smooth(mask).round()
 
     if reference is not None:
-        mask = mask.rio.reproject_match(reference)
+        mask = mask.rio.reproject_match(reference, resampling=Resampling.nearest)
 
     # ── 2. Reproject terrain layers to mask grid (once) ──────────────────────
     fa_proj        = flow_accum.rio.reproject_match(mask) if flow_accum is not None else None
@@ -374,6 +531,15 @@ def generate_release_mask(
         mask_arr = mask.values.astype(bool)
         mask_arr = _apply_linear_split(mask_arr, tpi_proj.values, tpi_split_threshold)
         mask = xr.DataArray(mask_arr.astype(float), dims=mask.dims, coords=mask.coords)
+
+    # ── 7.5. Fill enclosed holes ──────────────────────────────────────────────
+    # Any run of zero pixels completely enclosed by release pixels (not touching
+    # the image border or DEM nodata) is filled in.
+    mask_arr = mask.values.astype(bool)
+    mask_arr = binary_fill_holes(mask_arr)
+    n_filled = int(mask_arr.sum()) - int(mask.values.astype(bool).sum())
+    log.debug("generate_release_mask: hole filling added %d pixels", n_filled)
+    mask = xr.DataArray(mask_arr.astype(float), dims=mask.dims, coords=mask.coords)
 
     # ── 8. Size filtering — keep normal zones, re-process oversized ones ─────
     # Apply DEM nodata mask BEFORE labeling so NaN holes don't fragment zones

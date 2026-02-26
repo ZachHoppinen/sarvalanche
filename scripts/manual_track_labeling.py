@@ -1,42 +1,72 @@
-import matplotlib.pyplot as plt
-import geopandas as gpd
-import xarray as xr
 import json
+import random
+import re
 from pathlib import Path
+
+import geopandas as gpd
+import matplotlib.pyplot as plt
 import numpy as np
+import xarray as xr
 
-ds = xr.open_dataset('/Users/zmhoppinen/Documents/sarvalanche/local/data/2020-03-31.nc').astype(float).rio.write_crs('EPSG:4326')
-gdf = gpd.read_file('/Users/zmhoppinen/Documents/sarvalanche/local/data/2020-03-31.gpkg')#.to_crs('EPSG:4326')
-ds = ds.rio.reproject(gdf.crs)
-# pip install geopandas fiona
-observed = None
-observed = gpd.read_file("/Users/zmhoppinen/Documents/sarvalanche/local/observed/200331Crowns_BV200511.kmz", driver="KML").to_crs(gdf.crs)
-output_path = Path('/Users/zmhoppinen/Documents/sarvalanche/local/data/2020-03-31_labels.json')
-
-print(ds.x.values[:5])
-print(ds.y.values[:5])
-
+RUNS_DIR = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/sarvalanche_runs')
+OUTPUT_PATH = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/track_labels.json')
 
 layers = {
     'distance_mahalanobis': {'cmap': 'plasma',   'label': 'Mahalanobis Distance', 'vmin': 0.4, 'vmax': 1},
-    'p_empirical':          {'cmap': 'RdYlGn_r', 'label': 'Empirical p-value', 'vmin': 0.4, 'vmax': 1},
-    'slope':                {'cmap': 'bone',  'label': 'Slope (rad)', 'vmin': np.deg2rad(15), 'vmax': np.deg2rad(45)},
-    'cell_counts':          {'cmap': 'Blues',    'label': 'Cell Counts', 'vmin': 0, 'vmax': 1000},
+    'p_empirical':          {'cmap': 'RdYlGn_r', 'label': 'Empirical p-value',    'vmin': 0.4, 'vmax': 1},
+    'slope':                {'cmap': 'bone',      'label': 'Slope (rad)',           'vmin': np.deg2rad(15), 'vmax': np.deg2rad(45)},
+    'cell_counts':          {'cmap': 'Blues',     'label': 'Cell Counts',           'vmin': 0,   'vmax': 1000},
 }
 
-if output_path.exists():
-    with open(output_path) as f:
+
+def parse_stem(stem):
+    """Return (zone, date) from a filename stem like 'Banner_Summit_2025-02-04'."""
+    m = re.search(r'^(.+)_(\d{4}-\d{2}-\d{2})$', stem)
+    if not m:
+        return None, None
+    return m.group(1), m.group(2)
+
+
+def label_key(zone, date, track_idx):
+    return f"{zone}|{date}|{track_idx}"
+
+
+# ── Discover all (zone, date, gpkg, nc) combos ───────────────────────────────
+all_items = []  # list of (zone, date, track_idx, gpkg_path, nc_path)
+for gpkg in sorted(RUNS_DIR.glob('*.gpkg')):
+    zone, date = parse_stem(gpkg.stem)
+    if zone is None:
+        print(f"Warning: could not parse zone/date from {gpkg.name}, skipping")
+        continue
+    nc = gpkg.with_suffix('.nc')
+    if not nc.exists():
+        print(f"Warning: no matching .nc for {gpkg.name}, skipping")
+        continue
+    gdf = gpd.read_file(gpkg)
+    for idx in gdf.index:
+        all_items.append((zone, date, idx, gpkg, nc))
+
+# ── Load existing labels ──────────────────────────────────────────────────────
+if OUTPUT_PATH.exists():
+    with open(OUTPUT_PATH) as f:
         labels = json.load(f)
 else:
     labels = {}
 
-unlabeled = gdf[~gdf.index.astype(str).isin(labels.keys())]
-print(f"{len(labels)} already labeled, {len(unlabeled)} remaining")
+# ── Filter already labeled, then shuffle ─────────────────────────────────────
+unlabeled = [
+    item for item in all_items
+    if label_key(item[0], item[1], item[2]) not in labels
+]
+random.shuffle(unlabeled)
+print(f"{len(labels)} already labeled, {len(unlabeled)} remaining out of {len(all_items)} total")
 
+# ── UI ───────────────────────────────────────────────────────────────────────
 result = {'label': None}
 
+
 def on_key(event):
-    if event.key in ['0', '1']:
+    if event.key in ['0', '1', '2', '3']:
         result['label'] = int(event.key)
         plt.close()
     elif event.key == 'n':
@@ -46,38 +76,46 @@ def on_key(event):
         result['label'] = 'quit'
         plt.close()
 
-from sarvalanche.utils.projections import resolution_to_meters
-# buffer = resolution_to_meters(100, gdf.crs)[0]  # add a buffer around the path for better context
-# buffer = 0.0005  # roughly 200m in degrees at this latitude
 
+# ── Main labeling loop ────────────────────────────────────────────────────────
+buffer = 500
+current_nc_path = None
+ds = None
+gdf = None
 
-for idx, path in unlabeled.iterrows():
+for zone, date, idx, gpkg_path, nc_path in unlabeled:
+    # Reload ds and gdf only when the source file changes
+    if nc_path != current_nc_path:
+        if ds is not None:
+            ds.close()
+        gdf = gpd.read_file(gpkg_path)
+        ds = xr.open_dataset(nc_path).astype(float).rio.write_crs('EPSG:4326')
+        ds = ds.rio.reproject(gdf.crs)
+        current_nc_path = nc_path
+
+    path = gdf.loc[idx]
     bounds = path.geometry.bounds
-    # print(f"Path {idx} bounds: {bounds}")
-    # print(f"Path {idx} width: {bounds[2]-bounds[0]:.6f} height: {bounds[3]-bounds[1]:.6f}")
-    # path_width = bounds[2] - bounds[0]
-    # path_height = bounds[3] - bounds[1]
-    # buffer = max(path_width, path_height) * 0.1
-    buffer = 500
     path_gdf = gpd.GeoDataFrame([path], geometry='geometry', crs=gdf.crs)
 
-    clip = ds.sel(
+    clip_kwargs = dict(
         x=slice(bounds[0] - buffer, bounds[2] + buffer),
-        y=slice(bounds[3] + buffer, bounds[1] - buffer)
+        y=slice(bounds[3] + buffer, bounds[1] - buffer),
     )
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-    fig.suptitle(f"Path {idx} | 1=avalanche  0=no avalanche  s=skip  q=quit", fontsize=12)
+    fig.suptitle(
+        f"{zone}  |  {date}  |  track {idx}\n"
+        f"0=high conf no   1=low conf no   2=low conf yes   3=high conf yes   n=unsure   q=quit",
+        fontsize=11,
+    )
     fig.canvas.mpl_connect('key_press_event', on_key)
 
     for ax, (var, opts) in zip(axes.flat, layers.items()):
-        ds[var].sel(
-            x=slice(bounds[0] - buffer, bounds[2] + buffer),
-            y=slice(bounds[3] + buffer, bounds[1] - buffer)
-        ).plot(ax=ax, cmap=opts['cmap'], robust=True, add_colorbar=True, vmin=opts['vmin'], vmax=opts['vmax'])
+        ds[var].sel(**clip_kwargs).plot(
+            ax=ax, cmap=opts['cmap'], robust=True, add_colorbar=True,
+            vmin=opts['vmin'], vmax=opts['vmax'],
+        )
         path_gdf.boundary.plot(ax=ax, color='black', linewidth=1.5)
-        if observed is not None:
-            observed.plot(ax = ax, color = 'red', linewidth = 1)
         ax.set_title(opts['label'])
         ax.set_aspect('equal')
 
@@ -88,9 +126,18 @@ for idx, path in unlabeled.iterrows():
     if result['label'] == 'quit':
         break
     if result['label'] is not None:
-        labels[str(idx)] = result['label']
-        with open(output_path, 'w') as f:
-            json.dump(labels, f)
-        print(f"Path {idx} → {result['label']} ({len(labels)} total)")
+        key = label_key(zone, date, idx)
+        labels[key] = {
+            'label': result['label'],
+            'zone': zone,
+            'date': date,
+            'track_idx': int(idx),
+        }
+        with open(OUTPUT_PATH, 'w') as f:
+            json.dump(labels, f, indent=2)
+        print(f"{zone} | {date} | track {idx} → {result['label']}  ({len(labels)} labeled)")
 
-print(f"Done. {len(labels)} paths labeled, saved to {output_path}")
+if ds is not None:
+    ds.close()
+
+print(f"Done. {len(labels)} paths labeled, saved to {OUTPUT_PATH}")

@@ -134,6 +134,11 @@ dmypy.json
 #vscode
 .vscode/
 
+#AI
+CLAUDE*
+OPENAI*
+CHATGPT*
+
 # Individual Contibutors
 data/*
 *.pkl
@@ -154,3 +159,7 @@ $*
 
 # ML weights
 **/ml/weights/
+
+*.gpkg
+*.nc
+*.tif
