@@ -34,7 +34,7 @@ import torch
 log = logging.getLogger(__name__)
 
 
-WEIGHTS_DIR = Path(__file__).parent.parent / "ml" / "weights"
+WEIGHTS_DIR = Path(__file__).parent / "weights" / "rtc_predictor"
 
 
 def get_sarvalanche_version() -> str:

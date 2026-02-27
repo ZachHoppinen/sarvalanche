@@ -118,7 +118,7 @@ if __name__ == '__main__':
     MIN_SEQ_LEN = 5
     MAX_SEQ_LEN = 10
     STRIDE = 48 # match SARTimeSeriesDataset — change to 16 for no stride
-    WEIGHTS_DIR = Path('/Users/zmhoppinen/Documents/sarvalanche/src/sarvalanche/ml/weights')
+    WEIGHTS_DIR = Path('/Users/zmhoppinen/Documents/sarvalanche/src/sarvalanche/ml/weights/rtc_predictor')
     CHECKPOINT_PATH = WEIGHTS_DIR /'sar_transformer_best.pth'
 
     # TARGET_CENTERS = ['SNFAC', 'GNFAC', 'CAIC', 'UAC', 'ESAC']

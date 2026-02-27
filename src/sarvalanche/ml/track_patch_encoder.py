@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # Weights are saved alongside the XGBoost track predictor
-CNN_ENCODER_DIR:      Path = Path(__file__).parents[3] / 'ml' / 'weights' / 'cnn_debris_detector'
+CNN_ENCODER_DIR:      Path = Path(__file__).parent / 'weights' / 'cnn_debris_detector'
 CNN_ENCODER_PATH:     Path = CNN_ENCODER_DIR / 'track_patch_encoder.pt'
 CNN_SEG_ENCODER_PATH: Path = CNN_ENCODER_DIR / 'track_seg_encoder.pt'
 

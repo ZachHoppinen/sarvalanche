@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 # Canonical location for saved track predictor artefacts.
 # Resolves to <project_root>/ml/weights/track_predictor/ regardless of where
 # the module is imported from.
-TRACK_PREDICTOR_DIR: Path = Path(__file__).parents[3] / 'ml' / 'weights' / 'track_predictor'
+TRACK_PREDICTOR_DIR: Path = Path(__file__).parent / 'weights' / 'track_predictor'
 TRACK_PREDICTOR_MODEL: Path = TRACK_PREDICTOR_DIR / 'track_classifier.joblib'
 
 # Labels 0/1 → no debris, labels 2/3 → debris

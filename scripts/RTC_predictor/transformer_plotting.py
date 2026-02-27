@@ -21,7 +21,7 @@ warnings.filterwarnings('ignore')
 # ── Config ───────────────────────────────────────────────────────────────────
 SCENE_DIR  = Path('/Users/zmhoppinen/Documents/sarvalanche/local/data/scene_cache')
 FIG_DIR    = Path('/Users/zmhoppinen/Documents/sarvalanche/local/figures')
-WEIGHTS    = Path('/Users/zmhoppinen/Documents/sarvalanche/src/sarvalanche/ml/weights/sar_transformer_best.pth')
+WEIGHTS    = Path('/Users/zmhoppinen/Documents/sarvalanche/src/sarvalanche/ml/weights/rtc_predictor/sar_transformer_best.pth')
 
 STRIDE     = 4
 BATCH_SIZE = 128

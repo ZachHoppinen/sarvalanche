@@ -295,28 +295,15 @@ class ShapeDrawer:
 
 
 def _retrain_in_background():
-    """Retrain XGBoost classifier on current labels and update the global clf."""
+    """Retrain XGBoost classifier on current labels and update the global clf.
+
+    Only retrains the XGBoost model using aggregate track features.
+    Skips CNN seg encoder inference to avoid excessive memory usage.
+    """
     global clf
-    print(f"\n[retrain] Starting on {len(labels)} labels...")
+    print(f"\n[retrain] Starting on {len(labels)} labels (XGBoost only, no CNN)...")
     try:
         X, y = build_training_set(labels, RUNS_DIR)
-
-        # Augment feature matrix with seg features when encoder is available
-        seg_note = ""
-        if seg_enc is not None:
-            patches, y_patch = build_patch_training_set(labels, RUNS_DIR)
-            seg_rows = []
-            with torch.no_grad():
-                for pi in range(len(patches)):
-                    p = patches[pi]
-                    seg_logits = seg_enc.segment(torch.FloatTensor(p[np.newaxis]))
-                    seg_probs = torch.sigmoid(seg_logits).numpy()[0, 0]
-                    seg_rows.append(aggregate_seg_features(seg_probs, p[6]))
-            seg_df = pd.DataFrame(seg_rows, index=y_patch.index)
-            common = X.index.intersection(seg_df.index)
-            X = X.loc[common].join(seg_df.loc[common])
-            y = y.loc[common]
-            seg_note = " + 6 seg features"
 
         neg, pos = int((y == 0).sum()), int((y == 1).sum())
         scale_pos_weight = (neg / pos) if pos > 0 and neg > pos else 1.0
@@ -337,7 +324,7 @@ def _retrain_in_background():
         joblib.dump(new_clf, TRACK_PREDICTOR_MODEL)
         clf = new_clf
         print(
-            f"[retrain] Done — {len(labels)} labels  ({pos} pos / {neg} neg){seg_note}\n"
+            f"[retrain] Done — {len(labels)} labels  ({pos} pos / {neg} neg)\n"
             f"          5-fold CV:  AUC={auc.mean():.3f} ± {auc.std():.3f}"
             f"   F1={f1.mean():.3f} ± {f1.std():.3f}"
         )

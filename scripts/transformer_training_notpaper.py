@@ -148,7 +148,7 @@ if __name__ == '__main__':
     MIN_SEQ_LEN    = 5
     MAX_SEQ_LEN    = 15          # ← increased from 10; model will see up to 14 timesteps as context
     STRIDE         = 48
-    WEIGHTS_DIR    = Path('/Users/zmhoppinen/Documents/sarvalanche/src/sarvalanche/ml/weights')
+    WEIGHTS_DIR    = Path('/Users/zmhoppinen/Documents/sarvalanche/src/sarvalanche/ml/weights/rtc_predictor')
     CHECKPOINT_PATH = WEIGHTS_DIR / 'sar_transformer_best.pth'
 
     # Training hyperparams

@@ -7,6 +7,7 @@ import geopandas as gpd
 import xarray as xr
 from rasterio.features import geometry_mask as _geom_mask
 from rasterio.transform import from_bounds as _from_bounds
+from scipy.ndimage import label as _label
 from scipy.ndimage import zoom as _zoom
 
 log = logging.getLogger(__name__)
@@ -58,6 +59,138 @@ def _clip_arr(da: xr.DataArray, geom) -> np.ndarray:
     """Clip a DataArray to a geometry, flatten, and return as float (NaNs preserved)."""
     clipped = da.rio.clip([geom], all_touched=True, drop=True)
     return clipped.values.astype(float).ravel()
+
+
+def _clip_2d(da: xr.DataArray, geom) -> tuple[np.ndarray, np.ndarray]:
+    """Clip a DataArray to a geometry and return (2d_array, mask).
+
+    ``mask`` is True for pixels inside the polygon with finite values.
+    Pixels outside the polygon are set to NaN by ``rio.clip``.
+    """
+    clipped = da.rio.clip([geom], all_touched=True, drop=True)
+    arr = clipped.values.astype(float)
+    mask = np.isfinite(arr)
+    return arr, mask
+
+
+# ── Spatial metric helpers ────────────────────────────────────────────────────
+
+def _morans_i(arr: np.ndarray, mask: np.ndarray) -> float:
+    """Moran's I spatial autocorrelation on a 2D masked grid (rook contiguity).
+
+    Returns a float in [-1, +1]; NaN if fewer than 3 valid pixels or zero variance.
+    """
+    valid_idx = np.argwhere(mask)
+    n = len(valid_idx)
+    if n < 3:
+        return np.nan
+
+    vals = arr[mask]
+    mean = vals.mean()
+    var = vals.var()
+    if var == 0:
+        return np.nan
+
+    # Build a fast lookup: (row, col) → index in vals
+    idx_map = {}
+    for i, (r, c) in enumerate(valid_idx):
+        idx_map[(r, c)] = i
+
+    # Rook neighbors (4-connected)
+    W_sum = 0.0
+    cross = 0.0
+    for i, (r, c) in enumerate(valid_idx):
+        zi = vals[i] - mean
+        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            j = idx_map.get((r + dr, c + dc))
+            if j is not None:
+                W_sum += 1.0
+                cross += zi * (vals[j] - mean)
+
+    if W_sum == 0:
+        return np.nan
+    return float((n / W_sum) * (cross / (n * var)))
+
+
+def _hotspot_compactness(
+    arr: np.ndarray, mask: np.ndarray, threshold_pct: float = 75,
+) -> dict[str, float]:
+    """Connected component analysis on above-threshold pixels.
+
+    Returns ``n_clusters``, ``largest_frac``, and ``mean_cluster_dist``.
+    """
+    nan_keys = {'n_clusters': np.nan, 'largest_frac': np.nan, 'mean_cluster_dist': np.nan}
+    vals = arr[mask]
+    if vals.size < 3:
+        return nan_keys
+
+    threshold = np.nanpercentile(vals, threshold_pct)
+    hot = (arr >= threshold) & mask
+    if hot.sum() == 0:
+        return nan_keys
+
+    labeled, n_clusters = _label(hot)
+    if n_clusters == 0:
+        return nan_keys
+
+    sizes = []
+    centroids = []
+    for lbl in range(1, n_clusters + 1):
+        coords = np.argwhere(labeled == lbl)
+        sizes.append(len(coords))
+        centroids.append(coords.mean(axis=0))
+
+    total_hot = sum(sizes)
+    largest_frac = max(sizes) / total_hot
+
+    if n_clusters <= 1:
+        mean_dist = 0.0
+    else:
+        centroids = np.array(centroids)
+        dists = []
+        for i in range(len(centroids)):
+            for j in range(i + 1, len(centroids)):
+                dists.append(np.linalg.norm(centroids[i] - centroids[j]))
+        mean_dist = float(np.mean(dists))
+
+    return {
+        'n_clusters': float(n_clusters),
+        'largest_frac': float(largest_frac),
+        'mean_cluster_dist': mean_dist,
+    }
+
+
+def _effective_radius(arr: np.ndarray, mask: np.ndarray, frac: float = 0.5) -> float:
+    """Radius (in pixels) that contains ``frac`` of total signal, weighted by value.
+
+    Uses signal-weighted centroid; returns NaN if no valid pixels.
+    """
+    valid_idx = np.argwhere(mask)
+    if len(valid_idx) < 1:
+        return np.nan
+
+    vals = arr[mask]
+    # Shift to non-negative weights
+    w = vals - vals.min()
+    total = w.sum()
+    if total == 0:
+        # Uniform values — use unweighted centroid
+        centroid = valid_idx.mean(axis=0)
+        dists = np.linalg.norm(valid_idx - centroid, axis=1)
+        dists.sort()
+        idx = int(np.ceil(frac * len(dists))) - 1
+        return float(dists[max(idx, 0)])
+
+    centroid = (valid_idx * w[:, np.newaxis]).sum(axis=0) / total
+    dists = np.linalg.norm(valid_idx - centroid, axis=1)
+
+    # Sort by distance and accumulate signal
+    order = np.argsort(dists)
+    cumw = np.cumsum(w[order])
+    target = frac * total
+    hit = np.searchsorted(cumw, target)
+    hit = min(hit, len(dists) - 1)
+    return float(dists[order[hit]])
 
 
 def _pixel_max_da(ds: xr.Dataset, var_list: list[str]) -> xr.DataArray | None:
@@ -133,6 +266,9 @@ def extract_track_features(
         except Exception as exc:
             log.debug("extract_track_features: clip failed for %s – %s", var, exc)
 
+    # 2D arrays for spatial metrics on per-track signal groups
+    arrays_2d: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+
     per_track_keys: list[str] = []
     for group, pattern in _PER_TRACK_GROUPS.items():
         matching = [v for v in ds.data_vars if pattern.match(v)]
@@ -142,6 +278,7 @@ def extract_track_features(
             continue
         try:
             arrays[group] = _clip_arr(da, geom)
+            arrays_2d[group] = _clip_2d(da, geom)
             per_track_keys.append(group)
         except Exception as exc:
             log.debug("extract_track_features: clip failed for %s – %s", group, exc)
@@ -172,8 +309,6 @@ def extract_track_features(
         features[name] = float(r) if np.isfinite(r) else 0.0
 
     # ── Cross-correlations: each static terrain var × each per-track signal ───
-    # Captures spatial co-occurrence: e.g. does the SAR signal occur where slope
-    # is steep, or only at low elevation / low cell-count areas?
     for svar in static_vars:
         if svar not in arrays:
             continue
@@ -181,11 +316,115 @@ def extract_track_features(
             _corr(arrays[svar], arrays[group], f'{svar}_x_{group}_corr')
 
     # ── Cross-correlations: per-track signal group pairs ──────────────────────
-    # Captures signal agreement: if empirical change and ML distance both point
-    # to the same pixels that is stronger evidence than either alone at medium
-    # confidence.
     for ga, gb in itertools.combinations(per_track_keys, 2):
         _corr(arrays[ga], arrays[gb], f'{ga}_x_{gb}_corr')
+
+    # ── Spatial metrics on per-track signal groups ────────────────────────────
+    _spatial_nan = {
+        'morans_i': np.nan, 'n_clusters': np.nan, 'largest_frac': np.nan,
+        'mean_cluster_dist': np.nan, 'eff_radius_50': np.nan,
+    }
+    for group in per_track_keys:
+        if group not in arrays_2d:
+            for k, v in _spatial_nan.items():
+                features[f'{group}_{k}'] = v
+            continue
+        arr2d, mask2d = arrays_2d[group]
+        try:
+            features[f'{group}_morans_i'] = _morans_i(arr2d, mask2d)
+        except Exception:
+            features[f'{group}_morans_i'] = np.nan
+        try:
+            hc = _hotspot_compactness(arr2d, mask2d)
+            features[f'{group}_n_clusters'] = hc['n_clusters']
+            features[f'{group}_largest_frac'] = hc['largest_frac']
+            features[f'{group}_mean_cluster_dist'] = hc['mean_cluster_dist']
+        except Exception:
+            features[f'{group}_n_clusters'] = np.nan
+            features[f'{group}_largest_frac'] = np.nan
+            features[f'{group}_mean_cluster_dist'] = np.nan
+        try:
+            features[f'{group}_eff_radius_50'] = _effective_radius(arr2d, mask2d)
+        except Exception:
+            features[f'{group}_eff_radius_50'] = np.nan
+
+    # ── Track geometry features ───────────────────────────────────────────────
+    try:
+        features['track_area_m2'] = float(geom.area)
+        features['track_perimeter_m'] = float(geom.length)
+        perim = geom.length
+        features['track_compactness'] = (
+            float(4.0 * np.pi * geom.area / (perim ** 2)) if perim > 0 else np.nan
+        )
+        minx, miny, maxx, maxy = geom.bounds
+        w = maxx - minx
+        h = maxy - miny
+        features['track_bbox_aspect_ratio'] = float(h / w) if w > 0 else np.nan
+    except Exception:
+        features['track_area_m2'] = np.nan
+        features['track_perimeter_m'] = np.nan
+        features['track_compactness'] = np.nan
+        features['track_bbox_aspect_ratio'] = np.nan
+
+    # Elevation range from DEM
+    if 'dem' in arrays:
+        dem_vals = arrays['dem'][np.isfinite(arrays['dem'])]
+        features['track_elevation_range'] = (
+            float(dem_vals.max() - dem_vals.min()) if dem_vals.size > 0 else np.nan
+        )
+    else:
+        features['track_elevation_range'] = np.nan
+
+    # ── Terrain character features ────────────────────────────────────────────
+    if 'slope' in arrays:
+        slope_vals = arrays['slope'][np.isfinite(arrays['slope'])]
+        if slope_vals.size > 0:
+            features['slope_range'] = float(slope_vals.max() - slope_vals.min())
+            s_mean = slope_vals.mean()
+            features['slope_cv'] = float(slope_vals.std() / s_mean) if s_mean > 0 else np.nan
+        else:
+            features['slope_range'] = np.nan
+            features['slope_cv'] = np.nan
+    else:
+        features['slope_range'] = np.nan
+        features['slope_cv'] = np.nan
+
+    # ── Aspect circular statistics ────────────────────────────────────────────
+    try:
+        if 'aspect' in ds:
+            aspect_vals = _clip_arr(ds['aspect'], geom)
+            aspect_vals = aspect_vals[np.isfinite(aspect_vals)]
+            if aspect_vals.size > 0:
+                sin_vals = np.sin(aspect_vals)
+                cos_vals = np.cos(aspect_vals)
+                mean_sin = sin_vals.mean()
+                mean_cos = cos_vals.mean()
+                features['aspect_mean_resultant'] = float(
+                    np.sqrt(mean_sin ** 2 + mean_cos ** 2)
+                )
+                features['aspect_mean_sin'] = float(mean_sin)
+                features['aspect_mean_cos'] = float(mean_cos)
+            else:
+                features['aspect_mean_resultant'] = np.nan
+                features['aspect_mean_sin'] = np.nan
+                features['aspect_mean_cos'] = np.nan
+        else:
+            features['aspect_mean_resultant'] = np.nan
+            features['aspect_mean_sin'] = np.nan
+            features['aspect_mean_cos'] = np.nan
+    except Exception:
+        features['aspect_mean_resultant'] = np.nan
+        features['aspect_mean_sin'] = np.nan
+        features['aspect_mean_cos'] = np.nan
+
+    # ── Runout character ──────────────────────────────────────────────────────
+    if 'cell_counts' in arrays:
+        cc_vals = arrays['cell_counts'][np.isfinite(arrays['cell_counts'])]
+        features['cell_counts_range'] = (
+            float(cc_vals.max() - cc_vals.min()) if cc_vals.size > 0 else np.nan
+        )
+    else:
+        features['cell_counts_range'] = np.nan
 
     features['area_pixels'] = float(area_pixels) if area_pixels is not None else np.nan
     return features

@@ -17,6 +17,7 @@ Usage
 import logging
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
@@ -37,19 +38,115 @@ log = logging.getLogger(__name__)
 
 RUNS_DIR = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/sarvalanche_runs')
 
-EPOCHS       = 8
+EPOCHS       = 24
 BATCH_SIZE   = 64
 LR           = 1e-3
+LR_MIN       = 1e-5   # cosine annealing floor
 WEIGHT_DECAY = 1e-4
-MASK_WEIGHT  = 3.0   # extra weight for pixels inside the track polygon
-CHECKPOINT_EVERY = 2  # save checkpoint every N epochs
+MASK_WEIGHT  = 3.0    # extra weight for pixels inside the track polygon
+CHECKPOINT_EVERY = 4  # save checkpoint every N epochs
 TESTING      = False  # set to int to limit seg patches for quick testing
+N_VIS        = 6      # number of example patches to visualize each epoch
+VIS_DIR      = CNN_ENCODER_DIR / 'epoch_progress'
+
+
+def _plot_epoch_examples(
+    model: TrackSegEncoder,
+    vis_patches: np.ndarray,
+    vis_targets: np.ndarray,
+    epoch: int,
+    avg_loss: float,
+    lr: float = 0.0,
+) -> None:
+    """Save a grid of example predictions for one epoch.
+
+    Each example gets one row with 6 columns:
+      Mahalanobis | Empirical p-value | Slope + Track | Target | CNN Prediction | Overlay
+    """
+    VIS_DIR.mkdir(parents=True, exist_ok=True)
+    n = len(vis_patches)
+
+    model.eval()
+    with torch.no_grad():
+        logits = model.segment(torch.FloatTensor(vis_patches))
+        probs = torch.sigmoid(logits).numpy()[:, 0]  # (N, H, W)
+    model.train()
+
+    fig, axes = plt.subplots(n, 6, figsize=(24, 3.5 * n))
+    if n == 1:
+        axes = axes[np.newaxis, :]
+    fig.suptitle(f'Epoch {epoch + 1}  —  loss {avg_loss:.4f}  —  lr {lr:.2e}',
+                 fontsize=14, y=1.0)
+
+    for i in range(n):
+        patch = vis_patches[i]        # (C, H, W)
+        target = vis_targets[i, 0]    # (H, W)
+        pred = probs[i]               # (H, W)
+
+        # Col 0: Mahalanobis distance
+        ax = axes[i, 0]
+        im = ax.imshow(patch[0], cmap='plasma', vmin=0.2, vmax=0.7)
+        fig.colorbar(im, ax=ax, fraction=0.046)
+        if i == 0:
+            ax.set_title('Mahalanobis Distance')
+
+        # Col 1: Empirical p-value
+        ax = axes[i, 1]
+        im = ax.imshow(patch[1], cmap='RdYlGn_r', vmin=0.2, vmax=0.7)
+        fig.colorbar(im, ax=ax, fraction=0.046)
+        if i == 0:
+            ax.set_title('Empirical p-value')
+
+        # Col 2: Slope + track outline
+        ax = axes[i, 2]
+        im = ax.imshow(patch[3], cmap='bone',
+                       vmin=np.deg2rad(15), vmax=np.deg2rad(45))
+        ax.contour(patch[6], levels=[0.5], colors='red', linewidths=1.0)
+        fig.colorbar(im, ax=ax, fraction=0.046)
+        if i == 0:
+            ax.set_title('Slope (rad) + Track')
+
+        # Col 3: Target
+        ax = axes[i, 3]
+        im = ax.imshow(target, cmap='hot', vmin=0, vmax=1)
+        fig.colorbar(im, ax=ax, fraction=0.046)
+        if i == 0:
+            ax.set_title('Target (p_pixelwise)')
+
+        # Col 4: CNN prediction
+        ax = axes[i, 4]
+        im = ax.imshow(pred, cmap='hot', vmin=0, vmax=1)
+        fig.colorbar(im, ax=ax, fraction=0.046)
+        if i == 0:
+            ax.set_title('CNN Prediction')
+
+        # Col 5: Overlay — prediction contours on Mahalanobis
+        ax = axes[i, 5]
+        ax.imshow(patch[0], cmap='plasma', vmin=0.2, vmax=0.7)
+        ax.contour(pred, levels=[0.3, 0.5, 0.7], colors=['cyan', 'yellow', 'red'],
+                   linewidths=1.2)
+        ax.contour(patch[6], levels=[0.5], colors='white', linewidths=0.8,
+                   linestyles='dashed')
+        if i == 0:
+            ax.set_title('Pred contours on Mahal.')
+
+        for ax in axes[i]:
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+    fig.tight_layout()
+    out_path = VIS_DIR / f'epoch_{epoch + 1:02d}.png'
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    log.info("  epoch vis saved → %s", out_path)
 
 
 def _train_seg_model(
     patches: np.ndarray,
     targets: np.ndarray,
     epochs: int,
+    vis_patches: np.ndarray | None = None,
+    vis_targets: np.ndarray | None = None,
     checkpoint_tag: str = "seg",
 ) -> TrackSegEncoder:
     """Train a segmentation encoder with mask-weighted BCE loss.
@@ -62,6 +159,8 @@ def _train_seg_model(
         Soft segmentation targets (p_pixelwise).
     epochs : int
         Number of training epochs.
+    vis_patches, vis_targets : np.ndarray or None
+        Fixed examples for per-epoch visualization.
     checkpoint_tag : str
         Label for checkpoint filenames.
     """
@@ -70,6 +169,7 @@ def _train_seg_model(
 
     model = TrackSegEncoder()
     opt = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs, eta_min=LR_MIN)
     seg_crit = nn.BCEWithLogitsLoss(reduction='none')
 
     loader = DataLoader(
@@ -83,6 +183,7 @@ def _train_seg_model(
     epoch_bar = tqdm(range(epochs), desc=f"training {checkpoint_tag}", unit="ep")
     for epoch in epoch_bar:
         epoch_loss = 0.0
+        cur_lr = scheduler.get_last_lr()[0]
 
         batch_bar = tqdm(loader, desc=f"  ep {epoch+1}/{epochs}",
                          unit="batch", leave=False)
@@ -100,7 +201,8 @@ def _train_seg_model(
             epoch_loss += loss.detach().item()
 
         n = len(loader)
-        epoch_bar.set_postfix(seg=f"{epoch_loss / n:.4f}")
+        scheduler.step()
+        epoch_bar.set_postfix(seg=f"{epoch_loss / n:.4f}", lr=f"{cur_lr:.2e}")
 
         # Save checkpoint periodically
         if CHECKPOINT_EVERY and (epoch + 1) % CHECKPOINT_EVERY == 0:
@@ -112,6 +214,10 @@ def _train_seg_model(
                 'seg_loss': epoch_loss / n,
             }, ckpt_path)
             log.info("  checkpoint saved → %s", ckpt_path)
+
+        # Per-epoch visualization
+        if vis_patches is not None:
+            _plot_epoch_examples(model, vis_patches, vis_targets, epoch, epoch_loss / n, lr=cur_lr)
 
     return model
 
@@ -126,9 +232,16 @@ def main() -> None:
         log.error("No patches extracted, aborting.")
         return
 
+    # Pick fixed examples for per-epoch visualization (spread across dataset)
+    vis_idx = np.linspace(0, len(patches) - 1, N_VIS, dtype=int)
+    vis_patches = patches[vis_idx]
+    vis_targets = targets[vis_idx]
+    log.info("  vis examples: indices %s", vis_idx.tolist())
+
     log.info("Training seg model (%d patches, %d epochs, batch_size=%d)...",
              len(patches), EPOCHS, BATCH_SIZE)
-    model = _train_seg_model(patches, targets, EPOCHS)
+    model = _train_seg_model(patches, targets, EPOCHS,
+                             vis_patches=vis_patches, vis_targets=vis_targets)
 
     CNN_ENCODER_DIR.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), CNN_SEG_ENCODER_PATH)
