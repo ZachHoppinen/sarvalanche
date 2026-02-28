@@ -224,7 +224,7 @@ def predict_tracks(
             with torch.no_grad():
                 seg_logits = seg_encoder.segment(torch.FloatTensor(patch[np.newaxis]))
                 seg_probs = torch.sigmoid(seg_logits).numpy()[0, 0]  # (H, W)
-            track_mask = patch[6]  # channel 6 is track_mask
+            track_mask = patch[7]  # channel 7 is track_mask
             feats.update(aggregate_seg_features(seg_probs, track_mask))
 
         feature_rows.append(feats)
@@ -399,7 +399,7 @@ def build_seg_training_set(
             # For no-debris tracks, zero out the target inside the track polygon
             # so the model learns to suppress false positives there.
             if meta['label'] < BINARY_THRESHOLD:
-                track_mask = patch[6]  # channel 6 is track_mask
+                track_mask = patch[7]  # channel 7 is track_mask
                 target[0] *= (1.0 - track_mask)
             patch_list.append(patch)
             target_list.append(target)

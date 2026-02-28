@@ -87,29 +87,28 @@ def _plot_epoch_examples(
         pred = probs[i]               # (H, W)
         lbl = vis_labels[i]
 
-        # Col 0: Mahalanobis distance
+        # Col 0: Combined ML distance (z-score, normalized)
         ax = axes[i, 0]
-        im = ax.imshow(patch[0], cmap='plasma', vmin=0.2, vmax=0.7)
+        im = ax.imshow(patch[0], cmap='plasma', vmin=-1.2, vmax=1.2)
         fig.colorbar(im, ax=ax, fraction=0.046)
         if i == 0:
-            ax.set_title('Mahalanobis Distance')
+            ax.set_title('ML Distance (z-score)')
         ax.set_ylabel(label_str(lbl), fontsize=10, fontweight='bold')
 
-        # Col 1: Empirical p-value
+        # Col 1: Backscatter change (dB, normalized)
         ax = axes[i, 1]
-        im = ax.imshow(patch[1], cmap='RdYlGn_r', vmin=0.2, vmax=0.7)
+        im = ax.imshow(patch[1], cmap='RdYlGn_r', vmin=-2.0, vmax=0.5)
         fig.colorbar(im, ax=ax, fraction=0.046)
         if i == 0:
-            ax.set_title('Empirical p-value')
+            ax.set_title('Backscatter Δ (dB)')
 
-        # Col 2: Slope + track outline
+        # Col 2: Slope + track outline (normalized by /0.6)
         ax = axes[i, 2]
-        im = ax.imshow(patch[3], cmap='bone',
-                       vmin=np.deg2rad(15), vmax=np.deg2rad(45))
-        ax.contour(patch[6], levels=[0.5], colors='red', linewidths=1.0)
+        im = ax.imshow(patch[3], cmap='bone', vmin=0.4, vmax=1.3)
+        ax.contour(patch[7], levels=[0.5], colors='red', linewidths=1.0)
         fig.colorbar(im, ax=ax, fraction=0.046)
         if i == 0:
-            ax.set_title('Slope (rad) + Track')
+            ax.set_title('Slope (norm) + Track')
 
         # Col 3: Target (labeled)
         ax = axes[i, 3]
@@ -125,15 +124,15 @@ def _plot_epoch_examples(
         if i == 0:
             ax.set_title('CNN Prediction')
 
-        # Col 5: Overlay — prediction contours on Mahalanobis
+        # Col 5: Overlay — prediction contours on ML distance
         ax = axes[i, 5]
-        ax.imshow(patch[0], cmap='plasma', vmin=0.2, vmax=0.7)
+        ax.imshow(patch[0], cmap='plasma', vmin=-1.2, vmax=1.2)
         ax.contour(pred, levels=[0.3, 0.5, 0.7], colors=['cyan', 'yellow', 'red'],
                    linewidths=1.2)
-        ax.contour(patch[6], levels=[0.5], colors='white', linewidths=0.8,
+        ax.contour(patch[7], levels=[0.5], colors='white', linewidths=0.8,
                    linestyles='dashed')
         if i == 0:
-            ax.set_title('Pred contours on Mahal.')
+            ax.set_title('Pred contours on ML dist.')
 
         for ax in axes[i]:
             ax.set_xticks([])
@@ -226,7 +225,7 @@ def main() -> None:
             pixel_loss = seg_crit(seg_logits, batch_targets)      # (B, 1, H, W)
 
             # Mask-weighted loss: heavier inside track polygon
-            track_mask = batch_patches[:, 6:7, :, :]              # (B, 1, H, W)
+            track_mask = batch_patches[:, 7:8, :, :]              # (B, 1, H, W)
             weight_map = 1.0 + (MASK_WEIGHT - 1.0) * track_mask
 
             # Extra weight for negative samples inside their track polygon

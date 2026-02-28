@@ -9,15 +9,15 @@ class TrackPatchDataset(Dataset):
 
     Each item is a ``(C, H, W)`` float32 tensor and a scalar binary label.
     Channel order matches ``sarvalanche.ml.track_features.PATCH_CHANNELS``:
-    distance_mahalanobis (0), p_empirical (1), fcf (2), slope (3),
-    northing (4), easting (5), track_mask (6).
+    combined_distance (0), d_empirical (1), fcf (2), slope (3),
+    cell_counts (4), northing (5), easting (6), track_mask (7).
 
     Augmentation
     ------------
     Only horizontal flips are applied to preserve geographic orientation:
-    - Horizontal flip (50% probability): negates easting channel (5) so that
+    - Horizontal flip (50% probability): negates easting channel (6) so that
       the coordinate grid remains consistent after mirroring.
-    - Mild Gaussian noise on data channels 0-3.
+    - Mild Gaussian noise on data channels 0-4.
 
     Parameters
     ----------
@@ -28,10 +28,11 @@ class TrackPatchDataset(Dataset):
     augment : bool
         Apply random augmentation at each sample draw.
     noise_std : float
-        Std of Gaussian noise added to data channels 0-3. Set to 0 to disable.
+        Std of Gaussian noise added to data channels 0-4. Set to 0 to disable.
     """
 
-    _EASTING_CH: int = 5  # channel index to negate on horizontal flip
+    _EASTING_CH: int = 6  # channel index to negate on horizontal flip
+    _N_DATA_CH: int = 5   # number of raster data channels to add noise to
 
     def __init__(
         self,
@@ -57,8 +58,9 @@ class TrackPatchDataset(Dataset):
                 patch = patch[:, :, ::-1].copy()
                 patch[self._EASTING_CH] = -patch[self._EASTING_CH]
             if self.noise_std > 0:
-                patch[:4] += (
-                    np.random.randn(*patch[:4].shape) * self.noise_std
+                n = self._N_DATA_CH
+                patch[:n] += (
+                    np.random.randn(*patch[:n].shape) * self.noise_std
                 ).astype(np.float32)
 
         return torch.from_numpy(patch), torch.tensor(label)
@@ -73,7 +75,7 @@ class TrackSegDataset(Dataset):
     label for joint classification training.
 
     Augmentation mirrors ``TrackPatchDataset``: horizontal flip (negates
-    easting, flips target) and mild Gaussian noise on channels 0-3.
+    easting, flips target) and mild Gaussian noise on channels 0-4.
 
     Parameters
     ----------
@@ -87,10 +89,11 @@ class TrackSegDataset(Dataset):
     augment : bool
         Apply random augmentation at each sample draw.
     noise_std : float
-        Std of Gaussian noise added to data channels 0-3.
+        Std of Gaussian noise added to data channels 0-4.
     """
 
-    _EASTING_CH: int = 5
+    _EASTING_CH: int = 6
+    _N_DATA_CH: int = 5
 
     def __init__(
         self,
@@ -119,8 +122,9 @@ class TrackSegDataset(Dataset):
                 target = target[:, :, ::-1].copy()
                 patch[self._EASTING_CH] = -patch[self._EASTING_CH]
             if self.noise_std > 0:
-                patch[:4] += (
-                    np.random.randn(*patch[:4].shape) * self.noise_std
+                n = self._N_DATA_CH
+                patch[:n] += (
+                    np.random.randn(*patch[:n].shape) * self.noise_std
                 ).astype(np.float32)
 
         if self.labels is not None:

@@ -10,7 +10,7 @@ CNN_ENCODER_PATH:     Path = CNN_ENCODER_DIR / 'track_patch_encoder.pt'
 CNN_SEG_ENCODER_PATH: Path = CNN_ENCODER_DIR / 'track_seg_encoder.pt'
 
 # Must match track_features.N_PATCH_CHANNELS
-_IN_CHANNELS: int = 7
+_IN_CHANNELS: int = 8
 
 
 def _conv_block(in_ch: int, out_ch: int, stride: int = 1) -> nn.Sequential:
@@ -35,18 +35,18 @@ class TrackSegEncoder(nn.Module):
     """
     Lightweight U-Net-style CNN for track polygon segmentation.
 
-    Input: ``(B, 7, H, W)`` — seven-channel patch from ``extract_track_patch``.
+    Input: ``(B, 8, H, W)`` — eight-channel patch from ``extract_track_patch``.
 
     Outputs:
     - ``segment(x)`` / ``forward(x)`` → ``(B, 1, H, W)`` raw segmentation logits
 
     Architecture
     ------------
-    Encoder: three conv blocks (7→16→32→64) with stride-2 downsampling.
+    Encoder: three conv blocks (8→16→32→64) with stride-2 downsampling.
     Decoder: U-Net skip connections, upsamples back to input resolution.
 
-    Channels in order: distance_mahalanobis, p_empirical, fcf, slope,
-    northing, easting, track_mask.
+    Channels in order: combined_distance, d_empirical, fcf, slope,
+    cell_counts, northing, easting, track_mask.
     """
 
     def __init__(self, in_channels: int = _IN_CHANNELS):

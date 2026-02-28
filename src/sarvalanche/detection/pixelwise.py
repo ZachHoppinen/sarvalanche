@@ -31,7 +31,7 @@ def get_pixelwise_probabilities(
 
     # one method based on weighted backscatter changes
     log.info('Calculating empirical backscatter change probability')
-    ds['p_empirical'] = calculate_empirical_backscatter_probability(ds,
+    ds['p_empirical'], ds['d_empirical'] = calculate_empirical_backscatter_probability(ds,
                                                                     avalanche_date,
                                                                     smooth_method=None,
                                                                     use_agreement_boosting=True,
@@ -39,7 +39,7 @@ def get_pixelwise_probabilities(
                                                                     min_prob_threshold=0.2)
 
     # another based on ml predicted vs observed backscatter (mahalanobis distance)
-    ds['distance_mahalanobis'] = calculate_ml_distances(ds, avalanche_date)
+    ds['distance_mahalanobis'], ds['combined_distance'] = calculate_ml_distances(ds, avalanche_date)
 
     # Static factors are the "prior" - how likely is avalanche here in general?
     # p_prior = combine_probabilities(
@@ -66,8 +66,10 @@ def get_pixelwise_probabilities(
     # If Bayesian update < prior: use Bayesian (allow decrease)
     p_pixelwise = xr.ufuncs.minimum(p_likelihood, p_bayesian)
 
-    # Hard constraint: if p_runout is 0, force p_pixelwise to 0
-    p_pixelwise = p_pixelwise.where(ds['p_runout'] > 0.01, 0)
+    # Soft runout constraint: linearly ramp p_pixelwise from 0 at p_runout=0
+    # to full signal at p_runout=0.1, instead of a hard cutoff
+    runout_scale = (ds['p_runout'] / 0.1).clip(min=0, max=1)
+    p_pixelwise = p_pixelwise * runout_scale
 
     log.debug(f'Filling NaN values in p_pixelwise with 0')
     p_pixelwise = p_pixelwise.where(~p_pixelwise.isnull(), 0)

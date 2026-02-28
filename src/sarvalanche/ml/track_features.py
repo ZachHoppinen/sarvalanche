@@ -15,18 +15,50 @@ log = logging.getLogger(__name__)
 # ── Patch extraction constants ─────────────────────────────────────────────────
 # Ordered channel list for extract_track_patch() output.
 PATCH_CHANNELS: list[str] = [
-    'distance_mahalanobis',  # 0 — primary detection signal
-    'p_empirical',           # 1 — empirical detection probability
+    'combined_distance',     # 0 — ML z-score distance (signed, std devs)
+    'd_empirical',           # 1 — combined backscatter change (dB)
     'fcf',                   # 2 — forest cover fraction
     'slope',                 # 3 — terrain slope (radians)
-    'northing',              # 4 — relative y position in patch, [-1 (bottom), +1 (top)]
-    'easting',               # 5 — relative x position in patch, [-1 (left), +1 (right)]
-    'track_mask',            # 6 — 1 inside track polygon, 0 outside
+    'cell_counts',           # 4 — FlowPy runout cell counts
+    'northing',              # 5 — relative y position in patch, [-1 (bottom), +1 (top)]
+    'easting',               # 6 — relative x position in patch, [-1 (left), +1 (right)]
+    'track_mask',            # 7 — 1 inside track polygon, 0 outside
 ]
-N_PATCH_CHANNELS: int = len(PATCH_CHANNELS)  # 7
+N_PATCH_CHANNELS: int = len(PATCH_CHANNELS)  # 8
 
-_PATCH_DATA_VARS: list[str] = ['distance_mahalanobis', 'p_empirical', 'fcf', 'slope']
+_PATCH_DATA_VARS: list[str] = [
+    'combined_distance', 'd_empirical', 'fcf', 'slope', 'cell_counts',
+]
 _TARGET_VAR: str = 'p_pixelwise'  # soft segmentation target for CNN training
+
+# ── Per-channel normalization ─────────────────────────────────────────────────
+# Fixed constants applied in extract_track_patch() so all channels are roughly
+# in the same scale when entering the CNN.  'log1p' means apply np.log1p(|x|)
+# with sign preservation before dividing.
+#
+# Channels not listed here (northing, easting, track_mask) are already in
+# [-1, 1] or {0, 1} and need no scaling.
+_CHANNEL_NORM: dict[str, dict] = {
+    'combined_distance': {'scale': 5.0},         # z-scores, ~[-6, 6] → ~[-1.2, 1.2]
+    'd_empirical':       {'scale': 5.0},         # dB change, ~[-10, 2] → ~[-2, 0.4]
+    'fcf':               {},                      # already [0, 1]
+    'slope':             {'scale': 0.6},          # radians, [0, ~1.2] → [0, ~2]
+    'cell_counts':       {'log1p': True, 'scale': 5.0},  # heavy right skew → log1p/5
+}
+
+
+def _normalize_channel(arr: np.ndarray, var: str) -> np.ndarray:
+    """Apply fixed normalization to a single channel array (in-place safe)."""
+    cfg = _CHANNEL_NORM.get(var)
+    if cfg is None or not cfg:
+        return arr
+    if cfg.get('log1p'):
+        # sign-preserving log1p: sign(x) * log1p(|x|)
+        arr = np.sign(arr) * np.log1p(np.abs(arr))
+    scale = cfg.get('scale')
+    if scale:
+        arr = arr / scale
+    return arr
 
 # ── Static 2D terrain/physical variables — raw values, no probability transforms
 STATIC_FEATURE_VARS: list[str] = [
@@ -456,8 +488,8 @@ def extract_track_patch(
     """
     Extract a (C, size, size) float32 raster patch centred on a track polygon.
 
-    Channel order matches ``PATCH_CHANNELS`` (indices 0-6):
-    distance_mahalanobis, p_empirical, fcf, slope,
+    Channel order matches ``PATCH_CHANNELS`` (indices 0-7):
+    combined_distance, d_empirical, fcf, slope, cell_counts,
     northing (top=+1, bottom=-1), easting (left=-1, right=+1), track_mask.
 
     Northing and easting are always the canonical coordinate grid and are
@@ -502,25 +534,26 @@ def extract_track_patch(
     out = np.zeros((N_PATCH_CHANNELS, size, size), dtype=np.float32)
     zoom_y, zoom_x = size / H, size / W
 
-    # Channels 0-3: raster data variables
+    # Channels 0–4: raster data variables (normalized)
     for ch, var in enumerate(_PATCH_DATA_VARS):
         if var not in ds.data_vars:
             continue
         arr = ds[var].sel(**clip_sel).values.astype(np.float32)
         arr = np.nan_to_num(arr, nan=0.0)
+        arr = _normalize_channel(arr, var)
         out[ch] = _zoom(arr, (zoom_y, zoom_x), order=1) if arr.shape != (size, size) else arr
 
-    # Channel 4: northing — linear top=+1 → bottom=-1 (constant across all samples)
+    # Channel 5: northing — linear top=+1 → bottom=-1 (constant across all samples)
     north_vec = np.linspace(1.0, -1.0, size, dtype=np.float32)
-    out[4] = np.broadcast_to(north_vec[:, np.newaxis], (size, size)).copy()
+    out[5] = np.broadcast_to(north_vec[:, np.newaxis], (size, size)).copy()
 
-    # Channel 5: easting — linear left=-1 → right=+1
+    # Channel 6: easting — linear left=-1 → right=+1
     east_vec = np.linspace(-1.0, 1.0, size, dtype=np.float32)
-    out[5] = np.broadcast_to(east_vec[np.newaxis, :], (size, size)).copy()
+    out[6] = np.broadcast_to(east_vec[np.newaxis, :], (size, size)).copy()
 
-    # Channel 6: polygon mask at target resolution
+    # Channel 7: polygon mask at target resolution
     transform = _patch_transform(ref_da, size)
-    out[6] = (~_geom_mask([geom], out_shape=(size, size), transform=transform,
+    out[7] = (~_geom_mask([geom], out_shape=(size, size), transform=transform,
                            all_touched=True)).astype(np.float32)
 
     return out

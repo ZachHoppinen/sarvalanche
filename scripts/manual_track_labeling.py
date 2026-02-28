@@ -457,7 +457,7 @@ while i < len(unlabeled):
             with torch.no_grad():
                 seg_logits = seg_enc.segment(torch.FloatTensor(patch[np.newaxis]))
                 seg_probs = torch.sigmoid(seg_logits).numpy()[0, 0]
-            feats.update(aggregate_seg_features(seg_probs, patch[6]))
+            feats.update(aggregate_seg_features(seg_probs, patch[7]))
         X_row = pd.DataFrame([feats]).reindex(columns=clf.feature_names_in_).fillna(0)
         p_debris = float(clf.predict_proba(X_row)[0, 1])
         pred_str = f"  ▶ XGB: {p_debris:.0%} debris"
@@ -467,7 +467,7 @@ while i < len(unlabeled):
         with torch.no_grad():
             seg_logits = seg_enc.segment(torch.FloatTensor(patch[np.newaxis]))
             seg_probs = torch.sigmoid(seg_logits).numpy()[0, 0]
-        seg_mean = float(seg_probs[patch[6] > 0.5].mean()) if (patch[6] > 0.5).any() else 0.0
+        seg_mean = float(seg_probs[patch[7] > 0.5].mean()) if (patch[7] > 0.5).any() else 0.0
         pred_str += f"  Seg: {seg_mean:.0%}"
 
     avl_date = pd.Timestamp(date)

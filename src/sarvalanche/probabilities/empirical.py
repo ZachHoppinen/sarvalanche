@@ -47,8 +47,9 @@ def compute_track_empirical_probability(
 
     Returns
     -------
-    xr.DataArray
-        Probability map, dims=(y, x)
+    tuple[xr.DataArray, xr.DataArray]
+        ``(probability, mean_change)`` — the probability map and the
+        weighted-mean backscatter change in dB, both with dims ``(y, x)``.
     """
     # --- Convert to dB and smooth ---
     if check_db_linear(da) != 'dB':
@@ -72,4 +73,4 @@ def compute_track_empirical_probability(
     # --- Convert to probability ---
     p = probability_backscatter_change(mean_change)
 
-    return p
+    return p, mean_change

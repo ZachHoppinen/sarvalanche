@@ -57,8 +57,9 @@ def calculate_ml_distances(
 
     Returns
     -------
-    xr.DataArray
-        Combined ML distance (signed z-score) across all track/pol combos.
+    tuple[xr.DataArray, xr.DataArray]
+        ``(probability, combined_distance)`` — the probability map and
+        the combined signed z-score distance across all track/pol combos.
     """
     results        = []
     track_pol_labels = []
@@ -110,4 +111,12 @@ def calculate_ml_distances(
         'combination_method': 'max',
     }
 
-    return probability
+    combined_distance.attrs = {
+        'source':             'sarvalanche',
+        'units':              'standard_deviations',
+        'product':            'combined_ml_distance',
+        'method':             'transformer_z_score',
+        'combination_method': 'max',
+    }
+
+    return probability, combined_distance

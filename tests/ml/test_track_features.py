@@ -13,6 +13,7 @@ from sarvalanche.ml.track_features import (
     extract_track_patch,
     extract_track_patch_with_target,
     _pixel_max_da,
+    _normalize_channel,
 )
 
 
@@ -44,6 +45,12 @@ def _make_ds(nx=50, ny=50, crs='EPSG:32611'):
             ),
             'cell_counts': xr.DataArray(
                 np.random.rand(ny, nx).astype(np.float32) * 100, dims=['y', 'x'], coords=coords,
+            ),
+            'combined_distance': xr.DataArray(
+                (np.random.rand(ny, nx).astype(np.float32) - 0.5) * 6, dims=['y', 'x'], coords=coords,
+            ),
+            'd_empirical': xr.DataArray(
+                (np.random.rand(ny, nx).astype(np.float32) - 0.5) * 4, dims=['y', 'x'], coords=coords,
             ),
             'p_pixelwise': xr.DataArray(
                 np.random.rand(ny, nx).astype(np.float32), dims=['y', 'x'], coords=coords,
@@ -175,12 +182,12 @@ def test_extract_track_patch_coordinate_channels():
     ds = _make_ds()
     row = _make_track_row(ds)
     patch = extract_track_patch(row, ds, size=64)
-    # Channel 4: northing — top=+1, bottom=-1
-    assert abs(patch[4, 0, 0] - 1.0) < 1e-5  # top-left
-    assert abs(patch[4, -1, 0] - (-1.0)) < 1e-5  # bottom-left
-    # Channel 5: easting — left=-1, right=+1
-    assert abs(patch[5, 0, 0] - (-1.0)) < 1e-5  # top-left
-    assert abs(patch[5, 0, -1] - 1.0) < 1e-5  # top-right
+    # Channel 5: northing — top=+1, bottom=-1
+    assert abs(patch[5, 0, 0] - 1.0) < 1e-5  # top-left
+    assert abs(patch[5, -1, 0] - (-1.0)) < 1e-5  # bottom-left
+    # Channel 6: easting — left=-1, right=+1
+    assert abs(patch[6, 0, 0] - (-1.0)) < 1e-5  # top-left
+    assert abs(patch[6, 0, -1] - 1.0) < 1e-5  # top-right
 
 
 def test_extract_track_patch_track_mask():
@@ -188,9 +195,48 @@ def test_extract_track_patch_track_mask():
     ds = _make_ds()
     row = _make_track_row(ds)
     patch = extract_track_patch(row, ds, size=64)
-    mask = patch[6]
+    mask = patch[7]
     assert set(np.unique(mask)).issubset({0.0, 1.0})
     assert mask.sum() > 0  # should have some pixels inside track
+
+
+def test_channel_normalization():
+    """Normalization should bring channels into reasonable ranges."""
+    # cell_counts: log1p then /5
+    arr = np.array([0, 1, 100, 1000], dtype=np.float32)
+    out = _normalize_channel(arr, 'cell_counts')
+    assert out[0] == pytest.approx(0.0)  # log1p(0) = 0
+    assert out[1] == pytest.approx(np.log1p(1.0) / 5.0)
+    assert out[3] < 1.5  # log1p(1000)/5 ≈ 1.38
+
+    # combined_distance: /5
+    arr = np.array([-5.0, 0.0, 5.0], dtype=np.float32)
+    out = _normalize_channel(arr, 'combined_distance')
+    np.testing.assert_allclose(out, [-1.0, 0.0, 1.0])
+
+    # slope: /0.6
+    arr = np.array([0.0, 0.3, 0.6], dtype=np.float32)
+    out = _normalize_channel(arr, 'slope')
+    np.testing.assert_allclose(out, [0.0, 0.5, 1.0])
+
+    # fcf: no-op
+    arr = np.array([0.0, 0.5, 1.0], dtype=np.float32)
+    out = _normalize_channel(arr, 'fcf')
+    np.testing.assert_allclose(out, arr)
+
+
+def test_extract_track_patch_normalization():
+    """Extracted patch cell_counts channel should be log-scaled."""
+    ds = _make_ds()
+    # Set cell_counts to a known large value
+    ds['cell_counts'].values[:] = 1000.0
+    row = _make_track_row(ds)
+    patch = extract_track_patch(row, ds, size=32)
+    # Channel 4 is cell_counts: log1p(1000)/5 ≈ 1.38
+    expected = np.log1p(1000.0) / 5.0
+    assert patch[4].mean() == pytest.approx(expected, abs=0.1)
+    # Should NOT be raw 1000
+    assert patch[4].max() < 2.0
 
 
 def test_extract_track_patch_missing_vars():
@@ -198,8 +244,9 @@ def test_extract_track_patch_missing_vars():
     ds = _make_ds()
     row = _make_track_row(ds)
     # Remove all patch data vars
-    for v in ['distance_mahalanobis', 'p_empirical', 'fcf', 'slope']:
-        del ds[v]
+    for v in ['combined_distance', 'd_empirical', 'fcf', 'slope', 'cell_counts']:
+        if v in ds:
+            del ds[v]
     patch = extract_track_patch(row, ds, size=32)
     assert np.allclose(patch, 0.0)
 

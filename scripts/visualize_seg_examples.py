@@ -81,20 +81,19 @@ def main() -> None:
 
         # Row 1: input channels
         ax = axes[0, 0]
-        im = ax.imshow(patch[0], cmap='plasma', vmin=0.2, vmax=0.7)
-        ax.set_title('Mahalanobis Distance')
+        im = ax.imshow(patch[0], cmap='plasma', vmin=-1.2, vmax=1.2)
+        ax.set_title('ML Distance (z-score)')
         fig.colorbar(im, ax=ax, fraction=0.046)
 
         ax = axes[0, 1]
-        im = ax.imshow(patch[1], cmap='RdYlGn_r', vmin=0.2, vmax=0.7)
-        ax.set_title('Empirical p-value')
+        im = ax.imshow(patch[1], cmap='RdYlGn_r', vmin=-2.0, vmax=0.5)
+        ax.set_title('Backscatter Δ (dB)')
         fig.colorbar(im, ax=ax, fraction=0.046)
 
         ax = axes[0, 2]
-        im = ax.imshow(patch[3], cmap='bone',
-                        vmin=np.deg2rad(15), vmax=np.deg2rad(45))
-        ax.contour(patch[6], levels=[0.5], colors='red', linewidths=1.0)
-        ax.set_title('Slope (rad) + Track Outline')
+        im = ax.imshow(patch[3], cmap='bone', vmin=0.4, vmax=1.3)
+        ax.contour(patch[7], levels=[0.5], colors='red', linewidths=1.0)
+        ax.set_title('Slope (norm) + Track Outline')
         fig.colorbar(im, ax=ax, fraction=0.046)
 
         # Row 2: target, prediction, overlay
@@ -108,14 +107,14 @@ def main() -> None:
         ax.set_title('CNN Prediction (sigmoid)')
         fig.colorbar(im, ax=ax, fraction=0.046)
 
-        # Overlay: prediction contours on Mahalanobis background
+        # Overlay: prediction contours on ML distance background
         ax = axes[1, 2]
-        ax.imshow(patch[0], cmap='plasma', vmin=0.2, vmax=0.7)
+        ax.imshow(patch[0], cmap='plasma', vmin=-1.2, vmax=1.2)
         ax.contour(pred, levels=[0.3, 0.5, 0.7], colors=['cyan', 'yellow', 'red'],
                    linewidths=1.2)
-        ax.contour(patch[6], levels=[0.5], colors='white', linewidths=0.8,
+        ax.contour(patch[7], levels=[0.5], colors='white', linewidths=0.8,
                    linestyles='dashed')
-        ax.set_title('Prediction contours on Mahalanobis')
+        ax.set_title('Prediction contours on ML dist.')
 
         for ax in axes.ravel():
             ax.set_xticks([])
