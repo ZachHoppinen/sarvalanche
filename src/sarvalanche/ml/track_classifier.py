@@ -1,14 +1,19 @@
 import logging
+import warnings
 from pathlib import Path
+
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='All-NaN slice encountered')
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import xarray as xr
+from tqdm import tqdm
 from xgboost import XGBClassifier
 
 from sarvalanche.ml.track_features import (
     STATIC_FEATURE_VARS,
+    TRACK_MASK_CHANNEL,
     aggregate_seg_features,
     extract_track_features,
     extract_track_patch,
@@ -117,7 +122,7 @@ def build_training_set(
         gdf = gpd.read_file(gpkg_path)
         ds = _load_ds(nc_path, gdf.crs)
 
-        for key, meta in entries:
+        for key, meta in tqdm(entries, desc=stem, unit="trk"):
             idx = meta['track_idx']
             if idx not in gdf.index:
                 log.warning("build_training_set: track %d not in %s, skipping", idx, stem)
@@ -224,7 +229,7 @@ def predict_tracks(
             with torch.no_grad():
                 seg_logits = seg_encoder.segment(torch.FloatTensor(patch[np.newaxis]))
                 seg_probs = torch.sigmoid(seg_logits).numpy()[0, 0]  # (H, W)
-            track_mask = patch[7]  # channel 7 is track_mask
+            track_mask = patch[TRACK_MASK_CHANNEL]
             feats.update(aggregate_seg_features(seg_probs, track_mask))
 
         feature_rows.append(feats)
@@ -297,7 +302,7 @@ def build_patch_training_set(
         gdf = gpd.read_file(gpkg_path)
         ds  = _load_ds(nc_path, gdf.crs)
 
-        for key, meta in entries:
+        for key, meta in tqdm(entries, desc=stem, unit="trk"):
             idx = meta['track_idx']
             if idx not in gdf.index:
                 log.warning("build_patch_training_set: track %d not in %s, skipping", idx, stem)
@@ -336,12 +341,12 @@ def build_seg_training_set(
     """
     Extract patches, pixel-wise soft targets, and binary labels for segmentation training.
 
-    Like ``build_patch_training_set`` but also extracts ``p_pixelwise`` as a
+    Like ``build_patch_training_set`` but also extracts ``unmasked_p_target`` as a
     ``(1, size, size)`` target for each track.
 
     When ``shapes_path`` points to a GeoPackage of manually drawn debris
     polygons (with a ``key`` column matching label keys), the shapes are
-    rasterized onto the patch grid and blended with ``p_pixelwise`` via
+    rasterized onto the patch grid and blended with ``unmasked_p_target`` via
     element-wise max.
 
     Returns
@@ -384,7 +389,7 @@ def build_seg_training_set(
         gdf = gpd.read_file(gpkg_path)
         ds  = _load_ds(nc_path, gdf.crs)
 
-        for key, meta in entries:
+        for key, meta in tqdm(entries, desc=stem, unit="trk"):
             idx = meta['track_idx']
             if idx not in gdf.index:
                 log.warning("build_seg_training_set: track %d not in %s, skipping", idx, stem)
@@ -399,7 +404,7 @@ def build_seg_training_set(
             # For no-debris tracks, zero out the target inside the track polygon
             # so the model learns to suppress false positives there.
             if meta['label'] < BINARY_THRESHOLD:
-                track_mask = patch[7]  # channel 7 is track_mask
+                track_mask = patch[TRACK_MASK_CHANNEL]
                 target[0] *= (1.0 - track_mask)
             patch_list.append(patch)
             target_list.append(target)
@@ -445,11 +450,11 @@ def build_all_seg_patches(
     Extract patches and pixel-wise soft targets for *all* tracks across all dates.
 
     Each ``.gpkg`` defines track polygons for a zone.  Every ``.nc`` file that
-    shares the same zone prefix **and** contains ``p_pixelwise`` is paired with
+    shares the same zone prefix **and** contains ``unmasked_p_target`` is paired with
     that gpkg, producing one (patch, target) per (track, date) combination.
 
     Unlike ``build_seg_training_set``, this does not require labels.
-    ``p_pixelwise`` is used as-is (no negative-label zeroing, no debris-shape
+    ``unmasked_p_target`` is used as-is (no negative-label zeroing, no debris-shape
     blending).
 
     Parameters
@@ -498,12 +503,12 @@ def build_all_seg_patches(
         gdf = gpd.read_file(gpkg_path)
 
         for nc_path in nc_paths:
-            # Skip nc files that lack p_pixelwise (e.g. early incomplete runs)
+            # Skip nc files that lack unmasked_p_target (e.g. early incomplete runs)
             ds_peek = xr.open_dataset(nc_path)
-            has_target = 'p_pixelwise' in ds_peek.data_vars
+            has_target = 'unmasked_p_target' in ds_peek.data_vars
             ds_peek.close()
             if not has_target:
-                log.info("build_all_seg_patches: %s lacks p_pixelwise, skipping",
+                log.info("build_all_seg_patches: %s lacks unmasked_p_target, skipping",
                          nc_path.name)
                 continue
 

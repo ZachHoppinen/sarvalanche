@@ -4,7 +4,7 @@ Visualize CNN segmentation predictions on example tracks labeled as 3 (high conf
 
 For each example, shows a 2x3 grid:
   Row 1: input channels — Mahalanobis distance, empirical p-value, track mask
-  Row 2: segmentation target (p_pixelwise + shapes), CNN prediction (sigmoid), overlay
+  Row 2: segmentation target (unmasked_p_target + shapes), CNN prediction (sigmoid), overlay
 
 Usage
 -----
@@ -19,7 +19,7 @@ import numpy as np
 import torch
 
 from sarvalanche.ml.track_classifier import BINARY_THRESHOLD, _load_ds, build_seg_training_set
-from sarvalanche.ml.track_features import extract_track_patch_with_target
+from sarvalanche.ml.track_features import TRACK_MASK_CHANNEL, extract_track_patch_with_target
 from sarvalanche.ml.track_patch_encoder import CNN_SEG_ENCODER_PATH, TrackSegEncoder
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s  %(levelname)s  %(message)s')
@@ -92,14 +92,14 @@ def main() -> None:
 
         ax = axes[0, 2]
         im = ax.imshow(patch[3], cmap='bone', vmin=0.4, vmax=1.3)
-        ax.contour(patch[7], levels=[0.5], colors='red', linewidths=1.0)
+        ax.contour(patch[TRACK_MASK_CHANNEL], levels=[0.5], colors='red', linewidths=1.0)
         ax.set_title('Slope (norm) + Track Outline')
         fig.colorbar(im, ax=ax, fraction=0.046)
 
         # Row 2: target, prediction, overlay
         ax = axes[1, 0]
         im = ax.imshow(target, cmap='hot', vmin=0, vmax=1)
-        ax.set_title('Target (p_pixelwise + shapes)')
+        ax.set_title('Target (unmasked_p_target + shapes)')
         fig.colorbar(im, ax=ax, fraction=0.046)
 
         ax = axes[1, 1]
@@ -112,7 +112,7 @@ def main() -> None:
         ax.imshow(patch[0], cmap='plasma', vmin=-1.2, vmax=1.2)
         ax.contour(pred, levels=[0.3, 0.5, 0.7], colors=['cyan', 'yellow', 'red'],
                    linewidths=1.2)
-        ax.contour(patch[7], levels=[0.5], colors='white', linewidths=0.8,
+        ax.contour(patch[TRACK_MASK_CHANNEL], levels=[0.5], colors='white', linewidths=0.8,
                    linestyles='dashed')
         ax.set_title('Prediction contours on ML dist.')
 

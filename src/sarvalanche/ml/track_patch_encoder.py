@@ -10,7 +10,7 @@ CNN_ENCODER_PATH:     Path = CNN_ENCODER_DIR / 'track_patch_encoder.pt'
 CNN_SEG_ENCODER_PATH: Path = CNN_ENCODER_DIR / 'track_seg_encoder.pt'
 
 # Must match track_features.N_PATCH_CHANNELS
-_IN_CHANNELS: int = 8
+_IN_CHANNELS: int = 10
 
 
 def _conv_block(in_ch: int, out_ch: int, stride: int = 1) -> nn.Sequential:

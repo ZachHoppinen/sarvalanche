@@ -2,22 +2,26 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from sarvalanche.ml.track_features import PATCH_CHANNELS
+
+# Derive channel indices from the canonical channel list
+_EASTING_CH: int = PATCH_CHANNELS.index('easting')
+_N_DATA_CH: int = PATCH_CHANNELS.index('northing')  # data channels are [0, northing)
+
 
 class TrackPatchDataset(Dataset):
     """
     PyTorch Dataset for multi-channel raster patches of track polygons.
 
     Each item is a ``(C, H, W)`` float32 tensor and a scalar binary label.
-    Channel order matches ``sarvalanche.ml.track_features.PATCH_CHANNELS``:
-    combined_distance (0), d_empirical (1), fcf (2), slope (3),
-    cell_counts (4), northing (5), easting (6), track_mask (7).
+    Channel order matches ``sarvalanche.ml.track_features.PATCH_CHANNELS``.
 
     Augmentation
     ------------
     Only horizontal flips are applied to preserve geographic orientation:
-    - Horizontal flip (50% probability): negates easting channel (6) so that
+    - Horizontal flip (50% probability): negates easting channel so that
       the coordinate grid remains consistent after mirroring.
-    - Mild Gaussian noise on data channels 0-4.
+    - Mild Gaussian noise on data channels (raster variables before northing).
 
     Parameters
     ----------
@@ -30,9 +34,6 @@ class TrackPatchDataset(Dataset):
     noise_std : float
         Std of Gaussian noise added to data channels 0-4. Set to 0 to disable.
     """
-
-    _EASTING_CH: int = 6  # channel index to negate on horizontal flip
-    _N_DATA_CH: int = 5   # number of raster data channels to add noise to
 
     def __init__(
         self,
@@ -56,9 +57,9 @@ class TrackPatchDataset(Dataset):
         if self.augment:
             if np.random.random() < 0.5:
                 patch = patch[:, :, ::-1].copy()
-                patch[self._EASTING_CH] = -patch[self._EASTING_CH]
+                patch[_EASTING_CH] = -patch[_EASTING_CH]
             if self.noise_std > 0:
-                n = self._N_DATA_CH
+                n = _N_DATA_CH
                 patch[:n] += (
                     np.random.randn(*patch[:n].shape) * self.noise_std
                 ).astype(np.float32)
@@ -71,11 +72,11 @@ class TrackSegDataset(Dataset):
     PyTorch Dataset for segmentation training with pixel-wise soft targets.
 
     Each item is a ``(C, H, W)`` float32 input tensor, a ``(1, H, W)``
-    float32 target map (from ``p_pixelwise``), and optionally a scalar binary
+    float32 target map (from ``unmasked_p_target``), and optionally a scalar binary
     label for joint classification training.
 
     Augmentation mirrors ``TrackPatchDataset``: horizontal flip (negates
-    easting, flips target) and mild Gaussian noise on channels 0-4.
+    easting, flips target) and mild Gaussian noise on raster data channels.
 
     Parameters
     ----------
@@ -89,11 +90,8 @@ class TrackSegDataset(Dataset):
     augment : bool
         Apply random augmentation at each sample draw.
     noise_std : float
-        Std of Gaussian noise added to data channels 0-4.
+        Std of Gaussian noise added to raster data channels.
     """
-
-    _EASTING_CH: int = 6
-    _N_DATA_CH: int = 5
 
     def __init__(
         self,
@@ -120,9 +118,9 @@ class TrackSegDataset(Dataset):
             if np.random.random() < 0.5:
                 patch  = patch[:, :, ::-1].copy()
                 target = target[:, :, ::-1].copy()
-                patch[self._EASTING_CH] = -patch[self._EASTING_CH]
+                patch[_EASTING_CH] = -patch[_EASTING_CH]
             if self.noise_std > 0:
-                n = self._N_DATA_CH
+                n = _N_DATA_CH
                 patch[:n] += (
                     np.random.randn(*patch[:n].shape) * self.noise_std
                 ).astype(np.float32)

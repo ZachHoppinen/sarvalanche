@@ -2,7 +2,7 @@
 """
 Train the CNN segmentation encoder for debris-flow track classification.
 
-Pure segmentation training: mask-weighted BCE loss against ``p_pixelwise``
+Pure segmentation training: mask-weighted BCE loss against ``unmasked_p_target``
 soft targets (3x weight inside track polygon, 1x outside) using all ~85k
 (track, date) patch–target pairs across all runs.
 
@@ -26,6 +26,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from sarvalanche.ml.track_classifier import build_all_seg_patches
+from sarvalanche.ml.track_features import TRACK_MASK_CHANNEL
 from sarvalanche.ml.track_patch_dataset import TrackSegDataset
 from sarvalanche.ml.track_patch_encoder import (
     CNN_ENCODER_DIR,
@@ -100,7 +101,7 @@ def _plot_epoch_examples(
         # Col 2: Slope + track outline (normalized by /0.6)
         ax = axes[i, 2]
         im = ax.imshow(patch[3], cmap='bone', vmin=0.4, vmax=1.3)
-        ax.contour(patch[7], levels=[0.5], colors='red', linewidths=1.0)
+        ax.contour(patch[TRACK_MASK_CHANNEL], levels=[0.5], colors='red', linewidths=1.0)
         fig.colorbar(im, ax=ax, fraction=0.046)
         if i == 0:
             ax.set_title('Slope (norm) + Track')
@@ -110,7 +111,7 @@ def _plot_epoch_examples(
         im = ax.imshow(target, cmap='hot', vmin=0, vmax=1)
         fig.colorbar(im, ax=ax, fraction=0.046)
         if i == 0:
-            ax.set_title('Target (p_pixelwise)')
+            ax.set_title('Target (unmasked_p_target)')
 
         # Col 4: CNN prediction
         ax = axes[i, 4]
@@ -124,7 +125,7 @@ def _plot_epoch_examples(
         ax.imshow(patch[0], cmap='plasma', vmin=-1.2, vmax=1.2)
         ax.contour(pred, levels=[0.3, 0.5, 0.7], colors=['cyan', 'yellow', 'red'],
                    linewidths=1.2)
-        ax.contour(patch[7], levels=[0.5], colors='white', linewidths=0.8,
+        ax.contour(patch[TRACK_MASK_CHANNEL], levels=[0.5], colors='white', linewidths=0.8,
                    linestyles='dashed')
         if i == 0:
             ax.set_title('Pred contours on ML dist.')
@@ -155,7 +156,7 @@ def _train_seg_model(
     patches : np.ndarray of shape (N, C, H, W)
         Input patches.
     targets : np.ndarray of shape (N, 1, H, W)
-        Soft segmentation targets (p_pixelwise).
+        Soft segmentation targets (unmasked_p_target).
     epochs : int
         Number of training epochs.
     vis_patches, vis_targets : np.ndarray or None
@@ -191,7 +192,7 @@ def _train_seg_model(
 
             seg_logits = model.segment(batch_patches)             # (B, 1, H, W)
             pixel_loss = seg_crit(seg_logits, batch_targets)      # (B, 1, H, W)
-            track_mask = batch_patches[:, 7:8, :, :]              # (B, 1, H, W)
+            track_mask = batch_patches[:, TRACK_MASK_CHANNEL:TRACK_MASK_CHANNEL+1, :, :]  # (B, 1, H, W)
             weight_map = 1.0 + (MASK_WEIGHT - 1.0) * track_mask
             loss = (pixel_loss * weight_map).mean()
 

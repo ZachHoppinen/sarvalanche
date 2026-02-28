@@ -8,6 +8,9 @@ from sarvalanche.ml.track_features import (
     PATCH_CHANNELS,
     N_PATCH_CHANNELS,
     STATIC_FEATURE_VARS,
+    TRACK_MASK_CHANNEL,
+    _NORTHING_CH,
+    _EASTING_CH,
     aggregate_seg_features,
     extract_track_features,
     extract_track_patch,
@@ -57,6 +60,12 @@ def _make_ds(nx=50, ny=50, crs='EPSG:32611'):
             ),
             'aspect': xr.DataArray(
                 np.random.rand(ny, nx).astype(np.float32) * 2 * np.pi, dims=['y', 'x'], coords=coords,
+            ),
+            'release_zones': xr.DataArray(
+                (np.random.rand(ny, nx) > 0.8).astype(np.float32), dims=['y', 'x'], coords=coords,
+            ),
+            'runout_angle': xr.DataArray(
+                np.random.rand(ny, nx).astype(np.float32) * np.pi, dims=['y', 'x'], coords=coords,
             ),
         }
     )
@@ -182,12 +191,12 @@ def test_extract_track_patch_coordinate_channels():
     ds = _make_ds()
     row = _make_track_row(ds)
     patch = extract_track_patch(row, ds, size=64)
-    # Channel 5: northing — top=+1, bottom=-1
-    assert abs(patch[5, 0, 0] - 1.0) < 1e-5  # top-left
-    assert abs(patch[5, -1, 0] - (-1.0)) < 1e-5  # bottom-left
-    # Channel 6: easting — left=-1, right=+1
-    assert abs(patch[6, 0, 0] - (-1.0)) < 1e-5  # top-left
-    assert abs(patch[6, 0, -1] - 1.0) < 1e-5  # top-right
+    # Northing — top=+1, bottom=-1
+    assert abs(patch[_NORTHING_CH, 0, 0] - 1.0) < 1e-5  # top-left
+    assert abs(patch[_NORTHING_CH, -1, 0] - (-1.0)) < 1e-5  # bottom-left
+    # Easting — left=-1, right=+1
+    assert abs(patch[_EASTING_CH, 0, 0] - (-1.0)) < 1e-5  # top-left
+    assert abs(patch[_EASTING_CH, 0, -1] - 1.0) < 1e-5  # top-right
 
 
 def test_extract_track_patch_track_mask():
@@ -195,7 +204,7 @@ def test_extract_track_patch_track_mask():
     ds = _make_ds()
     row = _make_track_row(ds)
     patch = extract_track_patch(row, ds, size=64)
-    mask = patch[7]
+    mask = patch[TRACK_MASK_CHANNEL]
     assert set(np.unique(mask)).issubset({0.0, 1.0})
     assert mask.sum() > 0  # should have some pixels inside track
 
@@ -244,7 +253,8 @@ def test_extract_track_patch_missing_vars():
     ds = _make_ds()
     row = _make_track_row(ds)
     # Remove all patch data vars
-    for v in ['combined_distance', 'd_empirical', 'fcf', 'slope', 'cell_counts']:
+    from sarvalanche.ml.track_features import _PATCH_DATA_VARS
+    for v in _PATCH_DATA_VARS:
         if v in ds:
             del ds[v]
     patch = extract_track_patch(row, ds, size=32)

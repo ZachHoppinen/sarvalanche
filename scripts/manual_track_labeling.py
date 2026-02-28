@@ -27,6 +27,7 @@ from sarvalanche.ml.track_classifier import (
     train_classifier,
 )
 from sarvalanche.ml.track_features import (
+    TRACK_MASK_CHANNEL,
     aggregate_seg_features,
     extract_track_features,
     extract_track_patch,
@@ -294,13 +295,220 @@ class ShapeDrawer:
                 ax.add_patch(p)
 
 
+SCORE_CACHE_PATH = RUNS_DIR / '_track_scores.json'
+
+
+def _load_score_cache():
+    """Load cached scores from disk. Returns dict (zone, date, idx) → p_debris."""
+    if not SCORE_CACHE_PATH.exists():
+        return {}
+    try:
+        with open(SCORE_CACHE_PATH) as f:
+            raw = json.load(f)
+        # Keys stored as "zone|date|idx"
+        return {
+            (parts[0], parts[1], int(parts[2])): v
+            for k, v in raw.items()
+            if len(parts := k.split('|')) == 3
+        }
+    except Exception as exc:
+        print(f"[score] Failed to load cache: {exc}")
+        return {}
+
+
+def _save_score_cache(scores):
+    """Persist scores to disk."""
+    try:
+        raw = {f"{z}|{d}|{idx}": p for (z, d, idx), p in scores.items()}
+        with open(SCORE_CACHE_PATH, 'w') as f:
+            json.dump(raw, f)
+    except Exception as exc:
+        print(f"[score] Failed to save cache: {exc}")
+
+
+def _score_unlabeled_tracks(items, classifier, use_cache=True):
+    """Score unlabeled tracks with XGBoost, grouped by nc_path for efficiency.
+
+    Returns dict mapping (zone, date, idx) → p_debris float.
+    Caches results to disk so subsequent runs start instantly.
+    """
+    scores = {}
+    if classifier is None:
+        return scores
+
+    # Load cached scores
+    cached = _load_score_cache() if use_cache else {}
+    needed = []
+    for item in items:
+        key = (item[0], item[1], item[2])
+        if key in cached:
+            scores[key] = cached[key]
+        else:
+            needed.append(item)
+
+    if cached and scores:
+        print(f"[score] Loaded {len(scores)} cached scores, {len(needed)} need scoring")
+
+    if not needed:
+        return scores
+
+    # Group by nc_path to reproject once per file
+    file_groups = defaultdict(list)
+    for zone, date, idx, gpkg_path, nc_path in needed:
+        file_groups[(gpkg_path, nc_path)].append((zone, date, idx))
+
+    n_scored = 0
+    n_failed = 0
+    n_total = len(needed)
+    for fi, ((gpkg_path, nc_path), track_list) in enumerate(file_groups.items()):
+        print(f"[score] File {fi+1}/{len(file_groups)}: {nc_path.name} ({len(track_list)} tracks)")
+        try:
+            gdf_local = gpd.read_file(gpkg_path)
+            _peek = xr.open_dataset(nc_path)
+            _load_vars = list({
+                *layers.keys(),
+                *[v for v in _peek.data_vars if _peek[v].dims == ('y', 'x')],
+            })
+            _peek.close()
+            ds_local = xr.open_dataset(nc_path)[_load_vars].astype(float).rio.write_crs('EPSG:4326')
+            ds_local = ds_local.rio.reproject(gdf_local.crs)
+
+            for ti, (zone, date, idx) in enumerate(track_list):
+                try:
+                    row = gdf_local.loc[idx]
+                    feats = extract_track_features(row, ds_local)
+                    X_row = pd.DataFrame([feats]).reindex(columns=classifier.feature_names_in_).fillna(0)
+                    p = float(classifier.predict_proba(X_row)[0, 1])
+                    scores[(zone, date, idx)] = p
+                    n_scored += 1
+                except Exception:
+                    n_failed += 1
+                if (ti + 1) % 500 == 0:
+                    print(f"  ... {ti+1}/{len(track_list)} scored in this file")
+
+            ds_local.close()
+        except Exception as exc:
+            print(f"[score] Failed to process {nc_path.name}: {exc}")
+            n_failed += len(track_list)
+
+    print(f"[score] Scored {n_scored} tracks, {n_failed} failed")
+    _save_score_cache(scores)
+    return scores
+
+
+def _sort_by_uncertainty(items, scores):
+    """Sort unlabeled items using active learning strategy.
+
+    Buckets (~60% uncertain, ~25% random, ~10% tail, ~5% unscored)
+    are interleaved so the user sees a mix.
+
+    Returns list of (item, bucket_tag) tuples.
+    """
+    uncertain = []  # 0.25 <= p <= 0.75, sorted by |p - 0.5|
+    tail = []       # p < 0.15 or p > 0.85
+    middle = []     # everything else scored (0.15-0.25, 0.75-0.85)
+    unscored = []
+
+    for item in items:
+        key = (item[0], item[1], item[2])
+        if key not in scores:
+            unscored.append(item)
+            continue
+        p = scores[key]
+        dist = abs(p - 0.5)
+        if 0.25 <= p <= 0.75:
+            uncertain.append((dist, item))
+        elif p < 0.15 or p > 0.85:
+            tail.append((dist, item))
+        else:
+            middle.append((dist, item))
+
+    # Sort uncertain by distance from 0.5 (closest first)
+    uncertain.sort(key=lambda x: x[0])
+    uncertain_items = [it for _, it in uncertain]
+
+    # Tail: shuffle for variety
+    random.shuffle(tail)
+    tail_items = [it for _, it in tail]
+
+    # Middle goes into the random pool
+    middle_items = [it for _, it in middle]
+
+    # Random pool = middle + copy of all scored items for diversity
+    random_pool = middle_items + list(uncertain_items) + list(tail_items)
+    random.shuffle(random_pool)
+
+    # Shuffle unscored
+    random.shuffle(unscored)
+
+    # Interleave: pattern of 5 = 3 uncertain, 1 random, 1 tail/unscored
+    result = []
+    ui, ri, ti, si = 0, 0, 0, 0
+    cycle = 0
+    total = len(items)
+
+    while len(result) < total:
+        slot = cycle % 10
+        if slot < 6 and ui < len(uncertain_items):
+            result.append((uncertain_items[ui], 'uncertain'))
+            ui += 1
+        elif slot < 8 and ri < len(random_pool):
+            # Skip items already added as uncertain
+            result.append((random_pool[ri], 'random'))
+            ri += 1
+        elif slot < 9 and ti < len(tail_items):
+            result.append((tail_items[ti], 'tail'))
+            ti += 1
+        elif si < len(unscored):
+            result.append((unscored[si], 'unscored'))
+            si += 1
+        else:
+            # Fill from whatever bucket has items left
+            if ui < len(uncertain_items):
+                result.append((uncertain_items[ui], 'uncertain'))
+                ui += 1
+            elif ri < len(random_pool):
+                result.append((random_pool[ri], 'random'))
+                ri += 1
+            elif ti < len(tail_items):
+                result.append((tail_items[ti], 'tail'))
+                ti += 1
+            elif si < len(unscored):
+                result.append((unscored[si], 'unscored'))
+                si += 1
+            else:
+                break
+        cycle += 1
+
+    # Deduplicate while preserving order (items may appear in random_pool AND uncertain)
+    seen = set()
+    deduped = []
+    for item, tag in result:
+        key = (item[0], item[1], item[2])
+        if key not in seen:
+            seen.add(key)
+            deduped.append((item, tag))
+
+    n_unc = sum(1 for _, t in deduped if t == 'uncertain')
+    n_rnd = sum(1 for _, t in deduped if t == 'random')
+    n_tail = sum(1 for _, t in deduped if t == 'tail')
+    n_uns = sum(1 for _, t in deduped if t == 'unscored')
+    print(f"[sort] Ordering: {n_unc} uncertain, {n_rnd} random, {n_tail} tail, {n_uns} unscored")
+
+    return deduped
+
+
+# Flag set by background retrain to trigger re-sorting
+_rescore_needed = False
+
+
 def _retrain_in_background():
     """Retrain XGBoost classifier on current labels and update the global clf.
 
     Only retrains the XGBoost model using aggregate track features.
     Skips CNN seg encoder inference to avoid excessive memory usage.
     """
-    global clf
+    global clf, _rescore_needed
     print(f"\n[retrain] Starting on {len(labels)} labels (XGBoost only, no CNN)...")
     try:
         X, y = build_training_set(labels, RUNS_DIR)
@@ -323,10 +531,18 @@ def _retrain_in_background():
         TRACK_PREDICTOR_DIR.mkdir(parents=True, exist_ok=True)
         joblib.dump(new_clf, TRACK_PREDICTOR_MODEL)
         clf = new_clf
+        # Only re-score all tracks every 500 labels (expensive)
+        n_labels = len(labels)
+        if n_labels % 500 == 0:
+            _rescore_needed = True
+            # Invalidate cache — new model means old scores are stale
+            if SCORE_CACHE_PATH.exists():
+                SCORE_CACHE_PATH.unlink()
         print(
-            f"[retrain] Done — {len(labels)} labels  ({pos} pos / {neg} neg)\n"
+            f"[retrain] Done — {n_labels} labels  ({pos} pos / {neg} neg)\n"
             f"          5-fold CV:  AUC={auc.mean():.3f} ± {auc.std():.3f}"
             f"   F1={f1.mean():.3f} ± {f1.std():.3f}"
+            + (f"\n[retrain] Re-scoring will happen before next track" if _rescore_needed else "")
         )
     except Exception as exc:
         print(f"[retrain] Failed: {exc}")
@@ -347,24 +563,33 @@ if OUTPUT_PATH.exists():
 else:
     labels = {}
 
-# ── Filter already labeled, then shuffle within each file ────────────────────
+# ── Filter already labeled, score & sort by uncertainty ──────────────────────
 unlabeled_all = [
     item for item in all_items
     if label_key(item[0], item[1], item[2]) not in labels
 ]
 
-# Group by nc_path so reproject only fires once per file, not once per track
-groups = defaultdict(list)
-for item in unlabeled_all:
-    groups[item[4]].append(item)
-
-group_keys = list(groups.keys())
-random.shuffle(group_keys)
-for key in group_keys:
-    random.shuffle(groups[key])
-unlabeled = [item for key in group_keys for item in groups[key]]
-
 print(f"{len(labels)} already labeled, {len(unlabeled_all)} remaining out of {len(all_items)} total")
+
+# Score with XGBoost if available, then sort by active learning strategy
+track_scores = _score_unlabeled_tracks(unlabeled_all, clf)
+
+if track_scores:
+    unlabeled_with_tags = _sort_by_uncertainty(unlabeled_all, track_scores)
+else:
+    # No classifier — fall back to shuffled random order grouped by file
+    groups = defaultdict(list)
+    for item in unlabeled_all:
+        groups[item[4]].append(item)
+    group_keys = list(groups.keys())
+    random.shuffle(group_keys)
+    for key in group_keys:
+        random.shuffle(groups[key])
+    unlabeled_with_tags = [(item, 'random') for key in group_keys for item in groups[key]]
+
+# Separate into parallel lists for the main loop
+unlabeled = [item for item, _ in unlabeled_with_tags]
+unlabeled_tags = [tag for _, tag in unlabeled_with_tags]
 
 # ── UI ───────────────────────────────────────────────────────────────────────
 result = {'label': None}
@@ -419,6 +644,21 @@ gdf = None
 
 i = 0
 while i < len(unlabeled):
+    # Re-score and re-sort remaining tracks after background retrain
+    if _rescore_needed:
+        _rescore_needed = False
+        remaining_items = unlabeled[i:]
+        remaining_items = [
+            it for it in remaining_items
+            if label_key(it[0], it[1], it[2]) not in labels
+        ]
+        new_scores = _score_unlabeled_tracks(remaining_items, clf, use_cache=False)
+        if new_scores:
+            new_sorted = _sort_by_uncertainty(remaining_items, new_scores)
+            unlabeled[i:] = [item for item, _ in new_sorted]
+            unlabeled_tags[i:] = [tag for _, tag in new_sorted]
+            print(f"[rescore] Re-sorted {len(new_sorted)} remaining tracks")
+
     zone, date, idx, gpkg_path, nc_path = unlabeled[i]
 
     # Reload ds and gdf only when the source file changes
@@ -457,7 +697,7 @@ while i < len(unlabeled):
             with torch.no_grad():
                 seg_logits = seg_enc.segment(torch.FloatTensor(patch[np.newaxis]))
                 seg_probs = torch.sigmoid(seg_logits).numpy()[0, 0]
-            feats.update(aggregate_seg_features(seg_probs, patch[7]))
+            feats.update(aggregate_seg_features(seg_probs, patch[TRACK_MASK_CHANNEL]))
         X_row = pd.DataFrame([feats]).reindex(columns=clf.feature_names_in_).fillna(0)
         p_debris = float(clf.predict_proba(X_row)[0, 1])
         pred_str = f"  ▶ XGB: {p_debris:.0%} debris"
@@ -467,7 +707,7 @@ while i < len(unlabeled):
         with torch.no_grad():
             seg_logits = seg_enc.segment(torch.FloatTensor(patch[np.newaxis]))
             seg_probs = torch.sigmoid(seg_logits).numpy()[0, 0]
-        seg_mean = float(seg_probs[patch[7] > 0.5].mean()) if (patch[7] > 0.5).any() else 0.0
+        seg_mean = float(seg_probs[patch[TRACK_MASK_CHANNEL] > 0.5].mean()) if (patch[TRACK_MASK_CHANNEL] > 0.5).any() else 0.0
         pred_str += f"  Seg: {seg_mean:.0%}"
 
     avl_date = pd.Timestamp(date)
@@ -482,9 +722,11 @@ while i < len(unlabeled):
     existing_shapes = _get_existing_shapes(key, target_crs=gdf.crs)
     shape_str = f"  [{len(existing_shapes)} shapes]" if len(existing_shapes) > 0 else ""
 
+    bucket_tag = unlabeled_tags[i] if i < len(unlabeled_tags) else 'random'
+
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
     fig.suptitle(
-        f"{zone}  |  {date}  |  track {idx}{existing_str}{obs_str}{shape_str}  ({i + 1}/{len(unlabeled)}){pred_str}\n"
+        f"{zone}  |  {date}  |  track {idx}{existing_str}{obs_str}{shape_str}  ({i + 1}/{len(unlabeled)})  [{bucket_tag}]{pred_str}\n"
         f"0-3=label  n=unsure  ←/→=nav  d=draw  q=quit",
         fontsize=11,
     )

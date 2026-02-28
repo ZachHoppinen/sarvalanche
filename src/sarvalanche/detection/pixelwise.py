@@ -65,6 +65,8 @@ def get_pixelwise_probabilities(
     # If Bayesian update > prior: use prior (don't increase)
     # If Bayesian update < prior: use Bayesian (allow decrease)
     p_pixelwise = xr.ufuncs.minimum(p_likelihood, p_bayesian)
+    ds['unmasked_p_target'] = p_pixelwise
+    ds['unmasked_p_target'].attrs = {'source': 'sarvalanche', 'units': 'percentage', 'product': 'unmasked_pixel_wise_probability'}
 
     # Soft runout constraint: linearly ramp p_pixelwise from 0 at p_runout=0
     # to full signal at p_runout=0.1, instead of a hard cutoff

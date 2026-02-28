@@ -2,8 +2,8 @@ import numpy as np
 import torch
 import pytest
 
-from sarvalanche.ml.track_patch_dataset import TrackPatchDataset, TrackSegDataset
-from sarvalanche.ml.track_features import N_PATCH_CHANNELS
+from sarvalanche.ml.track_patch_dataset import TrackPatchDataset, TrackSegDataset, _EASTING_CH, _N_DATA_CH
+from sarvalanche.ml.track_features import N_PATCH_CHANNELS, TRACK_MASK_CHANNEL
 
 
 # ── TrackPatchDataset ───────────────────────────────────────────────────────
@@ -40,11 +40,11 @@ def test_patch_dataset_no_augment_preserves_data(patch_data):
 
 
 def test_patch_dataset_augment_flip():
-    """Horizontal flip should negate easting channel (6)."""
+    """Horizontal flip should negate easting channel."""
     np.random.seed(42)
     patches = np.ones((1, N_PATCH_CHANNELS, 4, 4), dtype=np.float32)
     # Set easting channel to a known pattern: [1, 2, 3, 4] across columns
-    patches[0, 6] = np.array([[1, 2, 3, 4]] * 4, dtype=np.float32)
+    patches[0, _EASTING_CH] = np.array([[1, 2, 3, 4]] * 4, dtype=np.float32)
     labels = np.array([1], dtype=np.float32)
 
     ds = TrackPatchDataset(patches, labels, augment=True, noise_std=0.0)
@@ -53,7 +53,7 @@ def test_patch_dataset_augment_flip():
     flipped = False
     for _ in range(50):
         p, _ = ds[0]
-        east = p[6].numpy()
+        east = p[_EASTING_CH].numpy()
         # If flipped: first horizontally reversed [4,3,2,1] then negated [-4,-3,-2,-1]
         if east[0, 0] < 0:
             flipped = True
@@ -71,12 +71,10 @@ def test_patch_dataset_augment_noise():
     labels = np.array([0], dtype=np.float32)
     ds = TrackPatchDataset(patches, labels, augment=True, noise_std=0.1)
 
-    # Run several times; channels 5-7 should stay at 0 (when not flipped)
+    # Run several times; track_mask channel should stay at 0 (when not flipped)
     for _ in range(20):
         p, _ = ds[0]
-        # Channels 5 (northing) and 7 (track_mask) should be unchanged
-        # (channel 6 might be negated by flip but magnitude stays 0)
-        assert torch.allclose(p[7], torch.zeros(8, 8))
+        assert torch.allclose(p[TRACK_MASK_CHANNEL], torch.zeros(8, 8))
 
 
 # ── TrackSegDataset ─────────────────────────────────────────────────────────

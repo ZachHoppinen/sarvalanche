@@ -14,36 +14,48 @@ log = logging.getLogger(__name__)
 
 # ── Patch extraction constants ─────────────────────────────────────────────────
 # Ordered channel list for extract_track_patch() output.
+# Data variable channels come first (enumerated from _PATCH_DATA_VARS),
+# then synthetic channels (northing, easting, track_mask).
 PATCH_CHANNELS: list[str] = [
     'combined_distance',     # 0 — ML z-score distance (signed, std devs)
     'd_empirical',           # 1 — combined backscatter change (dB)
     'fcf',                   # 2 — forest cover fraction
     'slope',                 # 3 — terrain slope (radians)
     'cell_counts',           # 4 — FlowPy runout cell counts
-    'northing',              # 5 — relative y position in patch, [-1 (bottom), +1 (top)]
-    'easting',               # 6 — relative x position in patch, [-1 (left), +1 (right)]
-    'track_mask',            # 7 — 1 inside track polygon, 0 outside
+    'release_zones',         # 5 — binary release zone mask
+    'runout_angle',          # 6 — debris flow direction (radians)
+    'northing',              # 7 — relative y position in patch, [-1 (bottom), +1 (top)]
+    'easting',               # 8 — relative x position in patch, [-1 (left), +1 (right)]
+    'track_mask',            # 9 — 1 inside track polygon, 0 outside
 ]
-N_PATCH_CHANNELS: int = len(PATCH_CHANNELS)  # 8
+N_PATCH_CHANNELS: int = len(PATCH_CHANNELS)  # 10
+TRACK_MASK_CHANNEL: int = PATCH_CHANNELS.index('track_mask')  # 9
 
 _PATCH_DATA_VARS: list[str] = [
     'combined_distance', 'd_empirical', 'fcf', 'slope', 'cell_counts',
+    'release_zones', 'runout_angle',
 ]
-_TARGET_VAR: str = 'p_pixelwise'  # soft segmentation target for CNN training
+_TARGET_VAR: str = 'unmasked_p_target'  # soft segmentation target for CNN training
+
+# Synthetic channel indices (after data var channels)
+_NORTHING_CH: int = len(_PATCH_DATA_VARS)      # 7
+_EASTING_CH:  int = len(_PATCH_DATA_VARS) + 1  # 8
+# TRACK_MASK_CHANNEL = len(_PATCH_DATA_VARS) + 2 = 9
 
 # ── Per-channel normalization ─────────────────────────────────────────────────
 # Fixed constants applied in extract_track_patch() so all channels are roughly
 # in the same scale when entering the CNN.  'log1p' means apply np.log1p(|x|)
 # with sign preservation before dividing.
 #
-# Channels not listed here (northing, easting, track_mask) are already in
-# [-1, 1] or {0, 1} and need no scaling.
+# Channels not listed here (release_zones, northing, easting, track_mask) are
+# already in [-1, 1] or {0, 1} and need no scaling.
 _CHANNEL_NORM: dict[str, dict] = {
     'combined_distance': {'scale': 5.0},         # z-scores, ~[-6, 6] → ~[-1.2, 1.2]
     'd_empirical':       {'scale': 5.0},         # dB change, ~[-10, 2] → ~[-2, 0.4]
     'fcf':               {},                      # already [0, 1]
     'slope':             {'scale': 0.6},          # radians, [0, ~1.2] → [0, ~2]
     'cell_counts':       {'log1p': True, 'scale': 5.0},  # heavy right skew → log1p/5
+    'runout_angle':      {'scale': np.pi},        # radians, [0, π] → [0, 1]
 }
 
 
@@ -62,20 +74,26 @@ def _normalize_channel(arr: np.ndarray, var: str) -> np.ndarray:
 
 # ── Static 2D terrain/physical variables — raw values, no probability transforms
 STATIC_FEATURE_VARS: list[str] = [
-    'fcf',         # forest cover fraction              (replaces p_fcf)
-    'cell_counts', # FlowPy flow accumulation           (replaces p_runout)
-    'slope',       # terrain slope angle                (replaces p_slope)
-    'dem',         # elevation
+    'fcf',                # forest cover fraction              (replaces p_fcf)
+    'cell_counts',        # FlowPy flow accumulation           (replaces p_runout)
+    'slope',              # terrain slope angle                (replaces p_slope)
+    'dem',                # elevation
+    'combined_distance',  # ML z-score distance (signed, std devs)
+    'd_empirical',        # combined backscatter change (dB)
+    'release_zones',      # binary release zone mask (fraction in track)
+    'runout_angle',       # debris flow direction (radians)
 ]
 
 # Per-track variable groups: pixel-wise max across all tracks of each type/pol.
 # Keys become the feature prefix; patterns match scene-specific names like
-# p_71_VV_empirical, d_93_VH_ml, etc.
+# p_71_VV_empirical, d_93_VH_ml, sigma_93_VH_ml, etc.
 _PER_TRACK_GROUPS: dict[str, re.Pattern] = {
     'empirical_VV': re.compile(r'^p_\d+_VV_empirical$'),
     'empirical_VH': re.compile(r'^p_\d+_VH_empirical$'),
     'd_ml_VV':      re.compile(r'^d_\d+_VV_ml$'),
     'd_ml_VH':      re.compile(r'^d_\d+_VH_ml$'),
+    'sigma_ml_VV':  re.compile(r'^sigma_\d+_VV_ml$'),
+    'sigma_ml_VH':  re.compile(r'^sigma_\d+_VH_ml$'),
 }
 
 _STATS: dict[str, callable] = {
@@ -225,9 +243,19 @@ def _effective_radius(arr: np.ndarray, mask: np.ndarray, frac: float = 0.5) -> f
     return float(dists[order[hit]])
 
 
-def _pixel_max_da(ds: xr.Dataset, var_list: list[str]) -> xr.DataArray | None:
+def _pixel_agg_da(
+    ds: xr.Dataset, var_list: list[str], agg: str = 'max',
+) -> xr.DataArray | None:
     """
-    Pixel-wise max across a list of same-shaped DataArrays.
+    Pixel-wise aggregation across a list of same-shaped DataArrays.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+    var_list : list[str]
+        Variables to aggregate.
+    agg : {'max', 'mean', 'std'}
+        Aggregation function applied across the stacked axis (orbit dimension).
 
     Returns None if ``var_list`` is empty. Inherits dims/coords and CRS from
     the first variable.
@@ -237,10 +265,22 @@ def _pixel_max_da(ds: xr.Dataset, var_list: list[str]) -> xr.DataArray | None:
     ref = ds[var_list[0]]
     stacked = np.stack([ds[v].values.astype(float) for v in var_list], axis=0)
     with np.errstate(all='ignore'):  # all-NaN slices at scene edges are expected
-        max_arr = np.nanmax(stacked, axis=0)
-    da = xr.DataArray(max_arr, dims=ref.dims, coords=ref.coords)
+        if agg == 'max':
+            arr = np.nanmax(stacked, axis=0)
+        elif agg == 'mean':
+            arr = np.nanmean(stacked, axis=0)
+        elif agg == 'std':
+            arr = np.nanstd(stacked, axis=0)
+        else:
+            raise ValueError(f"Unknown agg={agg!r}")
+    da = xr.DataArray(arr, dims=ref.dims, coords=ref.coords)
     da = da.rio.write_crs(ref.rio.crs)
     return da
+
+
+# Backwards-compatible alias
+def _pixel_max_da(ds: xr.Dataset, var_list: list[str]) -> xr.DataArray | None:
+    return _pixel_agg_da(ds, var_list, agg='max')
 
 
 def extract_track_features(
@@ -302,18 +342,25 @@ def extract_track_features(
     arrays_2d: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
     per_track_keys: list[str] = []
+    # Orbit-level aggregations: max (primary), mean, std (consistency)
+    _ORBIT_AGGS = ['max', 'mean', 'std']
     for group, pattern in _PER_TRACK_GROUPS.items():
         matching = [v for v in ds.data_vars if pattern.match(v)]
         log.debug("extract_track_features: %s → %d vars", group, len(matching))
-        da = _pixel_max_da(ds, matching)
-        if da is None:
-            continue
-        try:
-            arrays[group] = _clip_arr(da, geom)
-            arrays_2d[group] = _clip_2d(da, geom)
-            per_track_keys.append(group)
-        except Exception as exc:
-            log.debug("extract_track_features: clip failed for %s – %s", group, exc)
+        for agg in _ORBIT_AGGS:
+            suffix = f'_{agg}' if agg != 'max' else ''
+            key = f'{group}{suffix}'
+            da = _pixel_agg_da(ds, matching, agg=agg)
+            if da is None:
+                continue
+            try:
+                arrays[key] = _clip_arr(da, geom)
+                if agg == 'max':
+                    # Spatial metrics only on the max aggregation
+                    arrays_2d[group] = _clip_2d(da, geom)
+                    per_track_keys.append(group)
+            except Exception as exc:
+                log.debug("extract_track_features: clip failed for %s – %s", key, exc)
 
     # ── Per-variable aggregate statistics ─────────────────────────────────────
     features: dict[str, float] = {}
@@ -534,7 +581,7 @@ def extract_track_patch(
     out = np.zeros((N_PATCH_CHANNELS, size, size), dtype=np.float32)
     zoom_y, zoom_x = size / H, size / W
 
-    # Channels 0–4: raster data variables (normalized)
+    # Channels 0–N: raster data variables (normalized)
     for ch, var in enumerate(_PATCH_DATA_VARS):
         if var not in ds.data_vars:
             continue
@@ -543,17 +590,17 @@ def extract_track_patch(
         arr = _normalize_channel(arr, var)
         out[ch] = _zoom(arr, (zoom_y, zoom_x), order=1) if arr.shape != (size, size) else arr
 
-    # Channel 5: northing — linear top=+1 → bottom=-1 (constant across all samples)
+    # Northing — linear top=+1 → bottom=-1 (constant across all samples)
     north_vec = np.linspace(1.0, -1.0, size, dtype=np.float32)
-    out[5] = np.broadcast_to(north_vec[:, np.newaxis], (size, size)).copy()
+    out[_NORTHING_CH] = np.broadcast_to(north_vec[:, np.newaxis], (size, size)).copy()
 
-    # Channel 6: easting — linear left=-1 → right=+1
+    # Easting — linear left=-1 → right=+1
     east_vec = np.linspace(-1.0, 1.0, size, dtype=np.float32)
-    out[6] = np.broadcast_to(east_vec[np.newaxis, :], (size, size)).copy()
+    out[_EASTING_CH] = np.broadcast_to(east_vec[np.newaxis, :], (size, size)).copy()
 
-    # Channel 7: polygon mask at target resolution
+    # Track polygon mask at target resolution
     transform = _patch_transform(ref_da, size)
-    out[7] = (~_geom_mask([geom], out_shape=(size, size), transform=transform,
+    out[TRACK_MASK_CHANNEL] = (~_geom_mask([geom], out_shape=(size, size), transform=transform,
                            all_touched=True)).astype(np.float32)
 
     return out
@@ -567,16 +614,16 @@ def extract_track_patch_with_target(
     debris_shapes: gpd.GeoDataFrame | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Extract a patch and its ``p_pixelwise`` soft segmentation target.
+    Extract a patch and its ``unmasked_p_target`` soft segmentation target.
 
     Returns the same ``(C, size, size)`` patch as ``extract_track_patch`` plus a
-    ``(1, size, size)`` target map from ``p_pixelwise``, used for training the
-    segmentation head. If ``p_pixelwise`` is not in the dataset the target is
+    ``(1, size, size)`` target map from ``unmasked_p_target``, used for training the
+    segmentation head. If ``unmasked_p_target`` is not in the dataset the target is
     all zeros.
 
     When ``debris_shapes`` is provided (a GeoDataFrame of manually drawn debris
     polygons), they are rasterized onto the patch grid and blended with the
-    ``p_pixelwise`` target via element-wise max, reinforcing the training signal
+    ``unmasked_p_target`` target via element-wise max, reinforcing the training signal
     with manual annotations.
 
     Parameters
