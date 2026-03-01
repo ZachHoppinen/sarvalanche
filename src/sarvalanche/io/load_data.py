@@ -94,65 +94,6 @@ RTC_RAW_TO_CANONICAL = {
     "PLATFORM": "platform",
 }
 
-# def preallocate_output(times, y, x, dtype, crs, transform, nodata, time_coords=None):
-#     """
-#     Preallocate an xarray.DataArray for output.
-
-#     Parameters
-#     ----------
-#     times : array-like
-#         Time coordinates.
-#     y : array-like
-#         Y coordinates.
-#     x : array-like
-#         X coordinates.
-#     dtype : numpy dtype
-#         Data type of the array.
-#     crs : CRS
-#         Coordinate reference system (pyproj CRS or string).
-#     transform : affine.Affine
-#         Geotransform for rasterio/rioxarray.
-#     time_coords : dict of array-like, optional
-#         Optional coordinates to attach along the time dimension.
-#         Keys are coordinate names, values are arrays of same length as `times`.
-
-#     Returns
-#     -------
-#     xarray.DataArray
-#     """
-#     # in ram
-#     # data = np.full((len(times), len(y), len(x)), nodata, dtype=dtype)
-
-#     # mem mapped
-#     tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.dat')
-#     data = np.memmap(tmp.name, dtype=dtype, mode='w+',
-#                     shape=(len(times), len(y), len(x)))
-
-#     coords = {
-#         "time": times,
-#         "y": y,
-#         "x": x,
-#     }
-
-#     # Add additional time dimension coordinates if provided
-#     if time_coords is not None:
-#         for name, values in time_coords.items():
-#             if len(values) != len(times):
-#                 raise ValueError(f"Length of time coordinate '{name}' ({len(values)}) does not match length of times ({len(times)})")
-#             coords[name] = ("time", values)
-
-#     da = xr.DataArray(
-#         data,
-#         dims=("time", "y", "x"),
-#         coords=coords,
-#     )
-
-#     # Attach spatial reference info (requires rioxarray)
-#     da = da.rio.write_crs(crs)
-#     da = da.rio.write_transform(transform)
-#     da = da.rio.write_nodata(nodata)
-#     return da
-
 tmp_files = []
 
 def _make_mmap(shape, dtype, suffix):
