@@ -37,7 +37,10 @@ from sarvalanche.ml.track_patch_encoder import (
 logging.basicConfig(level=logging.INFO, format='%(asctime)s  %(levelname)s  %(message)s')
 log = logging.getLogger(__name__)
 
-RUNS_DIR = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/sarvalanche_runs')
+RUNS_DIRS = [
+    Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/high_danger_output/sarvalanche_runs'),
+    Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/low_danger_output/sarvalanche_runs'),
+]
 
 EPOCHS       = 24
 BATCH_SIZE   = 64
@@ -224,9 +227,21 @@ def _train_seg_model(
 
 def main() -> None:
     max_seg = TESTING if TESTING else None
-    log.info("Building seg patches from ALL tracks in %s (max_tracks=%s)...", RUNS_DIR, max_seg)
-    patches, targets = build_all_seg_patches(RUNS_DIR, max_tracks=max_seg)
-    log.info("  patches=%s  targets=%s", patches.shape, targets.shape)
+    all_patches, all_targets = [], []
+    for runs_dir in RUNS_DIRS:
+        log.info("Building seg patches from %s (max_tracks=%s)...", runs_dir, max_seg)
+        p, t = build_all_seg_patches(runs_dir, max_tracks=max_seg)
+        log.info("  patches=%s  targets=%s", p.shape, t.shape)
+        if len(p) > 0:
+            all_patches.append(p)
+            all_targets.append(t)
+    if all_patches:
+        patches = np.concatenate(all_patches)
+        targets = np.concatenate(all_targets)
+    else:
+        patches = np.empty((0,))
+        targets = np.empty((0,))
+    log.info("  total patches=%s  targets=%s", patches.shape, targets.shape)
 
     if len(patches) == 0:
         log.error("No patches extracted, aborting.")

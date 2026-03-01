@@ -29,7 +29,7 @@ from scipy.signal import find_peaks
 from shapely.geometry import box, shape
 from tqdm.auto import tqdm
 import sys
-sys.path.append(str(Path('../data_acquisition').resolve()))
+sys.path.append(str(Path(__file__).resolve().parent.parent / 'data_acquisition'))
 from get_forecast_dangers import get_dangers
 from get_avalanche_observations import get_observations
 
@@ -478,8 +478,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Rolling average window in days (default: 7)"
     )
     parser.add_argument(
-        "--out-dir", default="./low_danger_output", metavar="DIR",
-        help="Output directory (default: ./low_danger_output)"
+        "--out-dir", default="/Users/zmhoppinen/Documents/sarvalanche/local/issw/low_danger_output", metavar="DIR",
+        help="Output directory (default: /Users/zmhoppinen/Documents/sarvalanche/local/issw/low_danger_output)"
     )
     parser.add_argument(
         "--no-fetch", action="store_true",
@@ -490,7 +490,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip sarvalanche subprocess calls (useful for dry runs)"
     )
     parser.add_argument(
-        "--existing-runs-dir", default=None, metavar="DIR",
+        "--existing-runs-dir", default="/Users/zmhoppinen/Documents/sarvalanche/local/issw/high_danger_output/sarvalanche_runs", metavar="DIR",
         help="Path to existing sarvalanche_runs/ dir (e.g. from high_danger_runs) "
              "to reuse FlowPy .gpkg and static .nc files"
     )

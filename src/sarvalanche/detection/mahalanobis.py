@@ -14,7 +14,9 @@ from sarvalanche.utils.validation import check_db_linear
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_WEIGHTS = Path(__file__).parent.parent / 'ml' / 'weights' / 'sar_transformer_best.pth'
+from sarvalanche.ml.weight_utils import find_weights
+
+_DEFAULT_WEIGHTS = find_weights("rtc_predictor")
 
 def calculate_ml_distances(
     ds: xr.Dataset,

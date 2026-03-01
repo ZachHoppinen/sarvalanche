@@ -25,7 +25,7 @@ from scipy.signal import find_peaks
 from shapely.geometry import box, shape
 from tqdm.auto import tqdm
 import sys
-sys.path.append(str(Path('../data_acquisition').resolve()))
+sys.path.append(str(Path(__file__).resolve().parent.parent / 'data_acquisition'))
 from get_forecast_dangers import get_dangers
 from get_avalanche_observations import get_observations
 
@@ -455,8 +455,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Rolling average window in days (default: 7)"
     )
     parser.add_argument(
-        "--out-dir", default="./high_danger_output", metavar="DIR",
-        help="Output directory (default: ./high_danger_output)"
+        "--out-dir", default="/Users/zmhoppinen/Documents/sarvalanche/local/issw/high_danger_output", metavar="DIR",
+        help="Output directory (default: /Users/zmhoppinen/Documents/sarvalanche/local/issw/high_danger_output)"
     )
     parser.add_argument(
         "--no-fetch", action="store_true",

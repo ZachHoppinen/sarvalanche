@@ -38,7 +38,10 @@ from sarvalanche.ml.track_patch_encoder import (
 logging.basicConfig(level=logging.INFO, format='%(asctime)s  %(levelname)s  %(message)s')
 log = logging.getLogger(__name__)
 
-RUNS_DIR     = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/sarvalanche_runs')
+RUNS_DIRS    = [
+    Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/high_danger_output/sarvalanche_runs'),
+    Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/low_danger_output/sarvalanche_runs'),
+]
 LABELS_PATH  = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/track_labels.json')
 SHAPES_PATH  = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/debris_shapes.gpkg')
 
@@ -158,11 +161,24 @@ def main() -> None:
     log.info("Labels: %d total (%d positive, %d negative)", len(labels), n_pos, n_neg)
 
     # ── Build labeled seg training set ─────────────────────────────────────────
-    log.info("Building labeled seg patches (shapes_path=%s)...", SHAPES_PATH)
-    patches, targets, y = build_seg_training_set(
-        labels, RUNS_DIR, shapes_path=SHAPES_PATH,
-    )
-    log.info("  patches=%s  targets=%s  labels=%s", patches.shape, targets.shape, y.shape)
+    all_patches, all_targets, all_y = [], [], []
+    for runs_dir in RUNS_DIRS:
+        log.info("Building labeled seg patches from %s (shapes_path=%s)...", runs_dir, SHAPES_PATH)
+        p, t, yi = build_seg_training_set(
+            labels, runs_dir, shapes_path=SHAPES_PATH,
+        )
+        log.info("  patches=%s  targets=%s  labels=%s", p.shape, t.shape, yi.shape)
+        if len(p) > 0:
+            all_patches.append(p)
+            all_targets.append(t)
+            all_y.append(yi)
+    if all_patches:
+        patches = np.concatenate(all_patches)
+        targets = np.concatenate(all_targets)
+        y = pd.concat(all_y, ignore_index=True)
+    else:
+        patches, targets, y = np.empty((0,)), np.empty((0,)), pd.Series(dtype=int)
+    log.info("  total patches=%s  targets=%s  labels=%s", patches.shape, targets.shape, y.shape)
 
     if len(patches) == 0:
         log.error("No patches extracted, aborting.")

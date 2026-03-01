@@ -4,10 +4,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Weights are saved alongside the XGBoost track predictor
+from sarvalanche.ml.weight_utils import find_weights
+
 CNN_ENCODER_DIR:      Path = Path(__file__).parent / 'weights' / 'cnn_debris_detector'
-CNN_ENCODER_PATH:     Path = CNN_ENCODER_DIR / 'track_patch_encoder.pt'
-CNN_SEG_ENCODER_PATH: Path = CNN_ENCODER_DIR / 'track_seg_encoder.pt'
+CNN_ENCODER_PATH:     Path = find_weights("cnn_patch_encoder")
+CNN_SEG_ENCODER_PATH: Path = find_weights("cnn_seg_encoder")
 
 # Must match track_features.N_PATCH_CHANNELS
 _IN_CHANNELS: int = 10

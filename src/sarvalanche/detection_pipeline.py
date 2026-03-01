@@ -203,21 +203,30 @@ def run_detection(
 
     # add in flowpy outputs and generate track list
     track_gpkg = ds_nc.with_suffix('.gpkg') if track_gpkg is None else track_gpkg
-    missing_flowpy_vars = not all(v in ds.data_vars for v in ['cell_counts', 'runout_angle'])
-    needs_flowpy = (
-        overwrite
-        or not track_gpkg.exists()
-        or track_gpkg.stat().st_size == 0
-        or missing_flowpy_vars)
+    _flowpy_vars = ['cell_counts', 'runout_angle', 'release_zones']
+    missing_flowpy_vars = not all(v in ds.data_vars for v in _flowpy_vars)
+    gpkg_exists = track_gpkg.exists() and track_gpkg.stat().st_size > 0
 
-    if needs_flowpy:
+    if not missing_flowpy_vars and gpkg_exists and not overwrite:
+        # Everything already in ds — just load the paths GeoDataFrame
+        paths_gdf = gpd.read_file(track_gpkg)
+    elif gpkg_exists and not overwrite and static_fp is not None and Path(static_fp).exists():
+        # Gpkg exists but flowpy vars missing from this date's ds — load them
+        # from an existing netcdf (static_fp) instead of re-running flowpy
+        log.info('Loading flowpy variables from existing netcdf: %s', static_fp)
+        donor_ds = load_netcdf_to_dataset(Path(static_fp))
+        for v in _flowpy_vars:
+            if v in donor_ds.data_vars:
+                ds[v] = donor_ds[v]
+                ds[v].attrs = donor_ds[v].attrs
+        del donor_ds
+        paths_gdf = gpd.read_file(track_gpkg)
+    else:
+        # No cached flowpy outputs — run from scratch
         ds, paths_gdf = generate_runcount_alpha_angle(ds)
         paths_gdf.to_file(track_gpkg, driver='GPKG')
-        if missing_flowpy_vars:
-            log.info(f'Saving netcdf to {ds_nc}')
-            export_netcdf(ds, ds_nc, overwrite=True)
-    else:
-        paths_gdf = gpd.read_file(track_gpkg)
+        log.info(f'Saving netcdf to {ds_nc}')
+        export_netcdf(ds, ds_nc, overwrite=True)
 
     validate_canonical(ds)
 
