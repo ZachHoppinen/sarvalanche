@@ -296,3 +296,36 @@ def test_extract_track_patch_with_target_debris_shapes():
     _, target_without = extract_track_patch_with_target(row, ds, size=32)
     # Target with shapes should have more nonzero pixels
     assert target_with.sum() >= target_without.sum()
+
+
+# ── row=None (full raster) mode ─────────────────────────────────────────────
+
+
+def test_extract_track_patch_no_geometry():
+    """When row=None, should use full dataset extent with track_mask all ones."""
+    ds = _make_ds()
+    patch = extract_track_patch(None, ds, size=32)
+    assert patch.shape == (N_PATCH_CHANNELS, 32, 32)
+    assert patch.dtype == np.float32
+    # track_mask should be all ones
+    assert np.allclose(patch[TRACK_MASK_CHANNEL], 1.0)
+    # Coordinate channels should still be correct
+    assert abs(patch[_NORTHING_CH, 0, 0] - 1.0) < 1e-5
+    assert abs(patch[_EASTING_CH, 0, -1] - 1.0) < 1e-5
+
+
+def test_extract_track_patch_with_target_no_geometry():
+    """When row=None, should extract patch and target from full raster."""
+    ds = _make_ds()
+    patch, target = extract_track_patch_with_target(None, ds, size=32)
+    assert patch.shape == (N_PATCH_CHANNELS, 32, 32)
+    assert target.shape == (1, 32, 32)
+    assert np.allclose(patch[TRACK_MASK_CHANNEL], 1.0)
+
+
+def test_aggregate_seg_features_no_mask():
+    """When track_mask=None, should aggregate over all pixels."""
+    seg_map = np.array([[0.8, 0.6], [0.3, 0.9]], dtype=np.float32)
+    result = aggregate_seg_features(seg_map)
+    assert abs(result['seg_mean'] - np.mean([0.8, 0.6, 0.3, 0.9])) < 1e-5
+    assert abs(result['seg_max'] - 0.9) < 1e-5

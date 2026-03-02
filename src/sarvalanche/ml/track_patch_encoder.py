@@ -4,14 +4,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from sarvalanche.ml.track_features import N_PATCH_CHANNELS
 from sarvalanche.ml.weight_utils import find_weights
 
 CNN_ENCODER_DIR:      Path = Path(__file__).parent / 'weights' / 'cnn_debris_detector'
 CNN_ENCODER_PATH:     Path = find_weights("cnn_patch_encoder")
 CNN_SEG_ENCODER_PATH: Path = find_weights("cnn_seg_encoder")
-
-# Must match track_features.N_PATCH_CHANNELS
-_IN_CHANNELS: int = 10
 
 
 def _conv_block(in_ch: int, out_ch: int, stride: int = 1) -> nn.Sequential:
@@ -34,23 +32,28 @@ def _up_block(in_ch: int, out_ch: int) -> nn.Sequential:
 
 class TrackSegEncoder(nn.Module):
     """
-    Lightweight U-Net-style CNN for track polygon segmentation.
+    Lightweight U-Net-style CNN for pixel-level debris segmentation.
 
-    Input: ``(B, 8, H, W)`` — eight-channel patch from ``extract_track_patch``.
+    Operates on any multi-channel raster patch — can be applied to a full
+    raster or to a patch clipped around a track polygon.
+
+    Input: ``(B, C, H, W)`` — multi-channel raster patch (default 11 channels
+    from ``extract_track_patch``).
 
     Outputs:
     - ``segment(x)`` / ``forward(x)`` → ``(B, 1, H, W)`` raw segmentation logits
 
     Architecture
     ------------
-    Encoder: three conv blocks (8→16→32→64) with stride-2 downsampling.
+    Encoder: three conv blocks (C→16→32→64) with stride-2 downsampling.
     Decoder: U-Net skip connections, upsamples back to input resolution.
 
-    Channels in order: combined_distance, d_empirical, fcf, slope,
-    cell_counts, northing, easting, track_mask.
+    Default channel order (see ``PATCH_CHANNELS``): combined_distance,
+    d_empirical, fcf, slope, cell_counts, release_zones, runout_angle,
+    water_mask, northing, easting, track_mask.
     """
 
-    def __init__(self, in_channels: int = _IN_CHANNELS):
+    def __init__(self, in_channels: int = N_PATCH_CHANNELS):
         super().__init__()
 
         # ── Encoder (named blocks for skip connections) ──────────────────

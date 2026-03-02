@@ -101,8 +101,9 @@ class TrackSegDataset(Dataset):
         augment: bool = False,
         noise_std: float = 0.03,
     ):
-        self.patches   = np.asarray(patches, dtype=np.float32)
-        self.targets   = np.asarray(targets, dtype=np.float32)
+        # Use np.asarray to preserve memmap backing when dtype already matches
+        self.patches   = patches if patches.dtype == np.float32 else np.asarray(patches, dtype=np.float32)
+        self.targets   = targets if targets.dtype == np.float32 else np.asarray(targets, dtype=np.float32)
         self.labels    = np.asarray(labels, dtype=np.float32) if labels is not None else None
         self.augment   = augment
         self.noise_std = noise_std

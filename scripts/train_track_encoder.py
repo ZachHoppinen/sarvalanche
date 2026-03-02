@@ -21,7 +21,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 from tqdm import tqdm
 
@@ -50,6 +50,7 @@ WEIGHT_DECAY = 1e-4
 MASK_WEIGHT  = 3.0    # extra weight for pixels inside the track polygon
 CHECKPOINT_EVERY = 4  # save checkpoint every N epochs
 TESTING      = False  # set to int to limit seg patches for quick testing
+MAX_PRETRAIN = 10_000 # randomly subsample this many patches for pre-training (None = use all)
 N_VIS        = 6      # number of example patches to visualize each epoch
 VIS_DIR      = CNN_ENCODER_DIR / 'epoch_progress'
 
@@ -144,9 +145,8 @@ def _plot_epoch_examples(
     log.info("  epoch vis saved → %s", out_path)
 
 
-def _train_seg_model(
-    patches: np.ndarray,
-    targets: np.ndarray,
+def _train_seg_model_from_loader(
+    dataset,
     epochs: int,
     vis_patches: np.ndarray | None = None,
     vis_targets: np.ndarray | None = None,
@@ -156,10 +156,9 @@ def _train_seg_model(
 
     Parameters
     ----------
-    patches : np.ndarray of shape (N, C, H, W)
-        Input patches.
-    targets : np.ndarray of shape (N, 1, H, W)
-        Soft segmentation targets (unmasked_p_target).
+    dataset : torch.utils.data.Dataset
+        Dataset yielding (patch, target) tuples. Can be a ConcatDataset
+        of disk-backed TrackSegDatasets.
     epochs : int
         Number of training epochs.
     vis_patches, vis_targets : np.ndarray or None
@@ -176,7 +175,7 @@ def _train_seg_model(
     seg_crit = nn.BCEWithLogitsLoss(reduction='none')
 
     loader = DataLoader(
-        TrackSegDataset(patches, targets, labels=None, augment=True),
+        dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
         drop_last=False,
@@ -226,37 +225,88 @@ def _train_seg_model(
 
 
 def main() -> None:
+    from torch.utils.data import ConcatDataset
+
     max_seg = TESTING if TESTING else None
-    all_patches, all_targets = [], []
-    for runs_dir in RUNS_DIRS:
-        log.info("Building seg patches from %s (max_tracks=%s)...", runs_dir, max_seg)
-        p, t = build_all_seg_patches(runs_dir, max_tracks=max_seg)
+
+    # Use disk-backed binary files to avoid OOM with large patch counts.
+    # Patches are streamed to raw .bin files during extraction, then
+    # memory-mapped read-only for training (only accessed pages are resident).
+    memmap_base = CNN_ENCODER_DIR / 'memmap_cache'
+    memmap_base.mkdir(parents=True, exist_ok=True)
+
+    from sarvalanche.ml.track_features import N_PATCH_CHANNELS
+
+    datasets: list[TrackSegDataset] = []
+    total_patches = 0
+    all_patches_mms = []  # keep references alive for vis sampling
+    SIZE = 64  # patch side length
+
+    for i, runs_dir in enumerate(RUNS_DIRS):
+        mm_dir = memmap_base / f'dir_{i}'
+        patches_fp = mm_dir / 'patches.bin'
+        targets_fp = mm_dir / 'targets.bin'
+
+        # Reuse cached extraction if both .bin files exist and are non-empty
+        if patches_fp.exists() and targets_fp.exists() and patches_fp.stat().st_size > 0:
+            patch_bytes = N_PATCH_CHANNELS * SIZE * SIZE * 4
+            target_bytes = 1 * SIZE * SIZE * 4
+            n_p = patches_fp.stat().st_size // patch_bytes
+            n_t = targets_fp.stat().st_size // target_bytes
+            n = min(n_p, n_t)
+            log.info("Loading cached extraction from %s (%d patches)", mm_dir, n)
+            p = np.memmap(patches_fp, dtype=np.float32, mode='r',
+                          shape=(n, N_PATCH_CHANNELS, SIZE, SIZE))
+            t = np.memmap(targets_fp, dtype=np.float32, mode='r',
+                          shape=(n, 1, SIZE, SIZE))
+        else:
+            log.info("Building seg patches from %s (max_tracks=%s, memmap=%s)...",
+                     runs_dir, max_seg, mm_dir)
+            p, t = build_all_seg_patches(runs_dir, max_tracks=max_seg, memmap_dir=mm_dir)
+
         log.info("  patches=%s  targets=%s", p.shape, t.shape)
         if len(p) > 0:
-            all_patches.append(p)
-            all_targets.append(t)
-    if all_patches:
-        patches = np.concatenate(all_patches)
-        targets = np.concatenate(all_targets)
-    else:
-        patches = np.empty((0,))
-        targets = np.empty((0,))
-    log.info("  total patches=%s  targets=%s", patches.shape, targets.shape)
+            datasets.append(TrackSegDataset(p, t, labels=None, augment=True))
+            all_patches_mms.append((p, t))
+            total_patches += len(p)
 
-    if len(patches) == 0:
+    log.info("  total patches=%d across %d dirs", total_patches, len(datasets))
+
+    if total_patches == 0:
         log.error("No patches extracted, aborting.")
         return
 
-    # Pick fixed examples for per-epoch visualization (spread across dataset)
-    vis_idx = np.linspace(0, len(patches) - 1, N_VIS, dtype=int)
-    vis_patches = patches[vis_idx]
-    vis_targets = targets[vis_idx]
-    log.info("  vis examples: indices %s", vis_idx.tolist())
+    # Pick fixed examples for per-epoch visualization (spread across full dataset)
+    vis_indices = np.linspace(0, total_patches - 1, N_VIS, dtype=int)
+    vis_patches_list, vis_targets_list = [], []
+    for vi in vis_indices:
+        offset = 0
+        for p, t in all_patches_mms:
+            if vi < offset + len(p):
+                vis_patches_list.append(np.array(p[vi - offset]))
+                vis_targets_list.append(np.array(t[vi - offset]))
+                break
+            offset += len(p)
+    vis_patches = np.stack(vis_patches_list)
+    vis_targets = np.stack(vis_targets_list)
+    log.info("  vis examples: indices %s", vis_indices.tolist())
+
+    # Combine datasets without copying data
+    combined_ds = ConcatDataset(datasets) if len(datasets) > 1 else datasets[0]
+
+    # Subsample to MAX_PRETRAIN patches if the full set is too large
+    if MAX_PRETRAIN is not None and total_patches > MAX_PRETRAIN:
+        rng = np.random.default_rng(42)
+        subset_idx = rng.choice(total_patches, size=MAX_PRETRAIN, replace=False)
+        subset_idx.sort()  # sequential access is friendlier to memmap
+        combined_ds = Subset(combined_ds, subset_idx.tolist())
+        log.info("  subsampled %d → %d patches for pre-training", total_patches, MAX_PRETRAIN)
+        total_patches = MAX_PRETRAIN
 
     log.info("Training seg model (%d patches, %d epochs, batch_size=%d)...",
-             len(patches), EPOCHS, BATCH_SIZE)
-    model = _train_seg_model(patches, targets, EPOCHS,
-                             vis_patches=vis_patches, vis_targets=vis_targets)
+             total_patches, EPOCHS, BATCH_SIZE)
+    model = _train_seg_model_from_loader(combined_ds, EPOCHS,
+                                          vis_patches=vis_patches, vis_targets=vis_targets)
 
     CNN_ENCODER_DIR.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), CNN_SEG_ENCODER_PATH)

@@ -31,7 +31,10 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s  %(name)s – %(me
 log = logging.getLogger(__name__)
 
 LABELS_PATH = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/track_labels.json')
-RUNS_DIR    = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/sarvalanche_runs')
+RUNS_DIRS   = [
+    Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/high_danger_output/sarvalanche_runs'),
+    Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/low_danger_output/sarvalanche_runs'),
+]
 
 # ── Load labels ───────────────────────────────────────────────────────────────
 with open(LABELS_PATH) as f:
@@ -45,7 +48,10 @@ for v in labels.values():
 log.info("Raw label distribution: %s  (threshold for debris: >=%d)", label_counts, BINARY_THRESHOLD)
 
 # ── Build feature matrix ──────────────────────────────────────────────────────
-X, y = build_training_set(labels, RUNS_DIR)
+parts = [build_training_set(labels, d) for d in RUNS_DIRS]
+parts = [(X_i, y_i) for X_i, y_i in parts if len(X_i) > 0]
+X = pd.concat([p[0] for p in parts])
+y = pd.concat([p[1] for p in parts])
 log.info("Feature matrix: %d rows × %d cols", *X.shape)
 log.info("Class balance:  %s", y.value_counts().to_dict())
 

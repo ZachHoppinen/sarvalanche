@@ -94,14 +94,38 @@ RTC_RAW_TO_CANONICAL = {
     "PLATFORM": "platform",
 }
 
-tmp_files = []
+tmp_files: list[str] = []
+
+log = logging.getLogger(__name__)
 
 def _make_mmap(shape, dtype, suffix):
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     tmp_files.append(tmp.name)
     return np.memmap(tmp.name, dtype=dtype, mode='w+', shape=shape)
 
-atexit.register(lambda: [os.unlink(f) for f in tmp_files if os.path.exists(f)])
+
+def cleanup_temp_files() -> int:
+    """Delete all memmap temp files created by ``_make_mmap``.
+
+    Call this after each pipeline run (once the dataset has been exported
+    to netCDF) to avoid accumulating 7-11 GB temp files across runs.
+
+    Returns the number of files removed.
+    """
+    removed = 0
+    while tmp_files:
+        fp = tmp_files.pop()
+        try:
+            os.unlink(fp)
+            removed += 1
+        except OSError:
+            pass
+    if removed:
+        log.debug("cleanup_temp_files: removed %d temp memmap files", removed)
+    return removed
+
+
+atexit.register(cleanup_temp_files)
 
 def read_rtc_attrs(fp):
     attrs = {}

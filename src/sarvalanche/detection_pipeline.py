@@ -311,6 +311,8 @@ def run_detection(
     # ── Cleanup: release large in-memory objects before returning ────────────
     # flowpy and SAR stacking leave large arrays allocated; explicit cleanup
     # prevents OOM kills when running multiple zones back-to-back
+    from sarvalanche.io.load_data import cleanup_temp_files
+    cleanup_temp_files()
     import gc
     gc.collect()
 

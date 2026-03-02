@@ -14,6 +14,7 @@ from xgboost import XGBClassifier
 from sarvalanche.ml.track_features import (
     STATIC_FEATURE_VARS,
     TRACK_MASK_CHANNEL,
+    _PER_TRACK_GROUPS,
     aggregate_seg_features,
     extract_track_features,
     extract_track_patch,
@@ -31,15 +32,8 @@ TRACK_PREDICTOR_MODEL: Path = find_weights("track_classifier")
 BINARY_THRESHOLD: int = 2
 
 
-def _load_ds(nc_path: Path, target_crs) -> xr.Dataset:
-    """Load all 2D (y, x) variables from a run NetCDF, reprojecting to target_crs.
-
-    Loading all 2D vars ensures that scene-specific per-track variables
-    (e.g. ``p_71_VV_empirical``, ``d_93_VH_ml``) are available for dynamic
-    discovery in ``extract_track_features``, regardless of orbit IDs.
-
-    The run NetCDFs are stored in EPSG:4326; CRS metadata is written before
-    reprojecting so rioxarray can perform the transformation correctly.
+def _load_ds(nc_path: Path, target_crs, var_whitelist: list[str] | None = None) -> xr.Dataset:
+    """Load 2D (y, x) variables from a run NetCDF, reprojecting to target_crs.
 
     Parameters
     ----------
@@ -47,23 +41,43 @@ def _load_ds(nc_path: Path, target_crs) -> xr.Dataset:
         Path to a ``*_YYYY-MM-DD.nc`` run file.
     target_crs :
         Any CRS accepted by rioxarray (e.g. ``gdf.crs``). Typically EPSG:32611.
+    var_whitelist : list[str] or None
+        If provided, only load these variables (intersected with available 2D
+        vars). Otherwise loads all 2D vars, which can use excessive memory for
+        files with many orbit-specific variables.
 
     Returns
     -------
     xr.Dataset
-        Dataset in ``target_crs`` containing all 2D variables.
+        Dataset in ``target_crs`` containing the requested 2D variables.
     """
+    import gc
+
     ds_peek = xr.open_dataset(nc_path)
     load_vars = [v for v in ds_peek.data_vars if ds_peek[v].dims == ('y', 'x')]
     ds_peek.close()
 
-    ds = (
-        xr.open_dataset(nc_path)[load_vars]
-        .astype(float)
-        .rio.write_crs('EPSG:4326')
-        .rio.reproject(target_crs)
-    )
-    log.debug("_load_ds: loaded %s — %d 2D vars", nc_path.name, len(load_vars))
+    if var_whitelist is not None:
+        available = set(load_vars)
+        load_vars = [v for v in var_whitelist if v in available]
+
+    # Reproject one variable at a time to reduce peak memory
+    reprojected = {}
+    for var in load_vars:
+        da = (
+            xr.open_dataset(nc_path)[[var]]
+            .astype(np.float32)
+            .rio.write_crs('EPSG:4326')
+            .rio.reproject(target_crs)
+        )
+        reprojected[var] = da[var]
+        da.close()
+        gc.collect()
+
+    ds = xr.Dataset(reprojected)
+    log.debug("_load_ds: loaded %s — %d vars (%.0f MB)",
+              nc_path.name, len(load_vars),
+              sum(ds[v].nbytes for v in ds.data_vars) / 1e6)
     return ds
 
 
@@ -102,7 +116,13 @@ def build_training_set(
     1    38
     0    17
     """
-    # Group by file to minimise expensive reproject calls
+    # Build zone → gpkg lookup (gpkg may only exist for one date per zone)
+    zone_to_gpkg: dict[str, Path] = {}
+    for gpkg_path in runs_dir.glob('*.gpkg'):
+        zone = _zone_from_gpkg(gpkg_path)
+        zone_to_gpkg[zone] = gpkg_path
+
+    # Group labels by (zone, date) to minimise expensive reproject calls
     by_file: dict[str, list] = {}
     for key, meta in labels.items():
         stem = f"{meta['zone']}_{meta['date']}"
@@ -110,18 +130,25 @@ def build_training_set(
 
     rows: list[dict] = []
     for stem, entries in by_file.items():
-        gpkg_path = runs_dir / f"{stem}.gpkg"
+        zone = entries[0][1]['zone']
         nc_path = runs_dir / f"{stem}.nc"
-        if not gpkg_path.exists() or not nc_path.exists():
+        gpkg_path = zone_to_gpkg.get(zone)
+        if gpkg_path is None or not nc_path.exists():
             log.warning("build_training_set: missing files for %s, skipping", stem)
             continue
 
         log.info("build_training_set: extracting features from %s (%d tracks)",
                  stem, len(entries))
         gdf = gpd.read_file(gpkg_path)
-        ds = _load_ds(nc_path, gdf.crs)
+        # Discover which vars are needed: static + aspect + per-track orbit vars
+        ds_peek = xr.open_dataset(nc_path)
+        needed = set(STATIC_FEATURE_VARS) | {'aspect'}
+        for pattern in _PER_TRACK_GROUPS.values():
+            needed |= {v for v in ds_peek.data_vars if pattern.match(v)}
+        ds_peek.close()
+        ds = _load_ds(nc_path, gdf.crs, var_whitelist=list(needed))
 
-        for key, meta in tqdm(entries, desc=stem, unit="trk"):
+        for ti, (key, meta) in enumerate(tqdm(entries, desc=stem, unit="trk")):
             idx = meta['track_idx']
             if idx not in gdf.index:
                 log.warning("build_training_set: track %d not in %s, skipping", idx, stem)
@@ -130,8 +157,16 @@ def build_training_set(
             feats['_key'] = key
             feats['_label'] = meta['label']
             rows.append(feats)
+            if (ti + 1) % 20 == 0:
+                import gc; gc.collect()
 
         ds.close()
+        del ds
+        import gc; gc.collect()
+
+    if not rows:
+        log.warning("build_training_set: no matching tracks found in %s", runs_dir)
+        return pd.DataFrame(), pd.Series([], name='debris', dtype=int)
 
     df = pd.DataFrame(rows).set_index('_key')
     y = (df.pop('_label') >= BINARY_THRESHOLD).astype(int).rename('debris')
@@ -366,6 +401,12 @@ def build_seg_training_set(
             log.info("build_seg_training_set: loaded %d debris shapes (%d keys)",
                      len(all_shapes), len(shapes_by_key))
 
+    # Build zone → gpkg lookup (gpkg may only exist for one date per zone)
+    zone_to_gpkg: dict[str, Path] = {}
+    for gpkg_path in runs_dir.glob('*.gpkg'):
+        zone = _zone_from_gpkg(gpkg_path)
+        zone_to_gpkg[zone] = gpkg_path
+
     by_file: dict[str, list] = {}
     for key, meta in labels.items():
         stem = f"{meta['zone']}_{meta['date']}"
@@ -377,9 +418,10 @@ def build_seg_training_set(
     label_list:  list[int]        = []
 
     for stem, entries in by_file.items():
-        gpkg_path = runs_dir / f"{stem}.gpkg"
+        zone = entries[0][1]['zone']
         nc_path   = runs_dir / f"{stem}.nc"
-        if not gpkg_path.exists() or not nc_path.exists():
+        gpkg_path = zone_to_gpkg.get(zone)
+        if gpkg_path is None or not nc_path.exists():
             log.warning("build_seg_training_set: missing files for %s, skipping", stem)
             continue
 
@@ -444,6 +486,7 @@ def build_all_seg_patches(
     runs_dir: Path,
     size: int = 64,
     max_tracks: int | None = None,
+    memmap_dir: Path | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Extract patches and pixel-wise soft targets for *all* tracks across all dates.
@@ -464,6 +507,11 @@ def build_all_seg_patches(
         Output patch side length in pixels.
     max_tracks : int or None
         If set, stop after extracting this many patches (for quick testing).
+    memmap_dir : Path or None
+        Directory for disk-backed memmap arrays. When provided, patches are
+        written incrementally to ``patches.npy`` / ``targets.npy`` on disk
+        instead of being accumulated in RAM. The returned arrays are
+        memory-mapped views. If None, falls back to in-memory accumulation.
 
     Returns
     -------
@@ -472,7 +520,10 @@ def build_all_seg_patches(
     """
     from tqdm import tqdm
 
-    from sarvalanche.ml.track_features import N_PATCH_CHANNELS
+    from sarvalanche.ml.track_features import N_PATCH_CHANNELS, _PATCH_DATA_VARS, _TARGET_VAR
+
+    # Only load variables needed for patch extraction (not all 50+ 2D vars)
+    _SEG_VARS = list(_PATCH_DATA_VARS) + [_TARGET_VAR]
 
     gpkg_paths = sorted(runs_dir.glob('*.gpkg'))
     if not gpkg_paths:
@@ -489,10 +540,28 @@ def build_all_seg_patches(
         zone = _zone_from_gpkg(nc)
         nc_by_zone.setdefault(zone, []).append(nc)
 
-    patch_list: list[np.ndarray] = []
-    target_list: list[np.ndarray] = []
+    # ── Disk-backed extraction using raw binary files ─────────────────────
+    # Writing via open_memmap dirties every page and causes OOM on macOS.
+    # Instead, stream patches as raw bytes to a binary file, then memmap
+    # the result read-only for training (random access only touches a few
+    # pages at a time).
+    use_disk = memmap_dir is not None
+    if use_disk:
+        memmap_dir = Path(memmap_dir)
+        memmap_dir.mkdir(parents=True, exist_ok=True)
+        patches_fp = memmap_dir / 'patches.bin'
+        targets_fp = memmap_dir / 'targets.bin'
+        patch_fh = open(patches_fp, 'wb')
+        target_fh = open(targets_fp, 'wb')
+        write_count = 0
+    else:
+        patch_list: list[np.ndarray] = []
+        target_list: list[np.ndarray] = []
 
+    done = False
     for gpkg_path in gpkg_paths:
+        if done:
+            break
         zone = _zone_from_gpkg(gpkg_path)
         nc_paths = nc_by_zone.get(zone, [])
         if not nc_paths:
@@ -502,6 +571,8 @@ def build_all_seg_patches(
         gdf = gpd.read_file(gpkg_path)
 
         for nc_path in nc_paths:
+            if done:
+                break
             # Skip nc files that lack unmasked_p_target (e.g. early incomplete runs)
             ds_peek = xr.open_dataset(nc_path)
             has_target = 'unmasked_p_target' in ds_peek.data_vars
@@ -511,7 +582,7 @@ def build_all_seg_patches(
                          nc_path.name)
                 continue
 
-            ds = _load_ds(nc_path, gdf.crs)
+            ds = _load_ds(nc_path, gdf.crs, var_whitelist=_SEG_VARS)
             desc = f"{zone} | {nc_path.stem.split('_')[-1]}"
             log.info("build_all_seg_patches: %d tracks x %s", len(gdf), nc_path.name)
 
@@ -524,26 +595,78 @@ def build_all_seg_patches(
                     log.debug("build_all_seg_patches: failed on track %d in %s",
                               idx, nc_path.name, exc_info=True)
                     continue
-                patch_list.append(patch)
-                target_list.append(target)
-                if max_tracks is not None and len(patch_list) >= max_tracks:
+
+                if use_disk:
+                    expected_p = (N_PATCH_CHANNELS, size, size)
+                    expected_t = (1, size, size)
+                    if patch.shape != expected_p or target.shape != expected_t:
+                        log.debug("build_all_seg_patches: skipping track %d — "
+                                  "patch shape %s (expected %s), target shape %s (expected %s)",
+                                  idx, patch.shape, expected_p, target.shape, expected_t)
+                        continue
+                    patch_fh.write(patch.astype(np.float32).tobytes())
+                    target_fh.write(target.astype(np.float32).tobytes())
+                    write_count += 1
+                else:
+                    patch_list.append(patch)
+                    target_list.append(target)
+
+                count = write_count if use_disk else len(patch_list)
+                if max_tracks is not None and count >= max_tracks:
+                    done = True
+                    log.info("build_all_seg_patches: hit max_tracks=%d, stopping early", max_tracks)
                     break
 
             ds.close()
-            if max_tracks is not None and len(patch_list) >= max_tracks:
-                log.info("build_all_seg_patches: hit max_tracks=%d, stopping early", max_tracks)
-                break
-        if max_tracks is not None and len(patch_list) >= max_tracks:
-            break
+            del ds
+            import gc; gc.collect()
 
-    if not patch_list:
-        return (
-            np.empty((0, N_PATCH_CHANNELS, size, size), dtype=np.float32),
-            np.empty((0, 1, size, size), dtype=np.float32),
+    # ── Return results ──────────────────────────────────────────────────────
+    if use_disk:
+        patch_fh.close()
+        target_fh.close()
+
+        if write_count == 0:
+            patches_fp.unlink(missing_ok=True)
+            targets_fp.unlink(missing_ok=True)
+            return (
+                np.empty((0, N_PATCH_CHANNELS, size, size), dtype=np.float32),
+                np.empty((0, 1, size, size), dtype=np.float32),
+            )
+
+        # Memory-map the raw binary files as read-only for training.
+        # Only pages accessed by the DataLoader will be resident.
+        # Verify file sizes match write_count to catch shape mismatches.
+        patch_bytes = N_PATCH_CHANNELS * size * size * 4
+        target_bytes = 1 * size * size * 4
+        actual_p = patches_fp.stat().st_size // patch_bytes
+        actual_t = targets_fp.stat().st_size // target_bytes
+        if actual_p != write_count or actual_t != write_count:
+            log.warning("build_all_seg_patches: file size mismatch — "
+                        "write_count=%d, patch_file=%d, target_file=%d. Using min.",
+                        write_count, actual_p, actual_t)
+            write_count = min(actual_p, actual_t)
+
+        patches_out = np.memmap(
+            patches_fp, dtype=np.float32, mode='r',
+            shape=(write_count, N_PATCH_CHANNELS, size, size),
         )
-
-    patches = np.stack(patch_list, axis=0)
-    targets = np.stack(target_list, axis=0)
-    log.info("build_all_seg_patches: %d total patches (%d zones, %d nc files)",
-             len(patches), len(gpkg_paths), sum(1 for ncs in nc_by_zone.values() for _ in ncs))
-    return patches, targets
+        targets_out = np.memmap(
+            targets_fp, dtype=np.float32, mode='r',
+            shape=(write_count, 1, size, size),
+        )
+        log.info("build_all_seg_patches: %d patches written to disk (%s, %.1f GB)",
+                 write_count, memmap_dir,
+                 patches_fp.stat().st_size / 1e9 + targets_fp.stat().st_size / 1e9)
+        return patches_out, targets_out
+    else:
+        if not patch_list:
+            return (
+                np.empty((0, N_PATCH_CHANNELS, size, size), dtype=np.float32),
+                np.empty((0, 1, size, size), dtype=np.float32),
+            )
+        patches = np.stack(patch_list, axis=0)
+        targets = np.stack(target_list, axis=0)
+        log.info("build_all_seg_patches: %d total patches (%d zones, %d nc files)",
+                 len(patches), len(gpkg_paths), sum(1 for ncs in nc_by_zone.values() for _ in ncs))
+        return patches, targets

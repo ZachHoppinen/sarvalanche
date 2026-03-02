@@ -25,6 +25,7 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
 import requests
+import xarray as xr
 from scipy.signal import find_peaks
 from shapely.geometry import box, shape
 from tqdm.auto import tqdm
@@ -168,12 +169,15 @@ def find_low_danger_periods(
     min_distance: int    = 14,
     rolling_window: int  = 7,
     allowed_months: set  = ALLOWED_MONTHS,
+    high_danger_threshold: float = 3.0,
+    min_days_from_high: int = 0,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Identify low-danger trough days from the danger forecast timeseries.
 
     Inverts the rolling-mean danger signal and finds peaks in the inverted
-    signal, then filters to Dec/Jan/Feb and returns the N lowest.
+    signal, then filters to Dec/Jan/Feb and ranks by a composite score that
+    balances low danger with maximum distance from level 3+ danger days.
 
     Parameters
     ----------
@@ -182,12 +186,15 @@ def find_low_danger_periods(
     min_distance    : Minimum days between trough dates
     rolling_window  : Days for rolling average
     allowed_months  : Only keep troughs in these months (default: {12, 1, 2})
+    high_danger_threshold : Danger level considered "high" (default: 3.0)
+    min_days_from_high : Hard minimum days from any high-danger day (default: 0,
+                         i.e. no hard cutoff — just use scoring)
 
     Returns
     -------
     (daily_df, trough_dates_df)
       daily_df        — daily averaged danger with rolling mean
-      trough_dates_df — rows for each detected trough, sorted by danger ascending
+      trough_dates_df — rows for each detected trough, sorted by composite score
     """
     df = dangers_df.copy()
     df["date"] = pd.to_datetime(df["date"])
@@ -211,6 +218,22 @@ def find_low_danger_periods(
         rolling_window, center=True, min_periods=3
     ).mean()
 
+    # Identify high-danger days (rolling mean >= threshold)
+    high_danger_days = daily.loc[
+        daily["rolling_7d"] >= high_danger_threshold, "date"
+    ].values
+
+    # Compute distance to nearest high-danger day for every day
+    if len(high_danger_days) > 0:
+        high_ts = high_danger_days.astype("datetime64[D]").astype(int)
+        daily_ts = daily["date"].values.astype("datetime64[D]").astype(int)
+        # Min absolute distance in days to any high-danger day
+        daily["days_from_high"] = [
+            int(min(abs(d - h) for h in high_ts)) for d in daily_ts
+        ]
+    else:
+        daily["days_from_high"] = 999
+
     # Find troughs by detecting peaks in the inverted signal
     inverted = -daily["rolling_7d"].fillna(0)
     peaks, props = find_peaks(
@@ -219,20 +242,57 @@ def find_low_danger_periods(
         prominence=0.1,
     )
 
-    trough_dates = daily.iloc[peaks][["date", "rolling_7d"]].copy()
+    trough_dates = daily.iloc[peaks][["date", "rolling_7d", "days_from_high"]].copy()
 
     # Filter to allowed months (Dec/Jan/Feb)
     trough_dates = trough_dates[
         trough_dates["date"].dt.month.isin(allowed_months)
     ].copy()
 
-    # Sort by danger ascending (lowest first) and take top N
-    trough_dates = (
-        trough_dates
-        .sort_values("rolling_7d", ascending=True)
-        .head(n_periods)
-        .reset_index(drop=True)
-    )
+    # OPERA RTC-S1 data starts late 2022; drop anything before Oct 2022
+    trough_dates = trough_dates[trough_dates["date"] >= "2022-10-01"].copy()
+
+    # Apply hard minimum distance from high-danger days if set
+    if min_days_from_high > 0:
+        before = len(trough_dates)
+        trough_dates = trough_dates[
+            trough_dates["days_from_high"] >= min_days_from_high
+        ].copy()
+        dropped = before - len(trough_dates)
+        if dropped > 0:
+            log.info(
+                "Dropped %d troughs within %d days of high-danger days",
+                dropped, min_days_from_high,
+            )
+
+    # Composite score: rank by normalized danger (lower=better) and
+    # normalized distance from high danger (higher=better).
+    # Score = danger_rank_norm + distance_rank_norm  (lower is better)
+    n = len(trough_dates)
+    if n > 0:
+        danger_rank = trough_dates["rolling_7d"].rank(method="min")
+        dist_rank = trough_dates["days_from_high"].rank(method="min", ascending=False)
+        trough_dates["score"] = danger_rank / n + dist_rank / n
+
+        # Assign winter season (Oct–Apr → year of the October)
+        m = trough_dates["date"].dt.month
+        y = trough_dates["date"].dt.year
+        trough_dates["winter"] = y - (m <= 9).astype(int)
+
+        # Pick the best (lowest score) trough from each winter
+        trough_dates = (
+            trough_dates
+            .sort_values("score")
+            .groupby("winter", sort=False)
+            .first()
+            .reset_index()
+            .sort_values("score")
+            .head(n_periods)
+            .reset_index(drop=True)
+        )
+    else:
+        trough_dates["score"] = []
+        trough_dates["winter"] = []
 
     return daily, trough_dates
 
@@ -396,11 +456,25 @@ def run_sarvalanche_for_troughs(
         search_dirs.append(existing_runs_dir)
         log.info("Will also search %s for existing .gpkg / .nc files", existing_runs_dir)
 
+    _REQUIRED_STATIC = {"dem", "slope", "aspect", "fcf"}
+
     def _find_existing(safe_name: str, suffix: str) -> Path | None:
-        """Search all candidate dirs for an existing file matching zone name."""
+        """Search all candidate dirs for an existing file matching zone name.
+
+        For .nc files used as static_fp, verify the file actually contains the
+        required static layers (some runs only have VV/VH).
+        """
         for d in search_dirs:
-            match = next(d.glob(f"*{safe_name}*{suffix}"), None)
-            if match is not None:
+            for match in sorted(d.glob(f"*{safe_name}*{suffix}")):
+                if suffix == ".nc":
+                    try:
+                        ds = xr.open_dataset(match)
+                        has_static = _REQUIRED_STATIC.issubset(set(ds.data_vars))
+                        ds.close()
+                        if not has_static:
+                            continue
+                    except Exception:
+                        continue
                 return match
         return None
 
@@ -482,6 +556,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Output directory (default: /Users/zmhoppinen/Documents/sarvalanche/local/issw/low_danger_output)"
     )
     parser.add_argument(
+        "--min-days-from-high", type=int, default=20, metavar="DAYS",
+        help="Hard minimum days from any level 3+ danger day (default: 20)"
+    )
+    parser.add_argument(
         "--no-fetch", action="store_true",
         help="Skip API calls and load cached CSVs from --out-dir"
     )
@@ -517,9 +595,10 @@ def main():
     # ── 2. Detect low-danger troughs (Dec/Jan/Feb only) ──────────────────────
     daily, trough_dates = find_low_danger_periods(
         dangers_df,
-        n_periods      = args.n_periods,
-        min_distance   = args.min_distance,
-        rolling_window = args.rolling_window,
+        n_periods          = args.n_periods,
+        min_distance       = args.min_distance,
+        rolling_window     = args.rolling_window,
+        min_days_from_high = args.min_days_from_high,
     )
 
     print(f"\nTop low-danger periods ({len(trough_dates)} troughs, Dec-Feb only):")

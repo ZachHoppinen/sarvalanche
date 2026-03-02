@@ -1,6 +1,7 @@
 import itertools
 import logging
 import re
+import warnings
 
 import numpy as np
 import geopandas as gpd
@@ -24,16 +25,17 @@ PATCH_CHANNELS: list[str] = [
     'cell_counts',           # 4 — FlowPy runout cell counts
     'release_zones',         # 5 — binary release zone mask
     'runout_angle',          # 6 — debris flow direction (radians)
-    'northing',              # 7 — relative y position in patch, [-1 (bottom), +1 (top)]
-    'easting',               # 8 — relative x position in patch, [-1 (left), +1 (right)]
-    'track_mask',            # 9 — 1 inside track polygon, 0 outside
+    'water_mask',            # 7 — binary water body mask
+    'northing',              # 8 — relative y position in patch, [-1 (bottom), +1 (top)]
+    'easting',               # 9 — relative x position in patch, [-1 (left), +1 (right)]
+    'track_mask',            # 10 — 1 inside track polygon, 0 outside
 ]
 N_PATCH_CHANNELS: int = len(PATCH_CHANNELS)  # 10
 TRACK_MASK_CHANNEL: int = PATCH_CHANNELS.index('track_mask')  # 9
 
 _PATCH_DATA_VARS: list[str] = [
     'combined_distance', 'd_empirical', 'fcf', 'slope', 'cell_counts',
-    'release_zones', 'runout_angle',
+    'release_zones', 'runout_angle', 'water_mask',
 ]
 _TARGET_VAR: str = 'unmasked_p_target'  # soft segmentation target for CNN training
 
@@ -264,7 +266,8 @@ def _pixel_agg_da(
         return None
     ref = ds[var_list[0]]
     stacked = np.stack([ds[v].values.astype(float) for v in var_list], axis=0)
-    with np.errstate(all='ignore'):  # all-NaN slices at scene edges are expected
+    with np.errstate(all='ignore'), warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)  # all-NaN slices at scene edges
         if agg == 'max':
             arr = np.nanmax(stacked, axis=0)
         elif agg == 'mean':
@@ -527,16 +530,22 @@ def _patch_transform(ref_da: xr.DataArray, size: int):
 
 
 def extract_track_patch(
-    row: gpd.GeoSeries,
+    row: gpd.GeoSeries | None,
     ds: xr.Dataset,
     size: int = 64,
-    buffer: float = 500.0,
+    buffer: float = 1000.0,
 ) -> np.ndarray:
     """
-    Extract a (C, size, size) float32 raster patch centred on a track polygon.
+    Extract a (C, size, size) float32 raster patch from a dataset.
 
-    Channel order matches ``PATCH_CHANNELS`` (indices 0-7):
+    When ``row`` is provided the patch is centred on the track polygon's
+    bounding box (plus ``buffer``).  When ``row`` is ``None`` the full
+    dataset extent is used and the ``track_mask`` channel is set to all-ones,
+    making the model operate on the entire raster.
+
+    Channel order matches ``PATCH_CHANNELS`` (indices 0-10):
     combined_distance, d_empirical, fcf, slope, cell_counts,
+    release_zones, runout_angle, water_mask,
     northing (top=+1, bottom=-1), easting (left=-1, right=+1), track_mask.
 
     Northing and easting are always the canonical coordinate grid and are
@@ -544,26 +553,31 @@ def extract_track_patch(
 
     Parameters
     ----------
-    row : gpd.GeoSeries
+    row : gpd.GeoSeries or None
         Single track row; ``.geometry`` must be in the same CRS as ``ds``.
+        Pass ``None`` to use the full dataset extent.
     ds : xr.Dataset
-        Dataset reprojected to match the track CRS.
+        Dataset (optionally reprojected to match the track CRS).
     size : int
         Square output patch side length in pixels.
     buffer : float
         Context buffer in CRS units (metres for UTM) around the track bbox.
+        Ignored when ``row`` is None.
 
     Returns
     -------
     np.ndarray of shape (N_PATCH_CHANNELS, size, size)
     """
-    geom = row.geometry
-    minx, miny, maxx, maxy = geom.bounds
+    geom = row.geometry if row is not None else None
 
-    clip_sel = dict(
-        x=slice(minx - buffer, maxx + buffer),
-        y=slice(maxy + buffer, miny - buffer),  # y descending (raster convention)
-    )
+    if geom is not None:
+        minx, miny, maxx, maxy = geom.bounds
+        clip_sel = dict(
+            x=slice(minx - buffer, maxx + buffer),
+            y=slice(maxy + buffer, miny - buffer),  # y descending (raster convention)
+        )
+    else:
+        clip_sel = {}
 
     # Find a reference variable to determine native clipped shape
     ref_var = next((v for v in _PATCH_DATA_VARS if v in ds.data_vars), None)
@@ -598,19 +612,22 @@ def extract_track_patch(
     east_vec = np.linspace(-1.0, 1.0, size, dtype=np.float32)
     out[_EASTING_CH] = np.broadcast_to(east_vec[np.newaxis, :], (size, size)).copy()
 
-    # Track polygon mask at target resolution
-    transform = _patch_transform(ref_da, size)
-    out[TRACK_MASK_CHANNEL] = (~_geom_mask([geom], out_shape=(size, size), transform=transform,
-                           all_touched=True)).astype(np.float32)
+    # Track polygon mask at target resolution (all-ones when no geometry)
+    if geom is not None:
+        transform = _patch_transform(ref_da, size)
+        out[TRACK_MASK_CHANNEL] = (~_geom_mask([geom], out_shape=(size, size), transform=transform,
+                               all_touched=True)).astype(np.float32)
+    else:
+        out[TRACK_MASK_CHANNEL] = 1.0
 
     return out
 
 
 def extract_track_patch_with_target(
-    row: gpd.GeoSeries,
+    row: gpd.GeoSeries | None,
     ds: xr.Dataset,
     size: int = 64,
-    buffer: float = 500.0,
+    buffer: float = 1000.0,
     debris_shapes: gpd.GeoDataFrame | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
@@ -628,11 +645,14 @@ def extract_track_patch_with_target(
 
     Parameters
     ----------
-    row, ds, size, buffer
+    row : gpd.GeoSeries or None
+        Same as ``extract_track_patch``.  Pass ``None`` to use the full
+        dataset extent.
+    ds, size, buffer
         Same as ``extract_track_patch``.
     debris_shapes : gpd.GeoDataFrame or None
-        Optional drawn debris polygons for this track. Must be in the same CRS
-        as ``ds``. Geometries that don't intersect the patch are harmless.
+        Optional drawn debris polygons. Must be in the same CRS as ``ds``.
+        Geometries that don't intersect the patch are harmless.
 
     Returns
     -------
@@ -646,12 +666,16 @@ def extract_track_patch_with_target(
         log.debug("extract_track_patch_with_target: %s not in dataset", _TARGET_VAR)
         return patch, target
 
-    geom = row.geometry
-    minx, miny, maxx, maxy = geom.bounds
-    clip_sel = dict(
-        x=slice(minx - buffer, maxx + buffer),
-        y=slice(maxy + buffer, miny - buffer),
-    )
+    geom = row.geometry if row is not None else None
+
+    if geom is not None:
+        minx, miny, maxx, maxy = geom.bounds
+        clip_sel = dict(
+            x=slice(minx - buffer, maxx + buffer),
+            y=slice(maxy + buffer, miny - buffer),
+        )
+    else:
+        clip_sel = {}
 
     ref_var = next((v for v in _PATCH_DATA_VARS if v in ds.data_vars), None)
     ref_da = ds[ref_var].sel(**clip_sel) if ref_var else None
@@ -686,23 +710,30 @@ _SEG_FEATURE_NAMES: list[str] = [
 
 def aggregate_seg_features(
     seg_map: np.ndarray,
-    track_mask: np.ndarray,
+    track_mask: np.ndarray | None = None,
 ) -> dict[str, float]:
     """
-    Aggregate a segmentation map within the track polygon mask into scalar features.
+    Aggregate a segmentation map into scalar features.
+
+    When ``track_mask`` is provided, only pixels inside the mask are
+    aggregated.  When ``None``, all pixels are used.
 
     Parameters
     ----------
     seg_map : np.ndarray of shape (H, W)
         Sigmoid-activated segmentation probabilities.
-    track_mask : np.ndarray of shape (H, W)
-        Binary mask (1 inside track polygon, 0 outside).
+    track_mask : np.ndarray of shape (H, W), optional
+        Binary mask (1 inside region of interest, 0 outside).
+        If ``None``, all pixels are included.
 
     Returns
     -------
     dict with keys: seg_mean, seg_max, seg_p75, seg_p90, seg_p95, seg_frac_above_05
     """
-    vals = seg_map[track_mask > 0.5]
+    if track_mask is not None:
+        vals = seg_map[track_mask > 0.5]
+    else:
+        vals = seg_map.ravel()
     if vals.size == 0:
         return {k: np.nan for k in _SEG_FEATURE_NAMES}
 

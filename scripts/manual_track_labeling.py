@@ -1,3 +1,4 @@
+import argparse
 import ast
 import json
 import random
@@ -36,14 +37,22 @@ from sarvalanche.ml.track_patch_encoder import CNN_SEG_ENCODER_PATH, TrackSegEnc
 import warnings
 warnings.filterwarnings('ignore', category=RuntimeWarning, message='All-NaN slice encountered')
 
-RUNS_DIR    = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/sarvalanche_runs')
+parser = argparse.ArgumentParser(description='Manual track labeling tool')
+parser.add_argument('--random', action='store_true',
+                    help='Skip XGBoost scoring, present tracks in random order')
+args = parser.parse_args()
+
+RUNS_DIRS   = [
+    Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/high_danger_output/sarvalanche_runs'),
+    Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/low_danger_output/sarvalanche_runs'),
+]
 OUTPUT_PATH = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/track_labels.json')
 OBS_PATH    = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/snfac_obs_2021_2025.csv')
 SHAPES_PATH = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/debris_shapes.gpkg')
 
 layers = {
-    'distance_mahalanobis': {'cmap': 'plasma',   'label': 'Mahalanobis Distance', 'vmin': 0.2, 'vmax': 0.7,  'thresholds': [0.3, 0.5]},
-    'p_empirical':          {'cmap': 'RdYlGn_r', 'label': 'Empirical p-value',    'vmin': 0.2, 'vmax': 0.7,  'thresholds': [0.3, 0.5]},
+    'combined_distance':    {'cmap': 'RdBu_r',   'label': 'Combined Distance',     'vmin': 0, 'vmax': 3,    'thresholds': [1.0, 2.0]},
+    'd_empirical':          {'cmap': 'RdBu_r',   'label': 'Empirical Distance',    'vmin': -1.5, 'vmax': 1.5, 'thresholds': [0.5, 1.0]},
     'slope':                {'cmap': 'bone',      'label': 'Slope (rad)',           'vmin': np.deg2rad(15), 'vmax': np.deg2rad(45), 'thresholds': [np.deg2rad(30), np.deg2rad(38)]},
     'cell_counts':          {'cmap': 'Blues',     'label': 'Cell Counts',           'vmin': None, 'vmax': None, 'thresholds': [5, 20]},
 }
@@ -77,19 +86,30 @@ def label_key(zone, date, track_idx):
 
 
 # ── Discover all (zone, date, gpkg, nc) combos ───────────────────────────────
-all_items = []  # list of (zone, date, track_idx, gpkg_path, nc_path)
-for gpkg in sorted(RUNS_DIR.glob('*.gpkg')):
-    zone, date = parse_stem(gpkg.stem)
-    if zone is None:
-        print(f"Warning: could not parse zone/date from {gpkg.name}, skipping")
-        continue
-    nc = gpkg.with_suffix('.nc')
-    if not nc.exists():
-        print(f"Warning: no matching .nc for {gpkg.name}, skipping")
-        continue
-    gdf = gpd.read_file(gpkg)
-    for idx in gdf.index:
-        all_items.append((zone, date, idx, gpkg, nc))
+# .gpkg files contain tracks for a zone (generated once, reused across dates).
+# .nc files contain raster layers for a zone+date.  Match by zone name.
+all_items = []  # list of (zone, date, track_idx, gpkg_path, nc_path, danger)
+for runs_dir in RUNS_DIRS:
+    danger = 'HIGH' if 'high_danger' in str(runs_dir) else 'LOW'
+    # Build zone → gpkg lookup from all .gpkg files in this directory
+    zone_to_gpkg = {}
+    for gpkg in sorted(runs_dir.glob('*.gpkg')):
+        gpkg_zone, _ = parse_stem(gpkg.stem)
+        if gpkg_zone is not None:
+            zone_to_gpkg[gpkg_zone] = gpkg
+    # Iterate over .nc files and find the matching .gpkg by zone
+    for nc in sorted(runs_dir.glob('*.nc')):
+        zone, date = parse_stem(nc.stem)
+        if zone is None:
+            print(f"Warning: could not parse zone/date from {nc.name}, skipping")
+            continue
+        gpkg = zone_to_gpkg.get(zone)
+        if gpkg is None:
+            print(f"Warning: no matching .gpkg for zone '{zone}', skipping {nc.name}")
+            continue
+        gdf = gpd.read_file(gpkg)
+        for idx in gdf.index:
+            all_items.append((zone, date, idx, gpkg, nc, danger))
 
 # ── Load XGBoost classifier (optional) ───────────────────────────────────────
 clf = None
@@ -102,10 +122,14 @@ else:
 # ── Load CNN seg encoder (optional) ──────────────────────────────────────────
 seg_enc = None
 if CNN_SEG_ENCODER_PATH.exists():
-    seg_enc = TrackSegEncoder()
-    seg_enc.load_state_dict(torch.load(CNN_SEG_ENCODER_PATH, weights_only=True))
-    seg_enc.eval()
-    print(f"Seg encoder loaded from {CNN_SEG_ENCODER_PATH}")
+    try:
+        seg_enc = TrackSegEncoder()
+        seg_enc.load_state_dict(torch.load(CNN_SEG_ENCODER_PATH, weights_only=True))
+        seg_enc.eval()
+        print(f"Seg encoder loaded from {CNN_SEG_ENCODER_PATH}")
+    except RuntimeError as exc:
+        print(f"Seg encoder weights incompatible (retrain needed), skipping: {exc}")
+        seg_enc = None
 else:
     print(f"No seg encoder found at {CNN_SEG_ENCODER_PATH}, seg predictions disabled")
 
@@ -295,7 +319,7 @@ class ShapeDrawer:
                 ax.add_patch(p)
 
 
-SCORE_CACHE_PATH = RUNS_DIR / '_track_scores.json'
+SCORE_CACHE_PATH = RUNS_DIRS[0] / '_track_scores.json'
 
 
 def _load_score_cache():
@@ -354,7 +378,7 @@ def _score_unlabeled_tracks(items, classifier, use_cache=True):
 
     # Group by nc_path to reproject once per file
     file_groups = defaultdict(list)
-    for zone, date, idx, gpkg_path, nc_path in needed:
+    for zone, date, idx, gpkg_path, nc_path, _danger in needed:
         file_groups[(gpkg_path, nc_path)].append((zone, date, idx))
 
     n_scored = 0
@@ -511,7 +535,9 @@ def _retrain_in_background():
     global clf, _rescore_needed
     print(f"\n[retrain] Starting on {len(labels)} labels (XGBoost only, no CNN)...")
     try:
-        X, y = build_training_set(labels, RUNS_DIR)
+        parts = [build_training_set(labels, d) for d in RUNS_DIRS]
+        X = pd.concat([p[0] for p in parts])
+        y = pd.concat([p[1] for p in parts])
 
         neg, pos = int((y == 0).sum()), int((y == 1).sum())
         scale_pos_weight = (neg / pos) if pos > 0 and neg > pos else 1.0
@@ -569,10 +595,44 @@ unlabeled_all = [
     if label_key(item[0], item[1], item[2]) not in labels
 ]
 
-print(f"{len(labels)} already labeled, {len(unlabeled_all)} remaining out of {len(all_items)} total")
+label_counts = {0: 0, 1: 0, 2: 0, 3: 0}
+for v in labels.values():
+    lbl = v['label']
+    if lbl in label_counts:
+        label_counts[lbl] += 1
+n_pos = label_counts[2] + label_counts[3]
+n_neg = label_counts[0] + label_counts[1]
+print(f"{len(labels)} labeled ({n_neg} neg [{label_counts[0]}×0, {label_counts[1]}×1] / "
+      f"{n_pos} pos [{label_counts[2]}×2, {label_counts[3]}×3]),  "
+      f"{len(unlabeled_all)} remaining out of {len(all_items)} total")
 
 # Score with XGBoost if available, then sort by active learning strategy
-track_scores = _score_unlabeled_tracks(unlabeled_all, clf)
+if args.random:
+    track_scores = {}
+    print("[score] Skipping XGBoost scoring (--random mode)")
+else:
+    track_scores = _score_unlabeled_tracks(unlabeled_all, clf)
+def _interleave_by_file(tagged_items, chunk_size=25):
+    """Round-robin across nc files in chunks of *chunk_size* so the date
+    changes every ~chunk_size examples instead of exhausting one file."""
+    from itertools import zip_longest
+    groups = defaultdict(list)
+    for item, tag in tagged_items:
+        groups[item[4]].append((item, tag))
+    keys = list(groups.keys())
+    random.shuffle(keys)
+    # Split each group into chunks
+    chunked = []
+    for k in keys:
+        g = groups[k]
+        chunked.append([g[i:i + chunk_size] for i in range(0, len(g), chunk_size)])
+    # Round-robin: take one chunk from each file in turn
+    result_items = []
+    for chunks in zip_longest(*chunked):
+        for chunk in chunks:
+            if chunk is not None:
+                result_items.extend(chunk)
+    return result_items
 
 if track_scores:
     unlabeled_with_tags = _sort_by_uncertainty(unlabeled_all, track_scores)
@@ -586,6 +646,9 @@ else:
     for key in group_keys:
         random.shuffle(groups[key])
     unlabeled_with_tags = [(item, 'random') for key in group_keys for item in groups[key]]
+
+# Interleave across files so the date changes every ~25 examples
+unlabeled_with_tags = _interleave_by_file(unlabeled_with_tags, chunk_size=25)
 
 # Separate into parallel lists for the main loop
 unlabeled = [item for item, _ in unlabeled_with_tags]
@@ -659,7 +722,7 @@ while i < len(unlabeled):
             unlabeled_tags[i:] = [tag for _, tag in new_sorted]
             print(f"[rescore] Re-sorted {len(new_sorted)} remaining tracks")
 
-    zone, date, idx, gpkg_path, nc_path = unlabeled[i]
+    zone, date, idx, gpkg_path, nc_path, danger = unlabeled[i]
 
     # Reload ds and gdf only when the source file changes
     if nc_path != current_nc_path:
@@ -688,28 +751,6 @@ while i < len(unlabeled):
     existing = labels.get(label_key(zone, date, idx))
     existing_str = f"  [labeled: {existing['label']}]" if existing else ""
 
-    pred_str = ""
-    if clf is not None:
-        feats = extract_track_features(path, ds)
-        # If clf was trained with seg features, append them now
-        if seg_enc is not None and any(c.startswith('seg_') for c in clf.feature_names_in_):
-            patch = extract_track_patch(path, ds)
-            with torch.no_grad():
-                seg_logits = seg_enc.segment(torch.FloatTensor(patch[np.newaxis]))
-                seg_probs = torch.sigmoid(seg_logits).numpy()[0, 0]
-            feats.update(aggregate_seg_features(seg_probs, patch[TRACK_MASK_CHANNEL]))
-        X_row = pd.DataFrame([feats]).reindex(columns=clf.feature_names_in_).fillna(0)
-        p_debris = float(clf.predict_proba(X_row)[0, 1])
-        pred_str = f"  ▶ XGB: {p_debris:.0%} debris"
-
-    if seg_enc is not None:
-        patch = extract_track_patch(path, ds)
-        with torch.no_grad():
-            seg_logits = seg_enc.segment(torch.FloatTensor(patch[np.newaxis]))
-            seg_probs = torch.sigmoid(seg_logits).numpy()[0, 0]
-        seg_mean = float(seg_probs[patch[TRACK_MASK_CHANNEL] > 0.5].mean()) if (patch[TRACK_MASK_CHANNEL] > 0.5).any() else 0.0
-        pred_str += f"  Seg: {seg_mean:.0%}"
-
     avl_date = pd.Timestamp(date)
     nearby_obs = obs_gdf[
         (obs_gdf['date'] - avl_date).abs() <= pd.Timedelta(days=6)
@@ -726,7 +767,7 @@ while i < len(unlabeled):
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
     fig.suptitle(
-        f"{zone}  |  {date}  |  track {idx}{existing_str}{obs_str}{shape_str}  ({i + 1}/{len(unlabeled)})  [{bucket_tag}]{pred_str}\n"
+        f"{zone}  |  {date}  |  track {idx}  [{danger}]{existing_str}{obs_str}{shape_str}  ({i + 1}/{len(unlabeled)})  [{bucket_tag}]\n"
         f"0-3=label  n=unsure  ←/→=nav  d=draw  q=quit",
         fontsize=11,
     )
@@ -795,7 +836,11 @@ while i < len(unlabeled):
         }
         with open(OUTPUT_PATH, 'w') as f:
             json.dump(labels, f, indent=2)
-        print(f"{zone} | {date} | track {idx} → {result['label']}  ({len(labels)} labeled)")
+        label_counts[result['label']] = label_counts.get(result['label'], 0) + 1
+        n_pos = label_counts[2] + label_counts[3]
+        n_neg = label_counts[0] + label_counts[1]
+        print(f"{zone} | {date} | track {idx} → {result['label']}  "
+              f"({len(labels)} labeled: {n_neg} neg / {n_pos} pos)")
         if len(labels) % 50 == 0:
             threading.Thread(target=_retrain_in_background, daemon=True).start()
             print(f"[retrain] Triggered in background ({len(labels)} labels)")
