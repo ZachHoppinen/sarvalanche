@@ -30,6 +30,7 @@ from sarvalanche.ml.track_classifier import (
 from sarvalanche.ml.track_features import (
     TRACK_MASK_CHANNEL,
     aggregate_seg_features,
+    compute_scene_context,
     extract_track_features,
     extract_track_patch,
 )
@@ -40,6 +41,12 @@ warnings.filterwarnings('ignore', category=RuntimeWarning, message='All-NaN slic
 parser = argparse.ArgumentParser(description='Manual track labeling tool')
 parser.add_argument('--random', action='store_true',
                     help='Skip XGBoost scoring, present tracks in random order')
+parser.add_argument('--low', action='store_true',
+                    help='Only show tracks from LOW danger days')
+parser.add_argument('--low-prob', action='store_true',
+                    help='Only show tracks with XGBoost p_debris < 0.50 (likely negatives)')
+parser.add_argument('--no-retrain', action='store_true',
+                    help='Disable background retraining of XGBoost classifier')
 args = parser.parse_args()
 
 RUNS_DIRS   = [
@@ -110,6 +117,10 @@ for runs_dir in RUNS_DIRS:
         gdf = gpd.read_file(gpkg)
         for idx in gdf.index:
             all_items.append((zone, date, idx, gpkg, nc, danger))
+
+if args.low:
+    all_items = [item for item in all_items if item[5] == 'LOW']
+    print(f"--low: filtered to {len(all_items)} LOW danger tracks")
 
 # ── Load XGBoost classifier (optional) ───────────────────────────────────────
 clf = None
@@ -396,11 +407,12 @@ def _score_unlabeled_tracks(items, classifier, use_cache=True):
             _peek.close()
             ds_local = xr.open_dataset(nc_path)[_load_vars].astype(float).rio.write_crs('EPSG:4326')
             ds_local = ds_local.rio.reproject(gdf_local.crs)
+            scene_ctx = compute_scene_context(ds_local)
 
             for ti, (zone, date, idx) in enumerate(track_list):
                 try:
                     row = gdf_local.loc[idx]
-                    feats = extract_track_features(row, ds_local)
+                    feats = extract_track_features(row, ds_local, scene_ctx=scene_ctx)
                     X_row = pd.DataFrame([feats]).reindex(columns=classifier.feature_names_in_).fillna(0)
                     p = float(classifier.predict_proba(X_row)[0, 1])
                     scores[(zone, date, idx)] = p
@@ -607,48 +619,55 @@ print(f"{len(labels)} labeled ({n_neg} neg [{label_counts[0]}×0, {label_counts[
       f"{len(unlabeled_all)} remaining out of {len(all_items)} total")
 
 # Score with XGBoost if available, then sort by active learning strategy
-if args.random:
-    track_scores = {}
-    print("[score] Skipping XGBoost scoring (--random mode)")
-else:
-    track_scores = _score_unlabeled_tracks(unlabeled_all, clf)
-def _interleave_by_file(tagged_items, chunk_size=25):
-    """Round-robin across nc files in chunks of *chunk_size* so the date
-    changes every ~chunk_size examples instead of exhausting one file."""
-    from itertools import zip_longest
+track_scores = {}
+
+def _build_file_groups(items):
+    """Group items by (gpkg_path, nc_path) and return shuffled list of groups."""
     groups = defaultdict(list)
-    for item, tag in tagged_items:
-        groups[item[4]].append((item, tag))
+    for item in items:
+        groups[(item[3], item[4])].append(item)
     keys = list(groups.keys())
     random.shuffle(keys)
-    # Split each group into chunks
-    chunked = []
-    for k in keys:
-        g = groups[k]
-        chunked.append([g[i:i + chunk_size] for i in range(0, len(g), chunk_size)])
-    # Round-robin: take one chunk from each file in turn
-    result_items = []
-    for chunks in zip_longest(*chunked):
-        for chunk in chunks:
-            if chunk is not None:
-                result_items.extend(chunk)
-    return result_items
+    return [(k, groups[k]) for k in keys]
 
-if track_scores:
-    unlabeled_with_tags = _sort_by_uncertainty(unlabeled_all, track_scores)
+
+def _score_and_sort_group(items, classifier, low_prob=False):
+    """Score a single file group and return sorted (item, tag) list."""
+    scores = _score_unlabeled_tracks(items, classifier)
+    if low_prob:
+        before = len(items)
+        items = [
+            item for item in items
+            if scores.get((item[0], item[1], item[2]), 1.0) < 0.50
+        ]
+        print(f"[low-prob] Filtered to {len(items)} tracks with p < 0.50 (from {before})")
+    if scores:
+        return _sort_by_uncertainty(items, scores), scores
+    random.shuffle(items)
+    return [(item, 'random') for item in items], scores
+
+
+if args.random:
+    print("[score] Skipping XGBoost scoring (--random mode)")
+    if args.low_prob:
+        print("[low-prob] ERROR: --low-prob requires XGBoost scores. Run without --random first.")
+        raise SystemExit(1)
+    # Random mode: shuffle within each file group, then flatten
+    file_groups = _build_file_groups(unlabeled_all)
+    unlabeled_with_tags = []
+    for _key, group_items in file_groups:
+        random.shuffle(group_items)
+        unlabeled_with_tags.extend((item, 'random') for item in group_items)
 else:
-    # No classifier — fall back to shuffled random order grouped by file
-    groups = defaultdict(list)
-    for item in unlabeled_all:
-        groups[item[4]].append(item)
-    group_keys = list(groups.keys())
-    random.shuffle(group_keys)
-    for key in group_keys:
-        random.shuffle(groups[key])
-    unlabeled_with_tags = [(item, 'random') for key in group_keys for item in groups[key]]
-
-# Interleave across files so the date changes every ~25 examples
-unlabeled_with_tags = _interleave_by_file(unlabeled_with_tags, chunk_size=25)
+    # Lazy scoring: group by file, score one group at a time
+    file_groups = _build_file_groups(unlabeled_all)
+    unlabeled_with_tags = []
+    for gi, ((gpkg_path, nc_path), group_items) in enumerate(file_groups):
+        zone0, date0 = group_items[0][0], group_items[0][1]
+        print(f"[score] Group {gi+1}/{len(file_groups)}: {zone0} {date0} ({len(group_items)} tracks)")
+        sorted_group, new_scores = _score_and_sort_group(group_items, clf, low_prob=args.low_prob)
+        track_scores.update(new_scores)
+        unlabeled_with_tags.extend(sorted_group)
 
 # Separate into parallel lists for the main loop
 unlabeled = [item for item, _ in unlabeled_with_tags]
@@ -841,7 +860,7 @@ while i < len(unlabeled):
         n_neg = label_counts[0] + label_counts[1]
         print(f"{zone} | {date} | track {idx} → {result['label']}  "
               f"({len(labels)} labeled: {n_neg} neg / {n_pos} pos)")
-        if len(labels) % 50 == 0:
+        if len(labels) % 50 == 0 and not args.no_retrain:
             threading.Thread(target=_retrain_in_background, daemon=True).start()
             print(f"[retrain] Triggered in background ({len(labels)} labels)")
         i += 1

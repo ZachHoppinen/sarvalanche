@@ -16,6 +16,7 @@ from sarvalanche.ml.track_features import (
     TRACK_MASK_CHANNEL,
     _PER_TRACK_GROUPS,
     aggregate_seg_features,
+    compute_scene_context,
     extract_track_features,
     extract_track_patch,
     extract_track_patch_with_target,
@@ -146,14 +147,16 @@ def build_training_set(
         for pattern in _PER_TRACK_GROUPS.values():
             needed |= {v for v in ds_peek.data_vars if pattern.match(v)}
         ds_peek.close()
+        needed |= {'slope', 'aspect'}  # required for scene context
         ds = _load_ds(nc_path, gdf.crs, var_whitelist=list(needed))
+        scene_ctx = compute_scene_context(ds)
 
         for ti, (key, meta) in enumerate(tqdm(entries, desc=stem, unit="trk")):
             idx = meta['track_idx']
             if idx not in gdf.index:
                 log.warning("build_training_set: track %d not in %s, skipping", idx, stem)
                 continue
-            feats = extract_track_features(gdf.loc[idx], ds)
+            feats = extract_track_features(gdf.loc[idx], ds, scene_ctx=scene_ctx)
             feats['_key'] = key
             feats['_label'] = meta['label']
             rows.append(feats)
@@ -254,9 +257,10 @@ def predict_tracks(
     """
     import torch
 
+    scene_ctx = compute_scene_context(ds)
     feature_rows = []
     for _, row in gdf.iterrows():
-        feats = extract_track_features(row, ds)
+        feats = extract_track_features(row, ds, scene_ctx=scene_ctx)
 
         if seg_encoder is not None:
             patch = extract_track_patch(row, ds)

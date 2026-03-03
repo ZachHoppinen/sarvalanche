@@ -1,9 +1,8 @@
 #!/usr/bin/env python
 """
-Fine-tune the CNN segmentation encoder using labeled examples only.
+Train (or fine-tune) the CNN segmentation encoder using labeled examples.
 
-Starts from the pretrained weights (trained on unmasked_p_target across all tracks)
-and sharpens with supervised labels:
+Can train from scratch or resume from existing weights:
 
 - **Positive targets**: Manually drawn debris polygons from ``debris_shapes.gpkg``
   are rasterized onto the patch grid. Where available, they are blended with
@@ -13,8 +12,13 @@ and sharpens with supervised labels:
 
 Usage
 -----
+    # Train from scratch on all labels:
+    conda run -n sarvalanche python scripts/finetune_track_encoder.py --from-scratch
+
+    # Fine-tune from existing weights (default):
     conda run -n sarvalanche python scripts/finetune_track_encoder.py
 """
+import argparse
 import json
 import logging
 from pathlib import Path
@@ -36,6 +40,13 @@ from sarvalanche.ml.track_patch_encoder import (
     TrackSegEncoder,
 )
 
+parser = argparse.ArgumentParser(description='Train/fine-tune CNN seg encoder')
+parser.add_argument('--from-scratch', action='store_true',
+                    help='Train from random init instead of loading pretrained weights')
+parser.add_argument('--epochs', type=int, default=None,
+                    help='Override number of epochs')
+args = parser.parse_args()
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s  %(levelname)s  %(message)s')
 log = logging.getLogger(__name__)
 
@@ -46,15 +57,16 @@ RUNS_DIRS    = [
 LABELS_PATH  = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/track_labels.json')
 SHAPES_PATH  = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/debris_shapes.gpkg')
 
-# ── Fine-tuning hyperparameters ────────────────────────────────────────────────
-EPOCHS            = 30
-BATCH_SIZE        = 32       # smaller batches — fewer samples
-LR                = 1e-4     # lower LR for fine-tuning
+# ── Hyperparameters (adjusted based on --from-scratch) ────────────────────────
+FROM_SCRATCH      = args.from_scratch
+EPOCHS            = args.epochs or (60 if FROM_SCRATCH else 30)
+BATCH_SIZE        = 32
+LR                = 5e-4 if FROM_SCRATCH else 1e-4
 LR_MIN            = 1e-6
 WEIGHT_DECAY      = 1e-4
-MASK_WEIGHT       = 5.0      # stronger emphasis on track-interior pixels
-NEG_MASK_WEIGHT   = 4.0      # extra weight for suppressing false positives in negatives
-CHECKPOINT_EVERY  = 5
+MASK_WEIGHT       = 7.0 if FROM_SCRATCH else 5.0
+NEG_MASK_WEIGHT   = 5.0 if FROM_SCRATCH else 4.0
+CHECKPOINT_EVERY  = 10
 N_VIS             = 6
 VIS_DIR           = CNN_ENCODER_DIR / 'finetune_progress'
 FINETUNE_PATH     = CNN_ENCODER_DIR / 'track_seg_encoder_finetuned.pt'
@@ -92,20 +104,20 @@ def _plot_epoch_examples(
         pred = probs[i]               # (H, W)
         lbl = vis_labels[i]
 
-        # Col 0: Combined ML distance (z-score, normalized)
+        # Col 0: Combined ML distance (z-score, normalized by /5.0)
         ax = axes[i, 0]
-        im = ax.imshow(patch[0], cmap='plasma', vmin=-1.2, vmax=1.2)
+        im = ax.imshow(patch[0], cmap='plasma', vmin=-0.2, vmax=0.8)  # raw: -1 to 4
         fig.colorbar(im, ax=ax, fraction=0.046)
         if i == 0:
-            ax.set_title('ML Distance (z-score)')
+            ax.set_title('ML Distance (-1 to 4)')
         ax.set_ylabel(label_str(lbl), fontsize=10, fontweight='bold')
 
-        # Col 1: Backscatter change (dB, normalized)
+        # Col 1: Backscatter change (dB, normalized by /5.0)
         ax = axes[i, 1]
-        im = ax.imshow(patch[1], cmap='RdYlGn_r', vmin=-2.0, vmax=0.5)
+        im = ax.imshow(patch[1], cmap='RdYlGn_r', vmin=0.0, vmax=0.3)  # raw: 0 to 1.5
         fig.colorbar(im, ax=ax, fraction=0.046)
         if i == 0:
-            ax.set_title('Backscatter Δ (dB)')
+            ax.set_title('Backscatter Δ (0-1.5 dB)')
 
         # Col 2: Slope + track outline (normalized by /0.6)
         ax = axes[i, 2]
@@ -115,29 +127,37 @@ def _plot_epoch_examples(
         if i == 0:
             ax.set_title('Slope (norm) + Track')
 
-        # Col 3: Target (labeled)
+        # Col 3: Target (labeled) + manual detection outline
         ax = axes[i, 3]
         im = ax.imshow(target, cmap='hot', vmin=0, vmax=1)
+        # Show manual detection boundary (target > 0.5)
+        if target.max() > 0.5:
+            ax.contour(target, levels=[0.5], colors='lime', linewidths=1.2)
         fig.colorbar(im, ax=ax, fraction=0.046)
         if i == 0:
             ax.set_title('Target (labeled)')
 
-        # Col 4: CNN prediction
+        # Col 4: CNN prediction + manual detection outline for comparison
         ax = axes[i, 4]
         im = ax.imshow(pred, cmap='hot', vmin=0, vmax=1)
+        if target.max() > 0.5:
+            ax.contour(target, levels=[0.5], colors='lime', linewidths=1.0,
+                       linestyles='dashed')
         fig.colorbar(im, ax=ax, fraction=0.046)
         if i == 0:
-            ax.set_title('CNN Prediction')
+            ax.set_title('CNN Pred + manual (lime)')
 
-        # Col 5: Overlay — prediction contours on ML distance
+        # Col 5: Overlay — prediction contours on ML distance + manual outline
         ax = axes[i, 5]
-        ax.imshow(patch[0], cmap='plasma', vmin=-1.2, vmax=1.2)
+        ax.imshow(patch[0], cmap='plasma', vmin=-0.2, vmax=0.8)
         ax.contour(pred, levels=[0.3, 0.5, 0.7], colors=['cyan', 'yellow', 'red'],
                    linewidths=1.2)
         ax.contour(patch[TRACK_MASK_CHANNEL], levels=[0.5], colors='white', linewidths=0.8,
                    linestyles='dashed')
+        if target.max() > 0.5:
+            ax.contour(target, levels=[0.5], colors='lime', linewidths=1.2)
         if i == 0:
-            ax.set_title('Pred contours on ML dist.')
+            ax.set_title('Pred + manual on ML dist.')
 
         for ax in axes[i]:
             ax.set_xticks([])
@@ -187,12 +207,21 @@ def main() -> None:
 
     binary_labels = y.values  # (N,) int array: 0 or 1
 
-    # ── Load pretrained weights ────────────────────────────────────────────────
+    # ── Initialize model ─────────────────────────────────────────────────────────
     model = TrackSegEncoder()
-    if CNN_SEG_ENCODER_PATH.exists():
+    if FROM_SCRATCH:
+        log.info("Training from scratch (--from-scratch)")
+    elif CNN_SEG_ENCODER_PATH.exists():
         state = torch.load(CNN_SEG_ENCODER_PATH, map_location='cpu', weights_only=True)
-        model.load_state_dict(state)
-        log.info("Loaded pretrained weights from %s", CNN_SEG_ENCODER_PATH)
+        # Handle channel mismatch (e.g. old 10-ch weights with new 11-ch model)
+        expected_ch = model.enc1[0].weight.shape[1]
+        saved_ch = state['enc1.0.weight'].shape[1]
+        if saved_ch != expected_ch:
+            log.warning("Channel mismatch (saved=%d, model=%d) — training from scratch",
+                        saved_ch, expected_ch)
+        else:
+            model.load_state_dict(state)
+            log.info("Loaded pretrained weights from %s", CNN_SEG_ENCODER_PATH)
     else:
         log.warning("No pretrained weights found at %s — training from scratch",
                      CNN_SEG_ENCODER_PATH)
@@ -272,9 +301,10 @@ def main() -> None:
             }, ckpt_path)
             log.info("  checkpoint saved → %s", ckpt_path)
 
-        # Per-epoch visualization
-        _plot_epoch_examples(model, vis_patches, vis_targets, vis_labels,
-                             epoch, epoch_loss / n_batches, lr=cur_lr)
+        # Visualization at same interval as checkpoints
+        if CHECKPOINT_EVERY and (epoch + 1) % CHECKPOINT_EVERY == 0:
+            _plot_epoch_examples(model, vis_patches, vis_targets, vis_labels,
+                                 epoch, epoch_loss / n_batches, lr=cur_lr)
 
     # ── Save final model ───────────────────────────────────────────────────────
     CNN_ENCODER_DIR.mkdir(parents=True, exist_ok=True)

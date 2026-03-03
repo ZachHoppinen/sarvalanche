@@ -22,8 +22,8 @@ import xarray as xr
 EXPORT_VARS = [
     'd_empirical',
     'combined_distance',
-    'cell_counts',
-    'unmasked_p_target',
+    # 'cell_counts',
+    # 'unmasked_p_target',
 ]
 
 

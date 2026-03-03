@@ -107,6 +107,114 @@ _STATS: dict[str, callable] = {
 }
 
 
+# ── Aspect bin helpers ────────────────────────────────────────────────────────
+_ASPECT_BINS: dict[str, tuple[float, float]] = {
+    'N': (0.0, np.pi / 4),          # 0 – π/4  and  7π/4 – 2π
+    'E': (np.pi / 4, 3 * np.pi / 4),
+    'S': (3 * np.pi / 4, 5 * np.pi / 4),
+    'W': (5 * np.pi / 4, 7 * np.pi / 4),
+}
+
+_FLAT_THRESHOLD: float = np.deg2rad(5)  # ≈ 0.087 rad
+
+
+def _aspect_bin_mask(aspect: np.ndarray, direction: str) -> np.ndarray:
+    """Boolean mask for pixels in a cardinal aspect bin (0=N, clockwise)."""
+    if direction == 'N':
+        return (aspect < np.pi / 4) | (aspect >= 7 * np.pi / 4)
+    lo, hi = _ASPECT_BINS[direction]
+    return (aspect >= lo) & (aspect < hi)
+
+
+def compute_scene_context(ds: xr.Dataset) -> dict[str, float]:
+    """Compute scene-level context features from the full (unclipped) dataset.
+
+    Returns a dict of scalar features summarising the whole scene's backscatter
+    change and z-score distance.  These let XGBoost learn whether the per-track
+    signal is unusual relative to the scene background (e.g. widespread refreeze).
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Full reprojected 2D dataset.  Must contain ``d_empirical`` and
+        ``combined_distance``; optionally ``slope`` and ``aspect`` (all in radians).
+
+    Returns
+    -------
+    dict[str, float]
+        Keys prefixed with ``scene_``.
+    """
+    ctx: dict[str, float] = {}
+
+    d_emp = ds['d_empirical'].values.astype(float).ravel() if 'd_empirical' in ds else None
+    c_dist = ds['combined_distance'].values.astype(float).ravel() if 'combined_distance' in ds else None
+    slope = ds['slope'].values.astype(float) if 'slope' in ds else None
+    aspect = ds['aspect'].values.astype(float) if 'aspect' in ds else None
+
+    # ── Flat-terrain baseline (slope < 5°) ────────────────────────────────
+    if slope is not None:
+        flat_mask = (slope < _FLAT_THRESHOLD).ravel()
+    else:
+        flat_mask = None
+
+    if d_emp is not None and flat_mask is not None:
+        flat_vals = d_emp[flat_mask & np.isfinite(d_emp)]
+        ctx['scene_flat_d_empirical_mean'] = float(np.nanmean(flat_vals)) if flat_vals.size else np.nan
+        ctx['scene_flat_d_empirical_std'] = float(np.nanstd(flat_vals)) if flat_vals.size else np.nan
+    else:
+        ctx['scene_flat_d_empirical_mean'] = np.nan
+        ctx['scene_flat_d_empirical_std'] = np.nan
+
+    if c_dist is not None and flat_mask is not None:
+        flat_cd = c_dist[flat_mask & np.isfinite(c_dist)]
+        ctx['scene_flat_combined_distance_mean'] = float(np.nanmean(flat_cd)) if flat_cd.size else np.nan
+    else:
+        ctx['scene_flat_combined_distance_mean'] = np.nan
+
+    # ── Whole-scene statistics ────────────────────────────────────────────
+    if d_emp is not None:
+        valid = d_emp[np.isfinite(d_emp)]
+        ctx['scene_d_empirical_mean'] = float(np.nanmean(valid)) if valid.size else np.nan
+        ctx['scene_d_empirical_std'] = float(np.nanstd(valid)) if valid.size else np.nan
+        ctx['scene_d_empirical_p90'] = float(np.nanpercentile(valid, 90)) if valid.size else np.nan
+    else:
+        ctx['scene_d_empirical_mean'] = np.nan
+        ctx['scene_d_empirical_std'] = np.nan
+        ctx['scene_d_empirical_p90'] = np.nan
+
+    if c_dist is not None:
+        valid_cd = c_dist[np.isfinite(c_dist)]
+        ctx['scene_combined_distance_mean'] = float(np.nanmean(valid_cd)) if valid_cd.size else np.nan
+        ctx['scene_combined_distance_std'] = float(np.nanstd(valid_cd)) if valid_cd.size else np.nan
+    else:
+        ctx['scene_combined_distance_mean'] = np.nan
+        ctx['scene_combined_distance_std'] = np.nan
+
+    # ── Aspect-binned statistics (slope > 5° only) ───────────────────────
+    if d_emp is not None and slope is not None and aspect is not None:
+        steep_mask = (slope >= _FLAT_THRESHOLD).ravel()
+        aspect_flat = aspect.ravel()
+        for direction in ('N', 'E', 'S', 'W'):
+            bin_mask = _aspect_bin_mask(aspect_flat, direction) & steep_mask & np.isfinite(d_emp)
+            bin_vals = d_emp[bin_mask]
+            ctx[f'scene_d_empirical_mean_{direction}'] = (
+                float(np.nanmean(bin_vals)) if bin_vals.size else np.nan
+            )
+    else:
+        for direction in ('N', 'E', 'S', 'W'):
+            ctx[f'scene_d_empirical_mean_{direction}'] = np.nan
+
+    return ctx
+
+
+def _dominant_aspect_bin(aspect_vals: np.ndarray) -> str:
+    """Return the cardinal direction with the most pixels from an array of aspects."""
+    counts = {}
+    for d in ('N', 'E', 'S', 'W'):
+        counts[d] = int(_aspect_bin_mask(aspect_vals, d).sum())
+    return max(counts, key=counts.get)
+
+
 def _clip_arr(da: xr.DataArray, geom) -> np.ndarray:
     """Clip a DataArray to a geometry, flatten, and return as float (NaNs preserved)."""
     clipped = da.rio.clip([geom], all_touched=True, drop=True)
@@ -290,6 +398,7 @@ def extract_track_features(
     row: gpd.GeoSeries,
     ds: xr.Dataset,
     static_vars: list[str] = STATIC_FEATURE_VARS,
+    scene_ctx: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """
     Extract aggregate statistics and cross-variable correlations for a track polygon.
@@ -509,6 +618,44 @@ def extract_track_features(
         features['cell_counts_range'] = np.nan
 
     features['area_pixels'] = float(area_pixels) if area_pixels is not None else np.nan
+
+    # ── Scene context features ───────────────────────────────────────────
+    if scene_ctx is not None:
+        # Copy all scene-level keys into the feature dict
+        features.update(scene_ctx)
+
+        # Relative features: track signal vs scene background
+        track_d_mean = features.get('d_empirical_mean', np.nan)
+        track_cd_mean = features.get('combined_distance_mean', np.nan)
+
+        features['d_empirical_mean_vs_scene'] = (
+            track_d_mean - scene_ctx.get('scene_d_empirical_mean', np.nan)
+        )
+        features['d_empirical_mean_vs_flat'] = (
+            track_d_mean - scene_ctx.get('scene_flat_d_empirical_mean', np.nan)
+        )
+        features['combined_distance_mean_vs_scene'] = (
+            track_cd_mean - scene_ctx.get('scene_combined_distance_mean', np.nan)
+        )
+
+        # Track mean vs its dominant aspect bin
+        try:
+            if 'aspect' in ds:
+                aspect_vals = _clip_arr(ds['aspect'], row.geometry)
+                aspect_vals = aspect_vals[np.isfinite(aspect_vals)]
+                if aspect_vals.size > 0:
+                    dom_bin = _dominant_aspect_bin(aspect_vals)
+                    scene_bin_key = f'scene_d_empirical_mean_{dom_bin}'
+                    features['d_empirical_mean_vs_aspect'] = (
+                        track_d_mean - scene_ctx.get(scene_bin_key, np.nan)
+                    )
+                else:
+                    features['d_empirical_mean_vs_aspect'] = np.nan
+            else:
+                features['d_empirical_mean_vs_aspect'] = np.nan
+        except Exception:
+            features['d_empirical_mean_vs_aspect'] = np.nan
+
     return features
 
 

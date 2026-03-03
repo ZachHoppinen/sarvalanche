@@ -25,6 +25,7 @@ Usage
         new_shapes.gpkg 2025-02-04 --runs-dir path/to/sarvalanche_runs
 """
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -36,6 +37,7 @@ RUNS_DIRS = [
     Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/low_danger_output/sarvalanche_runs'),
 ]
 MAIN_SHAPES = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/debris_shapes.gpkg')
+LABELS_PATH = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/track_labels.json')
 
 
 def main() -> None:
@@ -97,31 +99,46 @@ def main() -> None:
     if new_shapes.crs != tracks.crs:
         new_shapes = new_shapes.to_crs(tracks.crs)
 
-    # Spatial join: find which track each drawn shape overlaps most
+    # Fix invalid geometries before spatial join
+    new_shapes['geometry'] = new_shapes.geometry.buffer(0)
+    tracks['geometry'] = tracks.geometry.buffer(0)
+
+    # Spatial join: assign shape to ALL tracks with >= 15% overlap
+    MIN_OVERLAP_FRAC = 0.15
     results = []
     for i, shape in new_shapes.iterrows():
         shape_geom = shape.geometry
+        if shape_geom is None or shape_geom.is_empty:
+            print(f"  WARNING: shape {i} is empty after cleaning, skipping")
+            continue
         # Find all intersecting tracks
         candidates = tracks[tracks.intersects(shape_geom)].copy()
         if candidates.empty:
             print(f"  WARNING: shape {i} doesn't overlap any track, skipping")
             continue
 
-        # Pick the track with the largest intersection area
-        candidates['_overlap'] = candidates.geometry.intersection(shape_geom).area
-        best = candidates.loc[candidates['_overlap'].idxmax()]
+        # Compute overlap as fraction of each track's area covered by the shape
+        candidates['_overlap_area'] = candidates.geometry.intersection(shape_geom).area
+        candidates['_overlap_frac'] = candidates['_overlap_area'] / candidates.geometry.area
 
-        zone = best['_zone']
-        track_idx = int(best['_track_idx'])
-        key = f"{zone}|{date}|{track_idx}"
+        # Keep all tracks with meaningful overlap (>= 15% of track area)
+        hits = candidates[candidates['_overlap_frac'] >= MIN_OVERLAP_FRAC]
+        if hits.empty:
+            # Fall back to best overlap if none meet threshold
+            best = candidates.loc[candidates['_overlap_area'].idxmax()]
+            hits = candidates.loc[[best.name]]
 
-        results.append({
-            'key': key,
-            'zone': zone,
-            'date': date,
-            'track_idx': track_idx,
-            'geometry': shape_geom,
-        })
+        for _, track in hits.iterrows():
+            zone = track['_zone']
+            track_idx = int(track['_track_idx'])
+            key = f"{zone}|{date}|{track_idx}"
+            results.append({
+                'key': key,
+                'zone': zone,
+                'date': date,
+                'track_idx': track_idx,
+                'geometry': shape_geom,
+            })
 
     if not results:
         print("No shapes matched any tracks.")
@@ -131,6 +148,32 @@ def main() -> None:
     print(f"\nMatched {len(joined)} shapes:")
     for _, row in joined.iterrows():
         print(f"  {row['key']}")
+
+    # Always update track labels for all matched keys (even if shapes are duplicates)
+    if not args.dry_run:
+        if LABELS_PATH.exists():
+            with open(LABELS_PATH) as f:
+                labels = json.load(f)
+        else:
+            labels = {}
+
+        matched_keys = set(joined['key'].tolist())
+        n_new_labels = 0
+        for key in matched_keys:
+            if key not in labels:
+                parts = key.split('|')
+                labels[key] = {
+                    'label': 3,
+                    'zone': parts[0],
+                    'date': parts[1],
+                    'track_idx': int(parts[2]),
+                }
+                n_new_labels += 1
+
+        with open(LABELS_PATH, 'w') as f:
+            json.dump(labels, f, indent=2)
+        print(f"Added {n_new_labels} new track labels (label=3) to {LABELS_PATH.name} "
+              f"({len(labels)} total)")
 
     # Skip duplicates with existing shapes
     existing_keys: set[str] = set()
@@ -156,7 +199,7 @@ def main() -> None:
         print("\n[dry-run] No files written.")
         return
 
-    # Write output
+    # Write shapes
     if output_path.exists():
         combined = gpd.GeoDataFrame(pd.concat([existing, joined], ignore_index=True),
                                      crs=joined.crs)
@@ -165,6 +208,7 @@ def main() -> None:
     else:
         joined.to_file(output_path, driver='GPKG')
         print(f"\nWrote {len(joined)} shapes to {output_path}")
+
 
 
 if __name__ == '__main__':

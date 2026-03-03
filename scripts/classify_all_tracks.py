@@ -27,6 +27,7 @@ from sarvalanche.ml.track_classifier import TRACK_PREDICTOR_MODEL, _load_ds
 from sarvalanche.ml.track_features import (
     STATIC_FEATURE_VARS,
     _PER_TRACK_GROUPS,
+    compute_scene_context,
     extract_track_features,
 )
 
@@ -102,13 +103,15 @@ for runs_dir in RUNS_DIRS:
         ds_peek.close()
 
         # Per-variable reprojection to control memory
+        needed |= {'slope', 'aspect'}  # required for scene context
         ds = _load_ds(nc_path, gdf.crs, var_whitelist=list(needed))
+        scene_ctx = compute_scene_context(ds)
 
         results = []
         for idx in tqdm(gdf.index, desc=f"{zone} | {date}", unit="trk"):
             row = gdf.loc[idx]
             try:
-                feats = extract_track_features(row, ds)
+                feats = extract_track_features(row, ds, scene_ctx=scene_ctx)
                 X_row = pd.DataFrame([feats]).reindex(columns=clf.feature_names_in_).fillna(0)
                 p_debris = float(clf.predict_proba(X_row)[0, 1])
             except Exception as exc:
