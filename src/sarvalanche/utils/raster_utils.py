@@ -3,6 +3,8 @@ Raster processing utilities.
 """
 
 from functools import reduce
+import itertools
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -136,3 +138,117 @@ def label_raster_with_aspect(da, aspect_da=None, aspect_threshold=np.pi/2):
     # restore original mask — only label pixels that were active in da
     labeled[~data.astype(bool)] = 0
     return labeled
+
+# ── Clip helpers ──────────────────────────────────────────────────────────────
+
+def clip_arr(da: xr.DataArray, geom) -> np.ndarray:
+    """Clip a DataArray to a geometry and return a flat float array."""
+    return da.rio.clip([geom], all_touched=True, drop=True).values.astype(float).ravel()
+
+
+def clip_2d(da: xr.DataArray, geom) -> tuple[np.ndarray, np.ndarray]:
+    """Clip a DataArray to a geometry; return (2d_array, finite_mask)."""
+    arr = da.rio.clip([geom], all_touched=True, drop=True).values.astype(float)
+    return arr, np.isfinite(arr)
+
+
+def pixel_agg_da(ds: xr.Dataset, var_list: list[str], agg: str = 'max') -> xr.DataArray | None:
+    """Pixel-wise aggregation (max/mean/std) across a list of DataArrays.
+
+    Returns None if var_list is empty.
+    """
+    if not var_list:
+        return None
+    ref = ds[var_list[0]]
+    stacked = np.stack([ds[v].values.astype(float) for v in var_list], axis=0)
+    with np.errstate(all='ignore'), warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        agg_fns = {'max': np.nanmax, 'mean': np.nanmean, 'std': np.nanstd}
+        if agg not in agg_fns:
+            raise ValueError(f'Unknown agg={agg!r}')
+        arr = agg_fns[agg](stacked, axis=0)
+    return xr.DataArray(arr, dims=ref.dims, coords=ref.coords).rio.write_crs(ref.rio.crs)
+
+
+# ── Spatial metrics ───────────────────────────────────────────────────────────
+
+def morans_i(arr: np.ndarray, mask: np.ndarray) -> float:
+    """Moran's I spatial autocorrelation on a 2D masked grid (rook contiguity).
+
+    Returns float in [-1, +1], or NaN if fewer than 3 valid pixels / zero variance.
+    """
+    valid_idx = np.argwhere(mask)
+    n = len(valid_idx)
+    if n < 3:
+        return np.nan
+    vals = arr[mask]
+    mean, var = vals.mean(), vals.var()
+    if var == 0:
+        return np.nan
+
+    idx_map = {(int(r), int(c)): i for i, (r, c) in enumerate(valid_idx)}
+    W_sum = cross = 0.0
+    for i, (r, c) in enumerate(valid_idx):
+        zi = vals[i] - mean
+        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            j = idx_map.get((int(r) + dr, int(c) + dc))
+            if j is not None:
+                W_sum += 1.0
+                cross += zi * (vals[j] - mean)
+
+    return np.nan if W_sum == 0 else float((n / W_sum) * (cross / (n * var)))
+
+
+def hotspot_compactness(
+    arr: np.ndarray, mask: np.ndarray, threshold_pct: float = 75,
+) -> dict[str, float]:
+    """Connected component analysis on above-threshold pixels.
+
+    Returns n_clusters, largest_frac, mean_cluster_dist.
+    """
+    from scipy.ndimage import label as nd_label
+    nan_result = {'n_clusters': np.nan, 'largest_frac': np.nan, 'mean_cluster_dist': np.nan}
+    vals = arr[mask]
+    if vals.size < 3:
+        return nan_result
+
+    hot = (arr >= np.nanpercentile(vals, threshold_pct)) & mask
+    labeled, n_clusters = nd_label(hot)
+    if n_clusters == 0:
+        return nan_result
+
+    cluster_coords = [np.argwhere(labeled == lbl) for lbl in range(1, n_clusters + 1)]
+    sizes = [len(c) for c in cluster_coords]
+    centroids = np.array([c.mean(axis=0) for c in cluster_coords])
+    mean_dist = (
+        float(np.mean([
+            np.linalg.norm(centroids[i] - centroids[j])
+            for i, j in itertools.combinations(range(n_clusters), 2)
+        ])) if n_clusters > 1 else 0.0
+    )
+    return {
+        'n_clusters': float(n_clusters),
+        'largest_frac': float(max(sizes) / sum(sizes)),
+        'mean_cluster_dist': mean_dist,
+    }
+
+
+def effective_radius(arr: np.ndarray, mask: np.ndarray, frac: float = 0.5) -> float:
+    """Radius (pixels) containing ``frac`` of total signal, weighted by value."""
+    valid_idx = np.argwhere(mask)
+    if len(valid_idx) < 1:
+        return np.nan
+    vals = arr[mask]
+    w = vals - vals.min()
+    total = w.sum()
+
+    if total == 0:
+        centroid = valid_idx.mean(axis=0)
+        dists = np.sort(np.linalg.norm(valid_idx - centroid, axis=1))
+        return float(dists[min(int(np.ceil(frac * len(dists))) - 1, len(dists) - 1)])
+
+    centroid = (valid_idx * w[:, np.newaxis]).sum(axis=0) / total
+    dists = np.linalg.norm(valid_idx - centroid, axis=1)
+    order = np.argsort(dists)
+    hit = min(np.searchsorted(np.cumsum(w[order]), frac * total), len(dists) - 1)
+    return float(dists[order[hit]])

@@ -1,6 +1,21 @@
+"""
+XGBoost-based avalanche debris classifier.
+
+Covers the full supervised learning pipeline for track-level debris detection:
+
+  - build_training_set  : iterate labeled tracks, extract features, return X/y
+  - train_classifier    : fit an XGBClassifier on the resulting feature matrix
+  - predict_tracks      : score all tracks in a GeoDataFrame, returning p_debris
+
+Feature extraction delegates entirely to sarvalanche.ml.track_features.
+File discovery and loading delegate to sarvalanche.io.load_data.
+Track iteration delegates to sarvalanche.utils.generators.
+"""
+
 import logging
 import warnings
 from pathlib import Path
+import re
 
 warnings.filterwarnings('ignore', category=RuntimeWarning, message='All-NaN slice encountered')
 
@@ -8,89 +23,90 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import xarray as xr
-from tqdm import tqdm
 from xgboost import XGBClassifier
 
 from sarvalanche.ml.track_features import (
     STATIC_FEATURE_VARS,
-    TRACK_MASK_CHANNEL,
     _PER_TRACK_GROUPS,
-    aggregate_seg_features,
     compute_scene_context,
     extract_track_features,
-    extract_track_patch,
-    extract_track_patch_with_target,
 )
-
-log = logging.getLogger(__name__)
+from sarvalanche.utils.generators import iter_labeled_run_tracks
 
 from sarvalanche.ml.weight_utils import find_weights
 
 TRACK_PREDICTOR_DIR: Path = Path(__file__).parent / 'weights' / 'track_predictor'
 TRACK_PREDICTOR_MODEL: Path = find_weights("track_classifier")
 
+
+log = logging.getLogger(__name__)
+
 # Labels 0/1 → no debris, labels 2/3 → debris
 BINARY_THRESHOLD: int = 2
 
+def zone_from_path(path: Path) -> str:
+    """Extract zone name from a gpkg or nc filename like ``Zone_Name_2025-02-04.gpkg``."""
+    return re.sub(r'_\d{4}-\d{2}-\d{2}$', '', path.stem)
 
-def _load_ds(nc_path: Path, target_crs, var_whitelist: list[str] | None = None) -> xr.Dataset:
-    """Load 2D (y, x) variables from a run NetCDF, reprojecting to target_crs.
+def _discover_run_files(
+    runs_dir: Path,
+    require_target: bool = False,
+) -> tuple[list[Path], list[Path]]:
+    """Discover paired gpkg and nc files in a runs directory.
+
+    Pairs each .nc file with the .gpkg that shares its zone prefix. Optionally
+    filters to only nc files that contain ``unmasked_p_target``.
 
     Parameters
     ----------
-    nc_path : Path
-        Path to a ``*_YYYY-MM-DD.nc`` run file.
-    target_crs :
-        Any CRS accepted by rioxarray (e.g. ``gdf.crs``). Typically EPSG:32611.
-    var_whitelist : list[str] or None
-        If provided, only load these variables (intersected with available 2D
-        vars). Otherwise loads all 2D vars, which can use excessive memory for
-        files with many orbit-specific variables.
+    runs_dir : Path
+        Directory containing .gpkg and .nc run file pairs.
+    require_target : bool
+        If True, skip nc files that lack ``unmasked_p_target``.
 
     Returns
     -------
-    xr.Dataset
-        Dataset in ``target_crs`` containing the requested 2D variables.
+    gpkg_paths : list[Path]
+    nc_paths   : list[Path]
+        Paired lists — gpkg_paths[i] corresponds to nc_paths[i].
     """
-    import gc
+    zone_to_gpkg: dict[str, Path] = {
+        zone_from_path(p): p for p in sorted(runs_dir.glob('*.gpkg'))
+    }
 
-    ds_peek = xr.open_dataset(nc_path)
-    load_vars = [v for v in ds_peek.data_vars if ds_peek[v].dims == ('y', 'x')]
-    ds_peek.close()
+    gpkg_paths: list[Path] = []
+    nc_paths: list[Path] = []
 
-    if var_whitelist is not None:
-        available = set(load_vars)
-        load_vars = [v for v in var_whitelist if v in available]
+    for nc_path in sorted(runs_dir.glob('*.nc')):
+        zone = zone_from_path(nc_path)
+        gpkg_path = zone_to_gpkg.get(zone)
+        if gpkg_path is None:
+            log.warning('discover_run_files: no gpkg for zone %s, skipping %s', zone, nc_path.name)
+            continue
 
-    # Reproject one variable at a time to reduce peak memory
-    reprojected = {}
-    for var in load_vars:
-        da = (
-            xr.open_dataset(nc_path)[[var]]
-            .astype(np.float32)
-            .rio.write_crs('EPSG:4326')
-            .rio.reproject(target_crs)
-        )
-        reprojected[var] = da[var]
-        da.close()
-        gc.collect()
+        if require_target:
+            ds_peek = xr.open_dataset(nc_path)
+            has_target = 'unmasked_p_target' in ds_peek.data_vars
+            ds_peek.close()
+            if not has_target:
+                log.info('discover_run_files: %s lacks unmasked_p_target, skipping', nc_path.name)
+                continue
 
-    ds = xr.Dataset(reprojected)
-    log.debug("_load_ds: loaded %s — %d vars (%.0f MB)",
-              nc_path.name, len(load_vars),
-              sum(ds[v].nbytes for v in ds.data_vars) / 1e6)
-    return ds
+        gpkg_paths.append(gpkg_path)
+        nc_paths.append(nc_path)
+
+    log.info('discover_run_files: found %d paired files in %s', len(nc_paths), runs_dir)
+    return gpkg_paths, nc_paths
 
 
 def build_training_set(
     labels: dict,
     runs_dir: Path,
 ) -> tuple[pd.DataFrame, pd.Series]:
-    """
-    Extract features and binary labels for all labeled tracks.
+    """Extract features and binary labels for all labeled tracks.
 
-    Tracks with label >= ``BINARY_THRESHOLD`` (2 or 3) are treated as
-    debris-present (y=1); labels 0 or 1 are debris-absent (y=0).
+    Tracks with label >= BINARY_THRESHOLD (2 or 3) are treated as debris-present
+    (y=1); labels 0 or 1 are debris-absent (y=0).
 
     Parameters
     ----------
@@ -98,7 +114,7 @@ def build_training_set(
         Contents of ``track_labels.json``. Keys are ``zone|date|track_idx``;
         values have ``zone``, ``date``, ``track_idx``, ``label`` fields.
     runs_dir : Path
-        Directory containing ``.gpkg`` and ``.nc`` run file pairs.
+        Directory containing .gpkg and .nc run file pairs.
 
     Returns
     -------
@@ -106,112 +122,72 @@ def build_training_set(
         Feature matrix, one row per labeled track, indexed by label key.
     y : pd.Series
         Binary labels (0 = no debris, 1 = debris), same index as X.
-
-    Examples
-    --------
-    >>> X, y = build_training_set(labels, runs_dir)
-    >>> X.shape
-    (55, 41)
-    >>> y.value_counts()
-    debris
-    1    38
-    0    17
     """
-    # Build zone → gpkg lookup (gpkg may only exist for one date per zone)
-    zone_to_gpkg: dict[str, Path] = {}
-    for gpkg_path in runs_dir.glob('*.gpkg'):
-        zone = _zone_from_gpkg(gpkg_path)
-        zone_to_gpkg[zone] = gpkg_path
+    # Discover which vars are needed: static + aspect + per-track orbit vars
+    def _needed_vars(nc_path: Path) -> set[str]:
+        ds_peek = xr.open_dataset(nc_path)
+        orbit_vars = {v for v in ds_peek.data_vars
+                      for pattern in _PER_TRACK_GROUPS.values() if pattern.match(v)}
+        ds_peek.close()
+        return set(STATIC_FEATURE_VARS) | {'slope', 'aspect'} | orbit_vars
 
-    # Group labels by (zone, date) to minimise expensive reproject calls
-    by_file: dict[str, list] = {}
-    for key, meta in labels.items():
-        stem = f"{meta['zone']}_{meta['date']}"
-        by_file.setdefault(stem, []).append((key, meta))
+    gpkg_paths, nc_paths = _discover_run_files(runs_dir)
 
     rows: list[dict] = []
-    for stem, entries in by_file.items():
-        zone = entries[0][1]['zone']
-        nc_path = runs_dir / f"{stem}.nc"
-        gpkg_path = zone_to_gpkg.get(zone)
-        if gpkg_path is None or not nc_path.exists():
-            log.warning("build_training_set: missing files for %s, skipping", stem)
-            continue
+    current_stem: str | None = None
+    scene_ctx: dict | None = None
 
-        log.info("build_training_set: extracting features from %s (%d tracks)",
-                 stem, len(entries))
-        gdf = gpd.read_file(gpkg_path)
-        # Discover which vars are needed: static + aspect + per-track orbit vars
-        ds_peek = xr.open_dataset(nc_path)
-        needed = set(STATIC_FEATURE_VARS) | {'aspect'}
-        for pattern in _PER_TRACK_GROUPS.values():
-            needed |= {v for v in ds_peek.data_vars if pattern.match(v)}
-        ds_peek.close()
-        needed |= {'slope', 'aspect'}  # required for scene context
-        ds = _load_ds(nc_path, gdf.crs, var_whitelist=list(needed))
-        scene_ctx = compute_scene_context(ds)
+    for key, meta, row, ds in iter_labeled_run_tracks(gpkg_paths, nc_paths, labels):
+        stem = f"{meta['zone']}_{meta['date']}"
+        if stem != current_stem:
+            scene_ctx = compute_scene_context(ds)
+            current_stem = stem
 
-        for ti, (key, meta) in enumerate(tqdm(entries, desc=stem, unit="trk")):
-            idx = meta['track_idx']
-            if idx not in gdf.index:
-                log.warning("build_training_set: track %d not in %s, skipping", idx, stem)
-                continue
-            feats = extract_track_features(gdf.loc[idx], ds, scene_ctx=scene_ctx)
-            feats['_key'] = key
-            feats['_label'] = meta['label']
-            rows.append(feats)
-            if (ti + 1) % 20 == 0:
-                import gc; gc.collect()
-
-        ds.close()
-        del ds
-        import gc; gc.collect()
+        feats = extract_track_features(row, ds, scene_ctx=scene_ctx)
+        feats['_key'] = key
+        feats['_label'] = meta['label']
+        rows.append(feats)
 
     if not rows:
-        log.warning("build_training_set: no matching tracks found in %s", runs_dir)
+        log.warning('build_training_set: no matching tracks found in %s', runs_dir)
         return pd.DataFrame(), pd.Series([], name='debris', dtype=int)
 
     df = pd.DataFrame(rows).set_index('_key')
     y = (df.pop('_label') >= BINARY_THRESHOLD).astype(int).rename('debris')
-    X = df
 
     log.info(
-        "build_training_set: %d samples, %d features, %.0f%% positive",
-        len(X), X.shape[1], 100 * y.mean(),
+        'build_training_set: %d samples, %d features, %.0f%% positive',
+        len(df), df.shape[1], 100 * y.mean(),
     )
-    return X, y
+    return df, y
 
 
 def train_classifier(X: pd.DataFrame, y: pd.Series) -> XGBClassifier:
-    """
-    Fit an XGBoost binary classifier on labeled tracks.
+    """Fit an XGBoost binary classifier on labeled tracks.
 
     Parameters
     ----------
     X : pd.DataFrame
-        Feature matrix from ``build_training_set``.
+        Feature matrix from build_training_set.
     y : pd.Series
         Binary labels (0 = no debris, 1 = debris).
 
     Returns
     -------
     XGBClassifier
-        Fitted model. Feature names are stored in ``clf.feature_names_in_``.
+        Fitted model. Feature names stored in clf.feature_names_in_.
 
     Notes
     -----
-    Missing feature values are imputed with column medians before fitting.
-    ``scale_pos_weight`` is set to ``n_neg / n_pos`` only when negative
-    samples outnumber positives, otherwise left at 1.0.
+    Missing values are imputed with column medians before fitting.
+    scale_pos_weight is set to n_neg/n_pos when negatives outnumber positives.
     """
     neg, pos = int((y == 0).sum()), int((y == 1).sum())
     scale_pos_weight = (neg / pos) if pos > 0 and neg > pos else 1.0
     log.info(
-        "train_classifier: %d pos / %d neg, scale_pos_weight=%.2f",
+        'train_classifier: %d pos / %d neg, scale_pos_weight=%.2f',
         pos, neg, scale_pos_weight,
     )
-
-    X_filled = X.fillna(X.median())
 
     clf = XGBClassifier(
         n_estimators=100,
@@ -221,456 +197,56 @@ def train_classifier(X: pd.DataFrame, y: pd.Series) -> XGBClassifier:
         eval_metric='logloss',
         random_state=42,
     )
-    clf.fit(X_filled, y)
+    clf.fit(X.fillna(X.median()), y)
 
     log.debug(
-        "train_classifier: train accuracy=%.3f",
-        float((clf.predict(X_filled) == y).mean()),
+        'train_classifier: train accuracy=%.3f',
+        float((clf.predict(X.fillna(X.median())) == y).mean()),
     )
     return clf
 
+def predict_track(clf, row, ds, scene_ctx):
+    """Mostly a testing function for single tracks"""
+    feats = extract_track_features(row, ds, scene_ctx=scene_ctx)
+    X = pd.DataFrame([feats]).reindex(columns=clf.feature_names_in_).fillna(0)
+    return float(clf.predict_proba(X)[0, 1])
 
 def predict_tracks(
     clf: XGBClassifier,
     gdf: gpd.GeoDataFrame,
     ds: xr.Dataset,
-    seg_encoder=None,
 ) -> gpd.GeoDataFrame:
-    """
-    Score all tracks in a GeoDataFrame, adding a ``p_debris`` column.
+    """Score all tracks in a GeoDataFrame, adding a p_debris column.
 
     Parameters
     ----------
     clf : XGBClassifier
-        Fitted classifier from ``train_classifier``.
+        Fitted classifier from train_classifier.
     gdf : gpd.GeoDataFrame
-        Track polygons to score. Must be in the same CRS as ``ds``.
+        Track polygons to score. Must be in the same CRS as ds.
     ds : xr.Dataset
-        Dataset already reprojected to ``gdf.crs``.
-    seg_encoder : TrackSegEncoder, optional
-        If provided, runs segmentation and appends aggregated seg features.
+        Dataset already reprojected to gdf.crs.
 
     Returns
     -------
     gpd.GeoDataFrame
-        Copy of ``gdf`` with an added ``p_debris`` column (float in [0, 1]).
+        Copy of gdf with an added p_debris column (float in [0, 1]).
     """
-    import torch
-
     scene_ctx = compute_scene_context(ds)
-    feature_rows = []
-    for _, row in gdf.iterrows():
-        feats = extract_track_features(row, ds, scene_ctx=scene_ctx)
-
-        if seg_encoder is not None:
-            patch = extract_track_patch(row, ds)
-            with torch.no_grad():
-                seg_logits = seg_encoder.segment(torch.FloatTensor(patch[np.newaxis]))
-                seg_probs = torch.sigmoid(seg_logits).numpy()[0, 0]  # (H, W)
-            track_mask = patch[TRACK_MASK_CHANNEL]
-            feats.update(aggregate_seg_features(seg_probs, track_mask))
-
-        feature_rows.append(feats)
+    feature_rows = [
+        extract_track_features(row, ds, scene_ctx=scene_ctx)
+        for _, row in gdf.iterrows()
+    ]
 
     X_pred = pd.DataFrame(feature_rows, index=gdf.index)
-
-    # Align to training features; fill unseen columns with median, drop extras
     train_cols = list(clf.feature_names_in_)
-    medians = X_pred[train_cols].median()
-    X_pred = X_pred.reindex(columns=train_cols).fillna(medians)
+    X_pred = X_pred.reindex(columns=train_cols).fillna(X_pred[train_cols].median())
 
-    proba = clf.predict_proba(X_pred)[:, 1]
     result = gdf.copy()
-    result['p_debris'] = proba
+    result['p_debris'] = clf.predict_proba(X_pred)[:, 1]
 
     log.info(
-        "predict_tracks: scored %d tracks, mean p_debris=%.3f",
-        len(result), float(proba.mean()),
+        'predict_tracks: scored %d tracks, mean p_debris=%.3f',
+        len(result), float(result['p_debris'].mean()),
     )
     return result
-
-
-def build_patch_training_set(
-    labels: dict,
-    runs_dir: Path,
-    size: int = 64,
-) -> tuple[np.ndarray, pd.Series]:
-    """
-    Extract multi-channel raster patches and binary labels for all labeled tracks.
-
-    Mirrors ``build_training_set`` but returns spatial patch arrays instead of
-    aggregate feature vectors.  Files are loaded once per stem to minimise I/O.
-
-    Parameters
-    ----------
-    labels : dict
-        Contents of ``track_labels.json``.
-    runs_dir : Path
-        Directory containing ``.gpkg`` and ``.nc`` run file pairs.
-    size : int
-        Output patch side length in pixels (passed to ``extract_track_patch``).
-
-    Returns
-    -------
-    patches : np.ndarray of shape (N, C, size, size)
-        Float32 patch array; channel order matches ``PATCH_CHANNELS``.
-    y : pd.Series
-        Binary labels indexed by label key (0 = no debris, 1 = debris).
-    """
-    from sarvalanche.ml.track_features import N_PATCH_CHANNELS
-
-    by_file: dict[str, list] = {}
-    for key, meta in labels.items():
-        stem = f"{meta['zone']}_{meta['date']}"
-        by_file.setdefault(stem, []).append((key, meta))
-
-    patch_list:  list[np.ndarray] = []
-    key_list:    list[str]        = []
-    label_list:  list[int]        = []
-
-    for stem, entries in by_file.items():
-        gpkg_path = runs_dir / f"{stem}.gpkg"
-        nc_path   = runs_dir / f"{stem}.nc"
-        if not gpkg_path.exists() or not nc_path.exists():
-            log.warning("build_patch_training_set: missing files for %s, skipping", stem)
-            continue
-
-        log.info("build_patch_training_set: extracting patches from %s (%d tracks)",
-                 stem, len(entries))
-        gdf = gpd.read_file(gpkg_path)
-        ds  = _load_ds(nc_path, gdf.crs)
-
-        for key, meta in tqdm(entries, desc=stem, unit="trk"):
-            idx = meta['track_idx']
-            if idx not in gdf.index:
-                log.warning("build_patch_training_set: track %d not in %s, skipping", idx, stem)
-                continue
-            patch = extract_track_patch(gdf.loc[idx], ds, size=size)
-            patch_list.append(patch)
-            key_list.append(key)
-            label_list.append(meta['label'])
-
-        ds.close()
-
-    if not patch_list:
-        return np.empty((0, N_PATCH_CHANNELS, size, size), dtype=np.float32), \
-               pd.Series([], name='debris', dtype=int)
-
-    patches = np.stack(patch_list, axis=0)
-    y = pd.Series(
-        [int(lbl >= BINARY_THRESHOLD) for lbl in label_list],
-        index=key_list,
-        name='debris',
-        dtype=int,
-    )
-    log.info(
-        "build_patch_training_set: %d patches, %.0f%% positive",
-        len(patches), 100 * y.mean(),
-    )
-    return patches, y
-
-
-def build_seg_training_set(
-    labels: dict,
-    runs_dir: Path,
-    size: int = 64,
-    shapes_path: Path | None = None,
-) -> tuple[np.ndarray, np.ndarray, pd.Series]:
-    """
-    Extract patches, pixel-wise soft targets, and binary labels for segmentation training.
-
-    Like ``build_patch_training_set`` but also extracts ``unmasked_p_target`` as a
-    ``(1, size, size)`` target for each track.
-
-    When ``shapes_path`` points to a GeoPackage of manually drawn debris
-    polygons (with a ``key`` column matching label keys), the shapes are
-    rasterized onto the patch grid and blended with ``unmasked_p_target`` via
-    element-wise max.
-
-    Returns
-    -------
-    patches : np.ndarray of shape (N, C, size, size)
-    targets : np.ndarray of shape (N, 1, size, size)
-    y : pd.Series  — binary labels indexed by label key
-    """
-    from sarvalanche.ml.track_features import N_PATCH_CHANNELS
-
-    # Load drawn debris shapes once, grouped by label key
-    shapes_by_key: dict[str, gpd.GeoDataFrame] = {}
-    if shapes_path is not None and shapes_path.exists():
-        all_shapes = gpd.read_file(shapes_path)
-        if not all_shapes.empty and 'key' in all_shapes.columns:
-            for k, grp in all_shapes.groupby('key'):
-                shapes_by_key[k] = grp
-            log.info("build_seg_training_set: loaded %d debris shapes (%d keys)",
-                     len(all_shapes), len(shapes_by_key))
-
-    # Build zone → gpkg lookup (gpkg may only exist for one date per zone)
-    zone_to_gpkg: dict[str, Path] = {}
-    for gpkg_path in runs_dir.glob('*.gpkg'):
-        zone = _zone_from_gpkg(gpkg_path)
-        zone_to_gpkg[zone] = gpkg_path
-
-    by_file: dict[str, list] = {}
-    for key, meta in labels.items():
-        stem = f"{meta['zone']}_{meta['date']}"
-        by_file.setdefault(stem, []).append((key, meta))
-
-    patch_list:  list[np.ndarray] = []
-    target_list: list[np.ndarray] = []
-    key_list:    list[str]        = []
-    label_list:  list[int]        = []
-
-    for stem, entries in by_file.items():
-        zone = entries[0][1]['zone']
-        nc_path   = runs_dir / f"{stem}.nc"
-        gpkg_path = zone_to_gpkg.get(zone)
-        if gpkg_path is None or not nc_path.exists():
-            log.warning("build_seg_training_set: missing files for %s, skipping", stem)
-            continue
-
-        log.info("build_seg_training_set: extracting patches from %s (%d tracks)",
-                 stem, len(entries))
-        gdf = gpd.read_file(gpkg_path)
-        ds  = _load_ds(nc_path, gdf.crs)
-
-        for key, meta in tqdm(entries, desc=stem, unit="trk"):
-            idx = meta['track_idx']
-            if idx not in gdf.index:
-                log.warning("build_seg_training_set: track %d not in %s, skipping", idx, stem)
-                continue
-            # Get drawn shapes for this track (reprojected to dataset CRS)
-            track_shapes = shapes_by_key.get(key)
-            if track_shapes is not None and track_shapes.crs is not None and track_shapes.crs != gdf.crs:
-                track_shapes = track_shapes.to_crs(gdf.crs)
-            patch, target = extract_track_patch_with_target(
-                gdf.loc[idx], ds, size=size, debris_shapes=track_shapes,
-            )
-            # For no-debris tracks, zero out the target inside the track polygon
-            # so the model learns to suppress false positives there.
-            if meta['label'] < BINARY_THRESHOLD:
-                track_mask = patch[TRACK_MASK_CHANNEL]
-                target[0] *= (1.0 - track_mask)
-            patch_list.append(patch)
-            target_list.append(target)
-            key_list.append(key)
-            label_list.append(meta['label'])
-
-        ds.close()
-
-    if not patch_list:
-        return (
-            np.empty((0, N_PATCH_CHANNELS, size, size), dtype=np.float32),
-            np.empty((0, 1, size, size), dtype=np.float32),
-            pd.Series([], name='debris', dtype=int),
-        )
-
-    patches = np.stack(patch_list, axis=0)
-    targets = np.stack(target_list, axis=0)
-    y = pd.Series(
-        [int(lbl >= BINARY_THRESHOLD) for lbl in label_list],
-        index=key_list,
-        name='debris',
-        dtype=int,
-    )
-    log.info(
-        "build_seg_training_set: %d patches, %.0f%% positive",
-        len(patches), 100 * y.mean(),
-    )
-    return patches, targets, y
-
-
-def _zone_from_gpkg(gpkg_path: Path) -> str:
-    """Extract zone name from a gpkg filename like ``Zone_Name_2025-02-04.gpkg``."""
-    import re
-    return re.sub(r'_\d{4}-\d{2}-\d{2}$', '', gpkg_path.stem)
-
-
-def build_all_seg_patches(
-    runs_dir: Path,
-    size: int = 64,
-    max_tracks: int | None = None,
-    memmap_dir: Path | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Extract patches and pixel-wise soft targets for *all* tracks across all dates.
-
-    Each ``.gpkg`` defines track polygons for a zone.  Every ``.nc`` file that
-    shares the same zone prefix **and** contains ``unmasked_p_target`` is paired with
-    that gpkg, producing one (patch, target) per (track, date) combination.
-
-    Unlike ``build_seg_training_set``, this does not require labels.
-    ``unmasked_p_target`` is used as-is (no negative-label zeroing, no debris-shape
-    blending).
-
-    Parameters
-    ----------
-    runs_dir : Path
-        Directory containing ``.gpkg`` and ``.nc`` run file pairs.
-    size : int
-        Output patch side length in pixels.
-    max_tracks : int or None
-        If set, stop after extracting this many patches (for quick testing).
-    memmap_dir : Path or None
-        Directory for disk-backed memmap arrays. When provided, patches are
-        written incrementally to ``patches.npy`` / ``targets.npy`` on disk
-        instead of being accumulated in RAM. The returned arrays are
-        memory-mapped views. If None, falls back to in-memory accumulation.
-
-    Returns
-    -------
-    patches : np.ndarray of shape (N, C, size, size)
-    targets : np.ndarray of shape (N, 1, size, size)
-    """
-    from tqdm import tqdm
-
-    from sarvalanche.ml.track_features import N_PATCH_CHANNELS, _PATCH_DATA_VARS, _TARGET_VAR
-
-    # Only load variables needed for patch extraction (not all 50+ 2D vars)
-    _SEG_VARS = list(_PATCH_DATA_VARS) + [_TARGET_VAR]
-
-    gpkg_paths = sorted(runs_dir.glob('*.gpkg'))
-    if not gpkg_paths:
-        log.warning("build_all_seg_patches: no .gpkg files in %s", runs_dir)
-        return (
-            np.empty((0, N_PATCH_CHANNELS, size, size), dtype=np.float32),
-            np.empty((0, 1, size, size), dtype=np.float32),
-        )
-
-    # Group nc files by zone prefix
-    all_nc = sorted(runs_dir.glob('*.nc'))
-    nc_by_zone: dict[str, list[Path]] = {}
-    for nc in all_nc:
-        zone = _zone_from_gpkg(nc)
-        nc_by_zone.setdefault(zone, []).append(nc)
-
-    # ── Disk-backed extraction using raw binary files ─────────────────────
-    # Writing via open_memmap dirties every page and causes OOM on macOS.
-    # Instead, stream patches as raw bytes to a binary file, then memmap
-    # the result read-only for training (random access only touches a few
-    # pages at a time).
-    use_disk = memmap_dir is not None
-    if use_disk:
-        memmap_dir = Path(memmap_dir)
-        memmap_dir.mkdir(parents=True, exist_ok=True)
-        patches_fp = memmap_dir / 'patches.bin'
-        targets_fp = memmap_dir / 'targets.bin'
-        patch_fh = open(patches_fp, 'wb')
-        target_fh = open(targets_fp, 'wb')
-        write_count = 0
-    else:
-        patch_list: list[np.ndarray] = []
-        target_list: list[np.ndarray] = []
-
-    done = False
-    for gpkg_path in gpkg_paths:
-        if done:
-            break
-        zone = _zone_from_gpkg(gpkg_path)
-        nc_paths = nc_by_zone.get(zone, [])
-        if not nc_paths:
-            log.warning("build_all_seg_patches: no .nc files for zone %s, skipping", zone)
-            continue
-
-        gdf = gpd.read_file(gpkg_path)
-
-        for nc_path in nc_paths:
-            if done:
-                break
-            # Skip nc files that lack unmasked_p_target (e.g. early incomplete runs)
-            ds_peek = xr.open_dataset(nc_path)
-            has_target = 'unmasked_p_target' in ds_peek.data_vars
-            ds_peek.close()
-            if not has_target:
-                log.info("build_all_seg_patches: %s lacks unmasked_p_target, skipping",
-                         nc_path.name)
-                continue
-
-            ds = _load_ds(nc_path, gdf.crs, var_whitelist=_SEG_VARS)
-            desc = f"{zone} | {nc_path.stem.split('_')[-1]}"
-            log.info("build_all_seg_patches: %d tracks x %s", len(gdf), nc_path.name)
-
-            for idx in tqdm(gdf.index, desc=desc, unit="trk"):
-                try:
-                    patch, target = extract_track_patch_with_target(
-                        gdf.loc[idx], ds, size=size,
-                    )
-                except Exception:
-                    log.debug("build_all_seg_patches: failed on track %d in %s",
-                              idx, nc_path.name, exc_info=True)
-                    continue
-
-                if use_disk:
-                    expected_p = (N_PATCH_CHANNELS, size, size)
-                    expected_t = (1, size, size)
-                    if patch.shape != expected_p or target.shape != expected_t:
-                        log.debug("build_all_seg_patches: skipping track %d — "
-                                  "patch shape %s (expected %s), target shape %s (expected %s)",
-                                  idx, patch.shape, expected_p, target.shape, expected_t)
-                        continue
-                    patch_fh.write(patch.astype(np.float32).tobytes())
-                    target_fh.write(target.astype(np.float32).tobytes())
-                    write_count += 1
-                else:
-                    patch_list.append(patch)
-                    target_list.append(target)
-
-                count = write_count if use_disk else len(patch_list)
-                if max_tracks is not None and count >= max_tracks:
-                    done = True
-                    log.info("build_all_seg_patches: hit max_tracks=%d, stopping early", max_tracks)
-                    break
-
-            ds.close()
-            del ds
-            import gc; gc.collect()
-
-    # ── Return results ──────────────────────────────────────────────────────
-    if use_disk:
-        patch_fh.close()
-        target_fh.close()
-
-        if write_count == 0:
-            patches_fp.unlink(missing_ok=True)
-            targets_fp.unlink(missing_ok=True)
-            return (
-                np.empty((0, N_PATCH_CHANNELS, size, size), dtype=np.float32),
-                np.empty((0, 1, size, size), dtype=np.float32),
-            )
-
-        # Memory-map the raw binary files as read-only for training.
-        # Only pages accessed by the DataLoader will be resident.
-        # Verify file sizes match write_count to catch shape mismatches.
-        patch_bytes = N_PATCH_CHANNELS * size * size * 4
-        target_bytes = 1 * size * size * 4
-        actual_p = patches_fp.stat().st_size // patch_bytes
-        actual_t = targets_fp.stat().st_size // target_bytes
-        if actual_p != write_count or actual_t != write_count:
-            log.warning("build_all_seg_patches: file size mismatch — "
-                        "write_count=%d, patch_file=%d, target_file=%d. Using min.",
-                        write_count, actual_p, actual_t)
-            write_count = min(actual_p, actual_t)
-
-        patches_out = np.memmap(
-            patches_fp, dtype=np.float32, mode='r',
-            shape=(write_count, N_PATCH_CHANNELS, size, size),
-        )
-        targets_out = np.memmap(
-            targets_fp, dtype=np.float32, mode='r',
-            shape=(write_count, 1, size, size),
-        )
-        log.info("build_all_seg_patches: %d patches written to disk (%s, %.1f GB)",
-                 write_count, memmap_dir,
-                 patches_fp.stat().st_size / 1e9 + targets_fp.stat().st_size / 1e9)
-        return patches_out, targets_out
-    else:
-        if not patch_list:
-            return (
-                np.empty((0, N_PATCH_CHANNELS, size, size), dtype=np.float32),
-                np.empty((0, 1, size, size), dtype=np.float32),
-            )
-        patches = np.stack(patch_list, axis=0)
-        targets = np.stack(target_list, axis=0)
-        log.info("build_all_seg_patches: %d total patches (%d zones, %d nc files)",
-                 len(patches), len(gpkg_paths), sum(1 for ncs in nc_by_zone.values() for _ in ncs))
-        return patches, targets
