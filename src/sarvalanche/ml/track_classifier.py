@@ -16,7 +16,7 @@ import logging
 import warnings
 from pathlib import Path
 import re
-from joblib import Parallel, delayed
+from joblib import Parallel, delayed, parallel_config
 from tqdm.auto import tqdm
 warnings.filterwarnings('ignore', category=RuntimeWarning, message='All-NaN slice encountered')
 
@@ -215,7 +215,7 @@ def predict_tracks(clf, gdf, ds, n_jobs=1):
     scene_ctx = compute_scene_context(ds)
     precomputed = precompute_group_arrays(ds)
 
-    feature_rows = Parallel(n_jobs=n_jobs, prefer='processes')(
+    feature_rows = Parallel(n_jobs=n_jobs, prefer='processes', max_nbytes=None)(
         delayed(_extract_one)(row, ds, STATIC_FEATURE_VARS, scene_ctx, precomputed, gdf.crs)
         for _, row in tqdm(gdf.iterrows(), total=len(gdf), desc='extracting features', unit='track')
     )
