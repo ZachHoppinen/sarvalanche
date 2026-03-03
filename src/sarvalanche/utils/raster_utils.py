@@ -10,6 +10,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import rioxarray as rxa
+from rasterio.features import rasterize
+from rasterio.transform import from_bounds
 
 import logging
 log = logging.getLogger(__name__)
@@ -149,31 +151,53 @@ def _y_slice(da: xr.DataArray, miny: float, maxy: float):
     else:
         return slice(miny, maxy)  # ascending (WGS84)
 
-
 def clip_arr(da: xr.DataArray, geom) -> np.ndarray:
     minx, miny, maxx, maxy = geom.bounds
     da_local = da.sel(x=slice(minx, maxx), y=_y_slice(da, miny, maxy))
-    return da_local.rio.clip([geom], all_touched=True, drop=True).values.astype(float).ravel()
-
+    arr = da_local.values.astype(float)
+    mask = _rasterize_mask(geom, arr.shape, geom.bounds)
+    arr[~mask] = np.nan
+    return arr.ravel()
 
 def clip_2d(da: xr.DataArray, geom) -> tuple[np.ndarray, np.ndarray]:
     minx, miny, maxx, maxy = geom.bounds
     da_local = da.sel(x=slice(minx, maxx), y=_y_slice(da, miny, maxy))
-    arr = da_local.rio.clip([geom], all_touched=True, drop=True).values.astype(float)
+    arr = da_local.values.astype(float)
+    mask = _rasterize_mask(geom, arr.shape, geom.bounds)
+    arr[~mask] = np.nan
     return arr, np.isfinite(arr)
 
-# raster_utils.py
-def geom_bbox_clip(ds: xr.Dataset, geom) -> xr.Dataset:
-    """Coarse clip of a dataset to geometry bbox before polygon clipping.
+def _rasterize_mask(geom, arr_shape, bounds) -> np.ndarray:
+    minx, miny, maxx, maxy = bounds
+    transform = from_bounds(minx, miny, maxx, maxy, arr_shape[1], arr_shape[0])
+    return rasterize(
+        [geom], out_shape=arr_shape, transform=transform,
+        dtype=np.uint8, all_touched=True,
+    ).astype(bool)
+# def clip_arr(da: xr.DataArray, geom) -> np.ndarray:
+#     minx, miny, maxx, maxy = geom.bounds
+#     da_local = da.sel(x=slice(minx, maxx), y=_y_slice(da, miny, maxy))
+#     return da_local.rio.clip([geom], all_touched=True, drop=True).values.astype(float).ravel()
 
-    Reduces data volume for subsequent rio.clip calls from full scene to
-    track extent. y slice is reversed because raster y coordinates descend.
-    """
-    minx, miny, maxx, maxy = geom.bounds
-    return ds.sel(
-        x=slice(minx, maxx),
-        y=slice(maxy, miny),
-    )
+
+# def clip_2d(da: xr.DataArray, geom) -> tuple[np.ndarray, np.ndarray]:
+#     minx, miny, maxx, maxy = geom.bounds
+#     da_local = da.sel(x=slice(minx, maxx), y=_y_slice(da, miny, maxy))
+#     arr = da_local.rio.clip([geom], all_touched=True, drop=True).values.astype(float)
+#     return arr, np.isfinite(arr)
+
+# # raster_utils.py
+# def geom_bbox_clip(ds: xr.Dataset, geom) -> xr.Dataset:
+#     """Coarse clip of a dataset to geometry bbox before polygon clipping.
+
+#     Reduces data volume for subsequent rio.clip calls from full scene to
+#     track extent. y slice is reversed because raster y coordinates descend.
+#     """
+#     minx, miny, maxx, maxy = geom.bounds
+#     return ds.sel(
+#         x=slice(minx, maxx),
+#         y=slice(maxy, miny),
+#     )
 
 
 def pixel_agg_da(ds: xr.Dataset, var_list: list[str], agg: str = 'max') -> xr.DataArray | None:

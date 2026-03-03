@@ -213,7 +213,7 @@ def compute_mahalanobis_with_sweeping(model, da, avalanche_date, stride=4, devic
     log.debug("Image size: %d x %d", prior.shape[-2], prior.shape[-1])
 
     # Predict distribution using sweeping
-    mu, sigma = predict_with_sweeping(
+    mu, sigma = predict_with_sweeping_fast(
         model,
         prior,
         patch_size=16,
@@ -250,3 +250,291 @@ def compute_mahalanobis_with_sweeping(model, da, avalanche_date, stride=4, devic
     }
 
     return distance_da
+
+"""
+Unified inference pipeline for avalanche debris detection.
+
+Combines three models in sequence:
+  1. SAR Transformer  — pre-computed upstream, produces unmasked_p_target in ds
+  2. XGBoost          — scores all tracks cheaply, produces p_debris per track
+  3. CNN Segmenter    — runs only on tracks where p_debris >= cnn_threshold,
+                        produces pixel-wise debris probability mask per track
+
+Usage
+-----
+    from sarvalanche.ml.inference import DebrisInference
+
+    pipeline = DebrisInference.load()
+    result_gdf = pipeline.predict(gdf, ds, src_crs=gdf.crs)
+
+    # result_gdf has columns:
+    #   p_debris  : float in [0, 1] — XGBoost debris probability
+    #   seg_mask  : np.ndarray (64, 64) or None — CNN segmentation mask
+    #               None for tracks below cnn_threshold
+"""
+
+import logging
+from pathlib import Path
+
+import geopandas as gpd
+import joblib
+import numpy as np
+import torch
+import xarray as xr
+from tqdm.auto import tqdm
+
+from sarvalanche.ml.debris_segmenter import DebrisSegmenter
+from sarvalanche.ml.track_classifier import (
+    STATIC_FEATURE_VARS,
+    predict_tracks,
+)
+from sarvalanche.ml.track_features import (
+    compute_scene_context,
+    precompute_group_arrays,
+)
+from sarvalanche.ml.track_patch_extraction import extract_context_patch
+from sarvalanche.ml.weight_utils import find_weights
+from sarvalanche.ml.SARTransformer import SARTransformer
+# from sarvalanche.ml.rtc_inference import load_model, prep_dataset_for_inference, predict_with_sweeping_fast
+
+log = logging.getLogger(__name__)
+
+# ── Device resolution ─────────────────────────────────────────────────────────
+
+def _resolve_device(device: str | torch.device | None) -> torch.device:
+    if device is not None:
+        return torch.device(device)
+    if torch.backends.mps.is_available():
+        return torch.device('mps')
+    if torch.cuda.is_available():
+        return torch.device('cuda')
+    return torch.device('cpu')
+
+
+# ── Main inference class ──────────────────────────────────────────────────────
+
+class DebrisInference:
+    """Unified debris detection pipeline.
+
+    Parameters
+    ----------
+    xgb_clf : XGBClassifier
+        Fitted XGBoost track classifier.
+    seg_model : DebrisSegmenter
+        Fitted CNN segmentation model.
+    sar_transformer : SARTransformer or None
+        SAR transformer for upstream RTC prediction. If None, assumes
+        unmasked_p_target is already present in the dataset.
+    cnn_threshold : float
+        XGBoost p_debris threshold above which the CNN is run.
+        Tracks below this threshold get seg_mask=None.
+    patch_size : int
+        Patch size for CNN input. Must match training size.
+    device : torch.device
+        Device for CNN inference.
+    """
+
+    def __init__(
+        self,
+        xgb_clf,
+        seg_model: DebrisSegmenter,
+        cnn_threshold: float = 0.5,
+        patch_size: int = 64,
+        device: torch.device | None = None,
+    ):
+        self.xgb_clf        = xgb_clf
+        self.seg_model      = seg_model
+        self.cnn_threshold  = cnn_threshold
+        self.patch_size     = patch_size
+        self.device         = _resolve_device(device)
+
+        self.seg_model.eval()
+        self.seg_model.to(self.device)
+
+        log.info(
+            'DebrisInference ready — device=%s, cnn_threshold=%.2f',
+            self.device, self.cnn_threshold,
+        )
+
+    @classmethod
+    def load(
+        cls,
+        cnn_threshold: float = 0.5,
+        patch_size: int = 64,
+        device: str | torch.device | None = None,
+        load_sar_transformer: bool = False,
+    ) -> 'DebrisInference':
+        """Load all models from the weights registry.
+
+        Parameters
+        ----------
+        cnn_threshold : float
+            XGBoost gate threshold for CNN.
+        patch_size : int
+            Must match the patch size used during CNN training.
+        device : str or torch.device or None
+            Force a specific device. Auto-detected if None.
+        load_sar_transformer : bool
+            Load the SAR transformer model. Set False if unmasked_p_target
+            is already present in the dataset (the common case).
+
+        Returns
+        -------
+        DebrisInference
+        """
+        resolved_device = _resolve_device(device)
+
+        # XGBoost
+        xgb_path = find_weights('track_classifier')
+        xgb_clf  = joblib.load(xgb_path)
+        log.info('Loaded XGBoost from %s (%d features)', xgb_path, len(xgb_clf.feature_names_in_))
+
+        # CNN segmenter
+        seg_path  = find_weights('debris_segmenter')
+        seg_model = DebrisSegmenter(patch_size=patch_size)
+        seg_model.load_state_dict(
+            torch.load(seg_path, map_location=resolved_device)
+        )
+        log.info('Loaded CNN segmenter from %s', seg_path)
+
+
+        return cls(
+            xgb_clf=xgb_clf,
+            seg_model=seg_model,
+            cnn_threshold=cnn_threshold,
+            patch_size=patch_size,
+            device=resolved_device,
+        )
+
+    def predict(
+        self,
+        gdf: gpd.GeoDataFrame,
+        ds: xr.Dataset,
+        src_crs=None,
+        n_jobs: int = 1,
+        show_progress: bool = True,
+    ) -> gpd.GeoDataFrame:
+        """Run the full inference pipeline on all tracks.
+
+        Parameters
+        ----------
+        gdf : gpd.GeoDataFrame
+            Track polygons.
+        ds : xr.Dataset
+            Dataset in WGS84 with SAR and terrain variables.
+            Must contain unmasked_p_target unless sar_transformer is loaded.
+        src_crs : CRS or None
+            CRS of gdf.geometry. Defaults to gdf.crs.
+        n_jobs : int
+            Parallel workers for XGBoost feature extraction.
+        show_progress : bool
+            Show tqdm progress bar for CNN inference.
+
+        Returns
+        -------
+        gpd.GeoDataFrame
+            Copy of gdf with added columns:
+              p_debris : float — XGBoost debris probability
+              seg_mask : object — (patch_size, patch_size) float32 ndarray
+                         or None for tracks below cnn_threshold
+        """
+        src_crs = src_crs or gdf.crs
+        result  = gdf.copy()
+
+        # ── Step 1: XGBoost — score all tracks ───────────────────────────────
+        log.info('Step 1/2: XGBoost scoring %d tracks...', len(gdf))
+        result = predict_tracks(self.xgb_clf, gdf, ds, n_jobs=n_jobs)
+
+        # ── Step 2: CNN — score tracks above threshold ────────────────────────
+        cnn_candidates = result[result['p_debris'] >= self.cnn_threshold]
+        log.info(
+            'Step 2/2: CNN segmentation on %d / %d tracks (p_debris >= %.2f)',
+            len(cnn_candidates), len(gdf), self.cnn_threshold,
+        )
+
+        seg_masks = {idx: None for idx in gdf.index}
+
+        if len(cnn_candidates) > 0:
+            iterator = tqdm(
+                cnn_candidates.iterrows(),
+                total=len(cnn_candidates),
+                desc='CNN segmentation',
+                unit='track',
+                disable=not show_progress,
+            )
+            with torch.no_grad():
+                for idx, row in iterator:
+                    try:
+                        patch = extract_context_patch(
+                            row, ds,
+                            size=self.patch_size,
+                            src_crs=src_crs,
+                        )
+                        x      = torch.from_numpy(patch).float().unsqueeze(0).to(self.device)
+                        logits = self.seg_model(x)
+                        probs  = torch.sigmoid(logits).squeeze().cpu().numpy()
+                        seg_masks[idx] = probs.astype(np.float32)
+                    except Exception as exc:
+                        log.warning('CNN failed on track %s: %s', idx, exc)
+                        seg_masks[idx] = None
+
+        result['seg_mask'] = [seg_masks[idx] for idx in result.index]
+
+        n_segmented = sum(1 for m in result['seg_mask'] if m is not None)
+        log.info(
+            'predict: %d tracks scored, %d segmented, mean p_debris=%.3f',
+            len(result), n_segmented, float(result['p_debris'].mean()),
+        )
+        return result
+
+    def predict_single(
+        self,
+        row: gpd.GeoSeries,
+        ds: xr.Dataset,
+        src_crs=None,
+        scene_ctx: dict | None = None,
+    ) -> tuple[float, np.ndarray | None]:
+        """Score a single track — useful for debugging and notebooks.
+
+        Parameters
+        ----------
+        row : gpd.GeoSeries
+        ds : xr.Dataset
+        src_crs : CRS or None
+        scene_ctx : dict or None
+            Pre-computed scene context. Computed fresh if None.
+
+        Returns
+        -------
+        p_debris : float
+        seg_mask : np.ndarray (patch_size, patch_size) or None
+        """
+        from sarvalanche.ml.track_features import extract_track_features
+
+        if scene_ctx is None:
+            scene_ctx = compute_scene_context(ds)
+
+        feats = extract_track_features(
+            row, ds, scene_ctx=scene_ctx, src_crs=src_crs or row.crs
+        )
+
+        import pandas as pd
+        X = pd.DataFrame([feats]).reindex(
+            columns=self.xgb_clf.feature_names_in_
+        ).fillna(0)
+        p_debris = float(self.xgb_clf.predict_proba(X)[0, 1])
+
+        seg_mask = None
+        if p_debris >= self.cnn_threshold:
+            try:
+                patch = extract_context_patch(
+                    row, ds, size=self.patch_size, src_crs=src_crs
+                )
+                x = torch.from_numpy(patch).float().unsqueeze(0).to(self.device)
+                with torch.no_grad():
+                    probs = torch.sigmoid(self.seg_model(x))
+                seg_mask = probs.squeeze().cpu().numpy().astype(np.float32)
+            except Exception as exc:
+                log.warning('CNN failed on predict_single: %s', exc)
+
+        return p_debris, seg_mask

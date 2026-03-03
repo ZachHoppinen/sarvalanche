@@ -39,7 +39,6 @@ from sarvalanche.ml.weight_utils import find_weights
 TRACK_PREDICTOR_DIR: Path = Path(__file__).parent / 'weights' / 'track_predictor'
 TRACK_PREDICTOR_MODEL: Path = find_weights("track_classifier")
 
-
 log = logging.getLogger(__name__)
 
 # Labels 0/1 → no debris, labels 2/3 → debris
@@ -229,43 +228,3 @@ def predict_tracks(clf, gdf, ds, n_jobs=1):
     log.info('predict_tracks: scored %d tracks, mean p_debris=%.3f',
              len(result), float(result['p_debris'].mean()))
     return result
-# def predict_tracks(
-#     clf: XGBClassifier,
-#     gdf: gpd.GeoDataFrame,
-#     ds: xr.Dataset,
-# ) -> gpd.GeoDataFrame:
-#     """Score all tracks in a GeoDataFrame, adding a p_debris column.
-
-#     Parameters
-#     ----------
-#     clf : XGBClassifier
-#         Fitted classifier from train_classifier.
-#     gdf : gpd.GeoDataFrame
-#         Track polygons to score. Must be in the same CRS as ds.
-#     ds : xr.Dataset
-#         Dataset already reprojected to gdf.crs.
-
-#     Returns
-#     -------
-#     gpd.GeoDataFrame
-#         Copy of gdf with an added p_debris column (float in [0, 1]).
-#     """
-#     scene_ctx = compute_scene_context(ds)
-#     group_aggregates = precompute_group_arrays(ds)
-#     feature_rows = [
-#         extract_track_features(row, ds, scene_ctx=scene_ctx, precomputed=group_aggregates, src_crs=gdf.crs)
-#         for _, row in gdf.iterrows()
-#     ]
-
-#     X_pred = pd.DataFrame(feature_rows, index=gdf.index)
-#     train_cols = list(clf.feature_names_in_)
-#     X_pred = X_pred.reindex(columns=train_cols).fillna(X_pred[train_cols].median())
-
-#     result = gdf.copy()
-#     result['p_debris'] = clf.predict_proba(X_pred)[:, 1]
-
-#     log.info(
-#         'predict_tracks: scored %d tracks, mean p_debris=%.3f',
-#         len(result), float(result['p_debris'].mean()),
-#     )
-#     return result

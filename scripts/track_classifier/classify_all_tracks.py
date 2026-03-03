@@ -63,7 +63,7 @@ for runs_dir in RUNS_DIRS:
         log.info("Scoring %s | %s [%s] — %d tracks", zone, date, danger, len(gdf))
 
         ds = load_netcdf_to_dataset(nc_path)
-        result_gdf = predict_tracks(clf, gdf, ds, n_jobs=8)
+        result_gdf = predict_tracks(clf, gdf, ds, n_jobs=1)
         ds.close()
 
         file_results = {}
