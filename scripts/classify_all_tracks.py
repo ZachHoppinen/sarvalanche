@@ -7,6 +7,7 @@ Usage
 
 Outputs a GeoPackage with all tracks and their p_debris scores.
 Processes one file at a time with per-variable reprojection to stay within memory.
+Feature extraction is parallelized across tracks within each loaded dataset.
 Results are written incrementally so partial progress is preserved if interrupted.
 """
 
@@ -21,6 +22,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import xarray as xr
+from joblib import Parallel, delayed
 from tqdm import tqdm
 
 from sarvalanche.ml.track_classifier import TRACK_PREDICTOR_MODEL, _load_ds
@@ -33,6 +35,8 @@ from sarvalanche.ml.track_features import (
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s  %(name)s – %(message)s')
 log = logging.getLogger(__name__)
+
+N_JOBS = 6  # parallel workers for feature extraction (threads share memory)
 
 RUNS_DIRS = [
     Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/high_danger_output/sarvalanche_runs'),
@@ -61,6 +65,14 @@ def _zone_from_stem(stem):
 def _date_from_stem(stem):
     m = re.search(r'(\d{4}-\d{2}-\d{2})$', stem)
     return m.group(1) if m else None
+
+
+def _extract_one(row, ds, scene_ctx):
+    """Extract features for a single track. Returns dict or None on failure."""
+    try:
+        return extract_track_features(row, ds, scene_ctx=scene_ctx)
+    except Exception:
+        return None
 
 
 # ── Process each file independently ──────────────────────────────────────────
@@ -97,38 +109,50 @@ for runs_dir in RUNS_DIRS:
 
         # Discover needed vars
         ds_peek = xr.open_dataset(nc_path)
-        needed = set(STATIC_FEATURE_VARS) | {'aspect'}
+        needed = set(STATIC_FEATURE_VARS) | {'slope', 'aspect'}
         for pattern in _PER_TRACK_GROUPS.values():
             needed |= {v for v in ds_peek.data_vars if pattern.match(v)}
         ds_peek.close()
 
         # Per-variable reprojection to control memory
-        needed |= {'slope', 'aspect'}  # required for scene context
         ds = _load_ds(nc_path, gdf.crs, var_whitelist=list(needed))
         scene_ctx = compute_scene_context(ds)
 
-        results = []
-        for idx in tqdm(gdf.index, desc=f"{zone} | {date}", unit="trk"):
-            row = gdf.loc[idx]
-            try:
-                feats = extract_track_features(row, ds, scene_ctx=scene_ctx)
-                X_row = pd.DataFrame([feats]).reindex(columns=clf.feature_names_in_).fillna(0)
-                p_debris = float(clf.predict_proba(X_row)[0, 1])
-            except Exception as exc:
-                log.debug("Failed on track %d: %s", idx, exc)
-                p_debris = float('nan')
+        # Parallel feature extraction using threads (shared memory, no copy)
+        indices = list(gdf.index)
+        rows = [gdf.loc[idx] for idx in indices]
 
+        feat_list = Parallel(n_jobs=N_JOBS, backend='threading')(
+            delayed(_extract_one)(row, ds, scene_ctx)
+            for row in tqdm(rows, desc=f"{zone} | {date}", unit="trk")
+        )
+
+        # Batch predict
+        feature_dicts = []
+        valid_mask = []
+        for feats in feat_list:
+            if feats is not None:
+                feature_dicts.append(feats)
+                valid_mask.append(True)
+            else:
+                feature_dicts.append({})
+                valid_mask.append(False)
+
+        X_all = pd.DataFrame(feature_dicts).reindex(columns=clf.feature_names_in_).fillna(0)
+        probas = clf.predict_proba(X_all)[:, 1]
+
+        results = []
+        for i, idx in enumerate(indices):
             label_key = f"{zone}|{date}|{idx}"
             label_info = labels.get(label_key, {})
-
             results.append({
                 'zone': zone,
                 'date': date,
                 'danger': danger,
                 'track_idx': int(idx),
-                'p_debris': p_debris,
+                'p_debris': float(probas[i]) if valid_mask[i] else float('nan'),
                 'label': label_info.get('label'),
-                'geometry': row.geometry,
+                'geometry': gdf.loc[idx].geometry,
             })
 
         # Write this file's results immediately
@@ -137,7 +161,7 @@ for runs_dir in RUNS_DIRS:
         log.info("  Wrote %d predictions to %s", len(file_gdf), partial_path.name)
 
         ds.close()
-        del ds, results, file_gdf, gdf
+        del ds, results, file_gdf, gdf, feat_list, feature_dicts, X_all, probas
         gc.collect()
 
 # ── Merge all partial results ─────────────────────────────────────────────────
