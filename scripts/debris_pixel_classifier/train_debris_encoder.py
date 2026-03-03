@@ -31,6 +31,8 @@ from sarvalanche.ml.losses import WeightedDebrisLoss
 from sarvalanche.ml.debris_segmenter import DebrisSegmenter
 from sarvalanche.ml.seg_training_data import build_seg_training_set
 from sarvalanche.ml.weight_utils import find_weights, save_weights
+from sarvalanche.ml.track_patch_extraction import TRACK_MASK_CHANNEL
+
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s  %(name)s – %(message)s')
 log = logging.getLogger(__name__)
@@ -207,10 +209,11 @@ for epoch in range(start_epoch, N_EPOCHS + 1):
     for patches_b, targets_b in train_loader:
         patches_b = patches_b.to(device)
         targets_b = targets_b.to(device)
+        track_masks_b = patches_b[:, TRACK_MASK_CHANNEL:TRACK_MASK_CHANNEL + 1]
 
         optimiser.zero_grad()
         logits = model(patches_b)
-        loss   = criterion(logits, targets_b)
+        loss   = criterion(logits, targets_b, track_masks=track_masks_b)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimiser.step()
@@ -225,12 +228,12 @@ for epoch in range(start_epoch, N_EPOCHS + 1):
         for patches_b, targets_b in val_loader:
             patches_b = patches_b.to(device)
             targets_b = targets_b.to(device)
+            track_masks_b = patches_b[:, TRACK_MASK_CHANNEL:TRACK_MASK_CHANNEL + 1]
 
             logits = model(patches_b)
-            loss   = criterion(logits, targets_b)
+            loss   = criterion(logits, targets_b, track_masks=track_masks_b)
             val_losses.append(loss.item())
 
-            # IoU at threshold 0.5
             probs = torch.sigmoid(logits)
             pred  = (probs > 0.5).float()
             gt    = (targets_b > 0.5).float()
