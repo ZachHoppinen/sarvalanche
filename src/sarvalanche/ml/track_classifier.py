@@ -16,7 +16,8 @@ import logging
 import warnings
 from pathlib import Path
 import re
-
+from joblib import Parallel, delayed
+from tqdm.auto import tqdm
 warnings.filterwarnings('ignore', category=RuntimeWarning, message='All-NaN slice encountered')
 
 import geopandas as gpd
@@ -30,9 +31,9 @@ from sarvalanche.ml.track_features import (
     _PER_TRACK_GROUPS,
     compute_scene_context,
     extract_track_features,
+    precompute_group_arrays
 )
 from sarvalanche.utils.generators import iter_labeled_run_tracks
-
 from sarvalanche.ml.weight_utils import find_weights
 
 TRACK_PREDICTOR_DIR: Path = Path(__file__).parent / 'weights' / 'track_predictor'
@@ -123,13 +124,6 @@ def build_training_set(
     y : pd.Series
         Binary labels (0 = no debris, 1 = debris), same index as X.
     """
-    # Discover which vars are needed: static + aspect + per-track orbit vars
-    def _needed_vars(nc_path: Path) -> set[str]:
-        ds_peek = xr.open_dataset(nc_path)
-        orbit_vars = {v for v in ds_peek.data_vars
-                      for pattern in _PER_TRACK_GROUPS.values() if pattern.match(v)}
-        ds_peek.close()
-        return set(STATIC_FEATURE_VARS) | {'slope', 'aspect'} | orbit_vars
 
     gpkg_paths, nc_paths = _discover_run_files(runs_dir)
 
@@ -137,13 +131,14 @@ def build_training_set(
     current_stem: str | None = None
     scene_ctx: dict | None = None
 
-    for key, meta, row, ds in iter_labeled_run_tracks(gpkg_paths, nc_paths, labels):
+    for key, meta, row, ds, crs in iter_labeled_run_tracks(gpkg_paths, nc_paths, labels):
         stem = f"{meta['zone']}_{meta['date']}"
         if stem != current_stem:
             scene_ctx = compute_scene_context(ds)
             current_stem = stem
+            precomputed_arrays = precompute_group_arrays(ds)
 
-        feats = extract_track_features(row, ds, scene_ctx=scene_ctx)
+        feats = extract_track_features(row, ds, scene_ctx=scene_ctx, precomputed=precomputed_arrays, src_crs=crs)
         feats['_key'] = key
         feats['_label'] = meta['label']
         rows.append(feats)
@@ -205,48 +200,72 @@ def train_classifier(X: pd.DataFrame, y: pd.Series) -> XGBClassifier:
     )
     return clf
 
-def predict_track(clf, row, ds, scene_ctx):
+def predict_track(clf, row, ds, scene_ctx, src_crs = None):
     """Mostly a testing function for single tracks"""
-    feats = extract_track_features(row, ds, scene_ctx=scene_ctx)
+    feats = extract_track_features(row, ds, scene_ctx=scene_ctx, src_crs=src_crs)
     X = pd.DataFrame([feats]).reindex(columns=clf.feature_names_in_).fillna(0)
     return float(clf.predict_proba(X)[0, 1])
 
-def predict_tracks(
-    clf: XGBClassifier,
-    gdf: gpd.GeoDataFrame,
-    ds: xr.Dataset,
-) -> gpd.GeoDataFrame:
-    """Score all tracks in a GeoDataFrame, adding a p_debris column.
+def _extract_one(row, ds, static_vars, scene_ctx, precomputed, src_crs):
+    """Single-track wrapper for parallel execution."""
+    return extract_track_features(row, ds, static_vars, scene_ctx, precomputed, src_crs)
 
-    Parameters
-    ----------
-    clf : XGBClassifier
-        Fitted classifier from train_classifier.
-    gdf : gpd.GeoDataFrame
-        Track polygons to score. Must be in the same CRS as ds.
-    ds : xr.Dataset
-        Dataset already reprojected to gdf.crs.
 
-    Returns
-    -------
-    gpd.GeoDataFrame
-        Copy of gdf with an added p_debris column (float in [0, 1]).
-    """
+def predict_tracks(clf, gdf, ds, n_jobs=1):
     scene_ctx = compute_scene_context(ds)
-    feature_rows = [
-        extract_track_features(row, ds, scene_ctx=scene_ctx)
-        for _, row in gdf.iterrows()
-    ]
+    precomputed = precompute_group_arrays(ds)
+
+    feature_rows = Parallel(n_jobs=n_jobs, prefer='processes')(
+        delayed(_extract_one)(row, ds, STATIC_FEATURE_VARS, scene_ctx, precomputed, gdf.crs)
+        for _, row in tqdm(gdf.iterrows(), total=len(gdf), desc='extracting features', unit='track')
+    )
 
     X_pred = pd.DataFrame(feature_rows, index=gdf.index)
     train_cols = list(clf.feature_names_in_)
-    X_pred = X_pred.reindex(columns=train_cols).fillna(X_pred[train_cols].median())
+    X_pred = X_pred.reindex(columns=train_cols).fillna(X_pred.median())
 
     result = gdf.copy()
     result['p_debris'] = clf.predict_proba(X_pred)[:, 1]
-
-    log.info(
-        'predict_tracks: scored %d tracks, mean p_debris=%.3f',
-        len(result), float(result['p_debris'].mean()),
-    )
+    log.info('predict_tracks: scored %d tracks, mean p_debris=%.3f',
+             len(result), float(result['p_debris'].mean()))
     return result
+# def predict_tracks(
+#     clf: XGBClassifier,
+#     gdf: gpd.GeoDataFrame,
+#     ds: xr.Dataset,
+# ) -> gpd.GeoDataFrame:
+#     """Score all tracks in a GeoDataFrame, adding a p_debris column.
+
+#     Parameters
+#     ----------
+#     clf : XGBClassifier
+#         Fitted classifier from train_classifier.
+#     gdf : gpd.GeoDataFrame
+#         Track polygons to score. Must be in the same CRS as ds.
+#     ds : xr.Dataset
+#         Dataset already reprojected to gdf.crs.
+
+#     Returns
+#     -------
+#     gpd.GeoDataFrame
+#         Copy of gdf with an added p_debris column (float in [0, 1]).
+#     """
+#     scene_ctx = compute_scene_context(ds)
+#     group_aggregates = precompute_group_arrays(ds)
+#     feature_rows = [
+#         extract_track_features(row, ds, scene_ctx=scene_ctx, precomputed=group_aggregates, src_crs=gdf.crs)
+#         for _, row in gdf.iterrows()
+#     ]
+
+#     X_pred = pd.DataFrame(feature_rows, index=gdf.index)
+#     train_cols = list(clf.feature_names_in_)
+#     X_pred = X_pred.reindex(columns=train_cols).fillna(X_pred[train_cols].median())
+
+#     result = gdf.copy()
+#     result['p_debris'] = clf.predict_proba(X_pred)[:, 1]
+
+#     log.info(
+#         'predict_tracks: scored %d tracks, mean p_debris=%.3f',
+#         len(result), float(result['p_debris'].mean()),
+#     )
+#     return result

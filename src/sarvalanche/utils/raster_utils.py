@@ -141,15 +141,39 @@ def label_raster_with_aspect(da, aspect_da=None, aspect_threshold=np.pi/2):
 
 # ── Clip helpers ──────────────────────────────────────────────────────────────
 
+def _y_slice(da: xr.DataArray, miny: float, maxy: float):
+    """Return y slice in the correct direction for this DataArray's y coordinate."""
+    y_vals = da.y.values
+    if y_vals[0] > y_vals[-1]:
+        return slice(maxy, miny)  # descending (UTM)
+    else:
+        return slice(miny, maxy)  # ascending (WGS84)
+
+
 def clip_arr(da: xr.DataArray, geom) -> np.ndarray:
-    """Clip a DataArray to a geometry and return a flat float array."""
-    return da.rio.clip([geom], all_touched=True, drop=True).values.astype(float).ravel()
+    minx, miny, maxx, maxy = geom.bounds
+    da_local = da.sel(x=slice(minx, maxx), y=_y_slice(da, miny, maxy))
+    return da_local.rio.clip([geom], all_touched=True, drop=True).values.astype(float).ravel()
 
 
 def clip_2d(da: xr.DataArray, geom) -> tuple[np.ndarray, np.ndarray]:
-    """Clip a DataArray to a geometry; return (2d_array, finite_mask)."""
-    arr = da.rio.clip([geom], all_touched=True, drop=True).values.astype(float)
+    minx, miny, maxx, maxy = geom.bounds
+    da_local = da.sel(x=slice(minx, maxx), y=_y_slice(da, miny, maxy))
+    arr = da_local.rio.clip([geom], all_touched=True, drop=True).values.astype(float)
     return arr, np.isfinite(arr)
+
+# raster_utils.py
+def geom_bbox_clip(ds: xr.Dataset, geom) -> xr.Dataset:
+    """Coarse clip of a dataset to geometry bbox before polygon clipping.
+
+    Reduces data volume for subsequent rio.clip calls from full scene to
+    track extent. y slice is reversed because raster y coordinates descend.
+    """
+    minx, miny, maxx, maxy = geom.bounds
+    return ds.sel(
+        x=slice(minx, maxx),
+        y=slice(maxy, miny),
+    )
 
 
 def pixel_agg_da(ds: xr.Dataset, var_list: list[str], agg: str = 'max') -> xr.DataArray | None:
@@ -172,31 +196,77 @@ def pixel_agg_da(ds: xr.Dataset, var_list: list[str], agg: str = 'max') -> xr.Da
 
 # ── Spatial metrics ───────────────────────────────────────────────────────────
 
+# def morans_i(arr: np.ndarray, mask: np.ndarray) -> float:
+#     """Moran's I spatial autocorrelation on a 2D masked grid (rook contiguity).
+
+#     Returns float in [-1, +1], or NaN if fewer than 3 valid pixels / zero variance.
+#     """
+#     valid_idx = np.argwhere(mask)
+#     n = len(valid_idx)
+#     if n < 3:
+#         return np.nan
+#     vals = arr[mask]
+#     mean, var = vals.mean(), vals.var()
+#     if var == 0:
+#         return np.nan
+
+#     idx_map = {(int(r), int(c)): i for i, (r, c) in enumerate(valid_idx)}
+#     W_sum = cross = 0.0
+#     for i, (r, c) in enumerate(valid_idx):
+#         zi = vals[i] - mean
+#         for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+#             j = idx_map.get((int(r) + dr, int(c) + dc))
+#             if j is not None:
+#                 W_sum += 1.0
+#                 cross += zi * (vals[j] - mean)
+
+#     return np.nan if W_sum == 0 else float((n / W_sum) * (cross / (n * var)))
+
+from scipy.sparse import csr_matrix
+
 def morans_i(arr: np.ndarray, mask: np.ndarray) -> float:
     """Moran's I spatial autocorrelation on a 2D masked grid (rook contiguity).
 
-    Returns float in [-1, +1], or NaN if fewer than 3 valid pixels / zero variance.
+    Vectorised via sparse weight matrix — O(n) in valid pixels rather than
+    a Python loop over neighbours.
     """
     valid_idx = np.argwhere(mask)
     n = len(valid_idx)
     if n < 3:
         return np.nan
+
     vals = arr[mask]
-    mean, var = vals.mean(), vals.var()
+    mean = vals.mean()
+    var = vals.var()
     if var == 0:
         return np.nan
 
-    idx_map = {(int(r), int(c)): i for i, (r, c) in enumerate(valid_idx)}
-    W_sum = cross = 0.0
+    # Map (row, col) → position in vals
+    idx_map = np.full(arr.shape, -1, dtype=np.intp)
     for i, (r, c) in enumerate(valid_idx):
-        zi = vals[i] - mean
-        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-            j = idx_map.get((int(r) + dr, int(c) + dc))
-            if j is not None:
-                W_sum += 1.0
-                cross += zi * (vals[j] - mean)
+        idx_map[r, c] = i
 
-    return np.nan if W_sum == 0 else float((n / W_sum) * (cross / (n * var)))
+    # Find all rook-neighbour pairs in one vectorised pass
+    rows_i, cols_j = [], []
+    r, c = valid_idx[:, 0], valid_idx[:, 1]
+    for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        nr, nc_ = r + dr, c + dc
+        in_bounds = (nr >= 0) & (nr < arr.shape[0]) & (nc_ >= 0) & (nc_ < arr.shape[1])
+        j = idx_map[nr[in_bounds], nc_[in_bounds]]
+        valid = j >= 0
+        rows_i.append(np.where(in_bounds)[0][valid])
+        cols_j.append(j[valid])
+
+    rows_i = np.concatenate(rows_i)
+    cols_j = np.concatenate(cols_j)
+
+    # Sparse binary weight matrix W, then compute cross term as W·z dot z
+    W = csr_matrix((np.ones(len(rows_i)), (rows_i, cols_j)), shape=(n, n))
+    z = vals - mean
+    W_sum = W.nnz
+    cross = z @ W.dot(z)
+
+    return float((n / W_sum) * (cross / (n * var)))
 
 
 def hotspot_compactness(

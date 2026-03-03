@@ -84,28 +84,6 @@ def iter_track_pol_combinations(
 
             yield track, pol, da
 
-
-def _load_run_ds(
-    nc_path: Path,
-    target_crs,
-    var_whitelist: list[str] | None = None,
-) -> xr.Dataset:
-    """Load a run NetCDF and reproject to target_crs.
-
-    Parameters
-    ----------
-    nc_path : Path
-    target_crs : any CRS accepted by rioxarray (e.g. gdf.crs)
-    var_whitelist : if provided, only 2D (y, x) variables in this list are kept
-    """
-    ds = load_netcdf_to_dataset(nc_path)
-
-    if var_whitelist is not None:
-        keep = [v for v in var_whitelist if v in ds.data_vars and ds[v].dims == ('y', 'x')]
-        ds = ds[keep]
-
-    return ds.rio.reproject(target_crs)
-
 def iter_run_tracks(
     gpkg_paths: list[Path],
     nc_paths: list[Path],
@@ -135,15 +113,16 @@ def iter_run_tracks(
     ds : xr.Dataset
         Loaded and reprojected dataset for this file pair. Valid only for the
         current iteration — do not store references across yields.
+    crs: crs of track raw
     """
     for gpkg_path, nc_path in zip(gpkg_paths, nc_paths):
         gdf = gpd.read_file(gpkg_path)
-        ds = _load_run_ds(nc_path, gdf.crs, var_whitelist=var_whitelist)
+        ds = load_netcdf_to_dataset(nc_path)
         log.info('iter_run_tracks: %d tracks — %s', len(gdf), nc_path.name)
 
         try:
             for idx in gdf.index:
-                yield idx, gdf.loc[idx], ds
+                yield idx, gdf.loc[idx], ds, gdf.crs
         finally:
             ds.close()
             del ds
@@ -201,7 +180,7 @@ def iter_labeled_run_tracks(
             continue
 
         gdf = gpd.read_file(gpkg_path)
-        ds = _load_run_ds(nc_path, gdf.crs, var_whitelist=var_whitelist)
+        ds = load_netcdf_to_dataset(nc_path)
         log.info('iter_labeled_run_tracks: %d labeled tracks — %s', len(entries), nc_path.name)
 
         try:
@@ -210,7 +189,7 @@ def iter_labeled_run_tracks(
                 if idx not in gdf.index:
                     log.warning('iter_labeled_run_tracks: track %d not in %s, skipping', idx, stem)
                     continue
-                yield key, meta, gdf.loc[idx], ds
+                yield key, meta, gdf.loc[idx], ds, gdf.crs
         finally:
             ds.close()
             del ds

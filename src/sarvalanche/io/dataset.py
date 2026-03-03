@@ -157,11 +157,11 @@ def assemble_dataset(
 
     return ds
 
-def load_netcdf_to_dataset(filepath, decode_times=True):
+def load_netcdf_to_dataset(filepath, decode_times=True, chunks = 'auto'):
     filepath = validate_path(filepath, should_exist=True)
     assert filepath.suffix == '.nc'
 
-    ds = xr.open_dataset(filepath, decode_times=decode_times, chunks = 'auto')
+    ds = xr.open_dataset(filepath, decode_times=decode_times, chunks = chunks)
 
     if 'crs' in ds.attrs:
         ds = ds.rio.write_crs(ds.attrs['crs'], inplace=True)
@@ -171,6 +171,11 @@ def load_netcdf_to_dataset(filepath, decode_times=True):
     if scalar_coords_to_drop:
         log.debug(f"Dropping scalar coordinates on load: {scalar_coords_to_drop}")
         ds = ds.drop_vars(scalar_coords_to_drop)
+
+    # convert boolean data varaibales to integers
+    for var in ds.data_vars:
+        if ds[var].dtype == bool:
+            ds[var] = ds[var].astype(int)
 
     return ds
 

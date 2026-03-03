@@ -45,6 +45,7 @@ from sarvalanche.utils.raster_utils import (
     clip_arr, clip_2d, pixel_agg_da,
     morans_i, hotspot_compactness, effective_radius,
 )
+from sarvalanche.utils.vector_utils import reproject_geom
 
 log = logging.getLogger(__name__)
 
@@ -148,34 +149,28 @@ def compute_scene_context(ds: xr.Dataset) -> dict[str, float]:
     return ctx
 
 
-# ── Internal helpers ──────────────────────────────────────────────────────────
+def precompute_group_arrays(ds: xr.Dataset) -> dict[str, dict[str, xr.DataArray]]:
+    """Precompute per-track group aggregations across orbits for an entire scene.
 
-def _collect_arrays(
-    geom,
-    ds: xr.Dataset,
-    static_vars: list[str],
-) -> tuple[dict[str, np.ndarray], dict[str, tuple[np.ndarray, np.ndarray]], list[str]]:
-    """Clip all needed arrays once.
+    Call once per dataset before iterating over tracks. Returns a nested dict
+    of {group: {agg: DataArray}} that can be passed to extract_track_features
+    via the precomputed argument, avoiding redundant stacking on every track.
 
-    Static vars inserted first so area_pixels is always taken from a static var.
-    Per-track groups: stacked once, all three aggs computed together.
+    Parameters
+    ----------
+    ds : xr.Dataset
+
+    Returns
+    -------
+    dict[str, dict[str, xr.DataArray]]
+        Outer key: group name (e.g. 'empirical_VV')
+        Inner key: agg name ('max', 'mean', 'std')
+        Value: full-scene aggregated DataArray
     """
-    arrays: dict[str, np.ndarray] = {}
-    arrays_2d: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-    per_track_keys: list[str] = []
-
-    for var in static_vars:
-        if var not in ds:
-            log.debug('_collect_arrays: %s not in dataset, skipping', var)
-            continue
-        try:
-            arrays[var] = clip_arr(ds[var], geom)
-        except Exception as exc:
-            log.debug('_collect_arrays: clip failed for %s – %s', var, exc)
+    result: dict[str, dict[str, xr.DataArray]] = {}
 
     for group, pattern in _PER_TRACK_GROUPS.items():
         matching = [v for v in ds.data_vars if pattern.match(v)]
-        log.debug('_collect_arrays: %s → %d vars', group, len(matching))
         if not matching:
             continue
 
@@ -183,17 +178,59 @@ def _collect_arrays(
         stacked = np.stack([ds[v].values.astype(float) for v in matching], axis=0)
         with np.errstate(all='ignore'), warnings.catch_warnings():
             warnings.simplefilter('ignore', RuntimeWarning)
-            agg_results = {
-                'max':  np.nanmax(stacked, axis=0),
-                'mean': np.nanmean(stacked, axis=0),
-                'std':  np.nanstd(stacked, axis=0),
+            result[group] = {
+                'max':  xr.DataArray(np.nanmax(stacked,  axis=0), dims=ref.dims, coords=ref.coords).rio.write_crs(ref.rio.crs),
+                'mean': xr.DataArray(np.nanmean(stacked, axis=0), dims=ref.dims, coords=ref.coords).rio.write_crs(ref.rio.crs),
+                'std':  xr.DataArray(np.nanstd(stacked,  axis=0), dims=ref.dims, coords=ref.coords).rio.write_crs(ref.rio.crs),
             }
+        log.debug('precompute_group_arrays: %s → %d vars', group, len(matching))
+
+    return result
+
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _collect_arrays(
+    geom,
+    ds: xr.Dataset,
+    static_vars: list[str],
+    precomputed: dict[str, dict[str, xr.DataArray]] | None = None,
+) -> tuple[dict[str, np.ndarray], dict[str, tuple[np.ndarray, np.ndarray]], list[str]]:
+    arrays: dict[str, np.ndarray] = {}
+    arrays_2d: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    per_track_keys: list[str] = []
+
+    for var in static_vars:
+        if var not in ds:
+            continue
+        try:
+            arrays[var] = clip_arr(ds[var], geom)
+        except Exception as exc:
+            log.debug('_collect_arrays: clip failed for %s – %s', var, exc)
+
+    group_das = precomputed if precomputed is not None else {}
+
+    for group, pattern in _PER_TRACK_GROUPS.items():
+        # Use precomputed if available, otherwise compute on the fly
+        if group in group_das:
+            agg_results = group_das[group]
+        else:
+            matching = [v for v in ds.data_vars if pattern.match(v)]
+            if not matching:
+                continue
+            ref = ds[matching[0]]
+            stacked = np.stack([ds[v].values.astype(float) for v in matching], axis=0)
+            with np.errstate(all='ignore'), warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)
+                agg_results = {
+                    'max':  xr.DataArray(np.nanmax(stacked,  axis=0), dims=ref.dims, coords=ref.coords).rio.write_crs(ref.rio.crs),
+                    'mean': xr.DataArray(np.nanmean(stacked, axis=0), dims=ref.dims, coords=ref.coords).rio.write_crs(ref.rio.crs),
+                    'std':  xr.DataArray(np.nanstd(stacked,  axis=0), dims=ref.dims, coords=ref.coords).rio.write_crs(ref.rio.crs),
+                }
 
         max_da = None
-        for agg, agg_arr in agg_results.items():
+        for agg, da in agg_results.items():
             suffix = f'_{agg}' if agg != 'max' else ''
             key = f'{group}{suffix}'
-            da = xr.DataArray(agg_arr, dims=ref.dims, coords=ref.coords).rio.write_crs(ref.rio.crs)
             try:
                 arrays[key] = clip_arr(da, geom)
                 if agg == 'max':
@@ -209,7 +246,6 @@ def _collect_arrays(
                 log.debug('_collect_arrays: 2d clip failed for %s – %s', group, exc)
 
     return arrays, arrays_2d, per_track_keys
-
 
 def _compute_var_stats(
     arrays: dict[str, np.ndarray],
@@ -347,21 +383,21 @@ def _compute_aspect_features(
                   'aspect_mean_sin': np.nan, 'aspect_mean_cos': np.nan}
     if 'aspect' not in ds:
         return nan_aspect, None
-    try:
-        aspect_vals = clip_arr(ds['aspect'], geom)
-        aspect_vals = aspect_vals[np.isfinite(aspect_vals)]
-        if aspect_vals.size == 0:
-            return nan_aspect, None
-        sin_mean = float(np.sin(aspect_vals).mean())
-        cos_mean = float(np.cos(aspect_vals).mean())
-        return {
-            'aspect_mean_resultant': float(np.sqrt(sin_mean ** 2 + cos_mean ** 2)),
-            'aspect_mean_sin': sin_mean,
-            'aspect_mean_cos': cos_mean,
-        }, aspect_vals
-    except Exception as exc:
-        log.warning('_compute_aspect_features: failed – %s', exc)
+    # try:
+    aspect_vals = clip_arr(ds['aspect'], geom)
+    aspect_vals = aspect_vals[np.isfinite(aspect_vals)]
+    if aspect_vals.size == 0:
         return nan_aspect, None
+    sin_mean = float(np.sin(aspect_vals).mean())
+    cos_mean = float(np.cos(aspect_vals).mean())
+    return {
+        'aspect_mean_resultant': float(np.sqrt(sin_mean ** 2 + cos_mean ** 2)),
+        'aspect_mean_sin': sin_mean,
+        'aspect_mean_cos': cos_mean,
+    }, aspect_vals
+    # except Exception as exc:
+        # log.warning('_compute_aspect_features: failed – %s', exc)
+        # return nan_aspect, None
 
 
 def _compute_scene_relative_features(
@@ -395,6 +431,8 @@ def extract_track_features(
     ds: xr.Dataset,
     static_vars: list[str] = STATIC_FEATURE_VARS,
     scene_ctx: dict[str, float] | None = None,
+    precomputed: dict[str, dict[str, xr.DataArray]] | None = None,
+    src_crs=None
 ) -> dict[str, float]:
     """Extract aggregate statistics and correlations for a track polygon.
 
@@ -410,7 +448,10 @@ def extract_track_features(
     dict[str, float]
     """
     geom = row.geometry
-    arrays, arrays_2d, per_track_keys = _collect_arrays(geom, ds, static_vars)
+    if src_crs is not None and src_crs != ds.rio.crs:
+        geom = reproject_geom(geom, src_crs, ds.rio.crs)
+
+    arrays, arrays_2d, per_track_keys = _collect_arrays(geom, ds, static_vars, precomputed)
 
     features, area_pixels = _compute_var_stats(arrays, static_vars)
     features.update(_compute_correlations(arrays, static_vars, per_track_keys))

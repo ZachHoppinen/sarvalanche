@@ -1,3 +1,6 @@
+
+from pyproj import Transformer
+from shapely.ops import transform as shapely_transform
 from rasterio.features import shapes
 from shapely.geometry import shape
 import geopandas as gpd
@@ -33,3 +36,8 @@ def vectorize(raster, reference_da, min_area = None):
         gdf_blobs = gdf_blobs[gdf_blobs.geometry.area > min_area]
 
     return gdf_blobs.reset_index(drop=True)
+
+def reproject_geom(geom, src_crs, dst_crs):
+    """Reproject a shapely geometry from src_crs to dst_crs."""
+    transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+    return shapely_transform(transformer.transform, geom)

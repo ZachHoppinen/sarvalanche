@@ -18,7 +18,6 @@ import dask.array as da
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm.auto import tqdm
 
-
 from sarvalanche.utils.constants import SENTINEL1, OPERA_RTC
 
 import warnings
@@ -627,5 +626,3 @@ def get_snowmodel(swe_fps, start_date = None, stop_date = None, ref_grid = None)
     if ref_grid is not None: swe = swe.rio.reproject_match(ref_grid)
 
     return swe.assign_attrs(units="m", source="ucla", product = "swe")
-
-
