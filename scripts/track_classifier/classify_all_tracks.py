@@ -3,11 +3,11 @@ Classify all tracks across all run directories using the trained XGBoost model.
 
 Usage
 -----
-    conda run -n sarvalanche python scripts/classify_all_tracks.py
+    conda run -n sarvalanche python scripts/track_classifier/classify_all_tracks.py
 
-Outputs a GeoPackage with all tracks and their p_debris scores.
-Processes one file at a time with per-variable reprojection to stay within memory.
-Feature extraction is parallelized across tracks within each loaded dataset.
+Outputs a JSON file mapping track keys to p_debris scores.
+Processes one nc file at a time. For large zones, processes tracks in chunks
+with GC between chunks to control peak memory.
 Results are written incrementally so partial progress is preserved if interrupted.
 """
 
@@ -22,7 +22,6 @@ import joblib
 import numpy as np
 import pandas as pd
 import xarray as xr
-from joblib import Parallel, delayed
 from tqdm import tqdm
 
 from sarvalanche.ml.track_classifier import TRACK_PREDICTOR_MODEL, _load_ds
@@ -36,14 +35,14 @@ from sarvalanche.ml.track_features import (
 logging.basicConfig(level=logging.INFO, format='%(levelname)s  %(name)s – %(message)s')
 log = logging.getLogger(__name__)
 
-N_JOBS = 6  # parallel workers for feature extraction (threads share memory)
+CHUNK_SIZE = 500  # tracks per chunk (GC between chunks)
 
 RUNS_DIRS = [
     Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/high_danger_output/sarvalanche_runs'),
     Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/low_danger_output/sarvalanche_runs'),
 ]
 LABELS_PATH = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/track_labels.json')
-OUTPUT_PATH = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/all_track_predictions.gpkg')
+OUTPUT_PATH = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/all_track_predictions.json')
 PARTIAL_DIR = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/_partial_predictions')
 
 # ── Load classifier ──────────────────────────────────────────────────────────
@@ -68,11 +67,14 @@ def _date_from_stem(stem):
 
 
 def _extract_one(row, ds, scene_ctx):
-    """Extract features for a single track. Returns dict or None on failure."""
     try:
         return extract_track_features(row, ds, scene_ctx=scene_ctx)
     except Exception:
         return None
+
+
+# ── Scene context vars (small subset, cheap to reproject) ────────────────────
+_SCENE_CTX_VARS = {'d_empirical', 'combined_distance', 'slope', 'aspect'}
 
 
 # ── Process each file independently ──────────────────────────────────────────
@@ -93,13 +95,12 @@ for runs_dir in RUNS_DIRS:
         zone = _zone_from_stem(nc_path.stem)
         date = _date_from_stem(nc_path.stem)
         gpkg_path = zone_to_gpkg.get(zone)
-        partial_path = PARTIAL_DIR / f"{nc_path.stem}_{danger}.gpkg"
+        partial_path = PARTIAL_DIR / f"{nc_path.stem}_{danger}.json"
 
         if gpkg_path is None:
             log.warning("No gpkg for zone %s, skipping %s", zone, nc_path.name)
             continue
 
-        # Skip if already processed
         if partial_path.exists():
             log.info("Already processed %s, skipping", nc_path.name)
             continue
@@ -114,79 +115,72 @@ for runs_dir in RUNS_DIRS:
             needed |= {v for v in ds_peek.data_vars if pattern.match(v)}
         ds_peek.close()
 
-        # Per-variable reprojection to control memory
+        # Step 1: Compute scene context from a small subset of vars
+        ds_ctx = _load_ds(nc_path, gdf.crs, var_whitelist=list(_SCENE_CTX_VARS))
+        scene_ctx = compute_scene_context(ds_ctx)
+        ds_ctx.close()
+        del ds_ctx
+        gc.collect()
+
+        # Step 2: Load full needed vars for feature extraction
         ds = _load_ds(nc_path, gdf.crs, var_whitelist=list(needed))
-        scene_ctx = compute_scene_context(ds)
 
-        # Parallel feature extraction using threads (shared memory, no copy)
         indices = list(gdf.index)
-        rows = [gdf.loc[idx] for idx in indices]
+        file_results = {}
 
-        feat_list = Parallel(n_jobs=N_JOBS, backend='threading')(
-            delayed(_extract_one)(row, ds, scene_ctx)
-            for row in tqdm(rows, desc=f"{zone} | {date}", unit="trk")
-        )
+        # Process in chunks to control memory
+        for chunk_start in range(0, len(indices), CHUNK_SIZE):
+            chunk_indices = indices[chunk_start:chunk_start + CHUNK_SIZE]
+            chunk_desc = f"{zone} | {date} [{chunk_start}:{chunk_start + len(chunk_indices)}]"
 
-        # Batch predict
-        feature_dicts = []
-        valid_mask = []
-        for feats in feat_list:
-            if feats is not None:
-                feature_dicts.append(feats)
-                valid_mask.append(True)
-            else:
-                feature_dicts.append({})
-                valid_mask.append(False)
+            feat_list = []
+            for idx in tqdm(chunk_indices, desc=chunk_desc, unit="trk"):
+                feat_list.append(_extract_one(gdf.loc[idx], ds, scene_ctx))
 
-        X_all = pd.DataFrame(feature_dicts).reindex(columns=clf.feature_names_in_).fillna(0)
-        probas = clf.predict_proba(X_all)[:, 1]
+            # Batch predict this chunk
+            valid_mask = [f is not None for f in feat_list]
+            feature_dicts = [f if f is not None else {} for f in feat_list]
 
-        results = []
-        for i, idx in enumerate(indices):
-            label_key = f"{zone}|{date}|{idx}"
-            label_info = labels.get(label_key, {})
-            results.append({
-                'zone': zone,
-                'date': date,
-                'danger': danger,
-                'track_idx': int(idx),
-                'p_debris': float(probas[i]) if valid_mask[i] else float('nan'),
-                'label': label_info.get('label'),
-                'geometry': gdf.loc[idx].geometry,
-            })
+            X_chunk = pd.DataFrame(feature_dicts).reindex(columns=clf.feature_names_in_).fillna(0)
+            probas = clf.predict_proba(X_chunk)[:, 1]
 
-        # Write this file's results immediately
-        file_gdf = gpd.GeoDataFrame(results, geometry='geometry', crs=gdf.crs)
-        file_gdf.to_file(partial_path, driver='GPKG')
-        log.info("  Wrote %d predictions to %s", len(file_gdf), partial_path.name)
+            for i, idx in enumerate(chunk_indices):
+                key = f"{zone}|{date}|{idx}"
+                entry = {
+                    'p_debris': round(float(probas[i]), 4) if valid_mask[i] else None,
+                    'danger': danger,
+                }
+                label_info = labels.get(key)
+                if label_info is not None:
+                    entry['label'] = label_info['label']
+                file_results[key] = entry
+
+            del feat_list, feature_dicts, X_chunk, probas
+            gc.collect()
+
+        # Write all results for this file
+        with open(partial_path, 'w') as f:
+            json.dump(file_results, f)
+        log.info("  Wrote %d predictions to %s", len(file_results), partial_path.name)
 
         ds.close()
-        del ds, results, file_gdf, gdf, feat_list, feature_dicts, X_all, probas
+        del ds, gdf, file_results
         gc.collect()
 
 # ── Merge all partial results ─────────────────────────────────────────────────
 log.info("Merging partial results...")
-partial_files = sorted(PARTIAL_DIR.glob('*.gpkg'))
-if not partial_files:
-    log.error("No partial results found!")
-    exit(1)
+merged = {}
+for p in sorted(PARTIAL_DIR.glob('*.json')):
+    with open(p) as f:
+        merged.update(json.load(f))
 
-parts = [gpd.read_file(p) for p in partial_files]
-result_gdf = pd.concat(parts, ignore_index=True)
-result_gdf = gpd.GeoDataFrame(result_gdf, geometry='geometry')
-result_gdf.to_file(OUTPUT_PATH, driver='GPKG')
-log.info("Saved %d track predictions to %s", len(result_gdf), OUTPUT_PATH)
+with open(OUTPUT_PATH, 'w') as f:
+    json.dump(merged, f, indent=2)
+log.info("Saved %d track predictions to %s", len(merged), OUTPUT_PATH)
 
 # Summary
-n_total = len(result_gdf)
-n_debris = (result_gdf['p_debris'] >= 0.5).sum()
-log.info("Summary: %d total tracks, %d (%.1f%%) predicted as debris (p >= 0.5)",
-         n_total, n_debris, 100 * n_debris / n_total if n_total > 0 else 0)
-
-summary = result_gdf.groupby(['danger', 'zone', 'date']).agg(
-    n_tracks=('p_debris', 'count'),
-    n_debris=('p_debris', lambda x: (x >= 0.5).sum()),
-    mean_p=('p_debris', 'mean'),
-).reset_index()
-print("\nPer-zone/date summary:")
-print(summary.to_string(index=False))
+n_total = len(merged)
+n_scored = sum(1 for v in merged.values() if v['p_debris'] is not None)
+n_debris = sum(1 for v in merged.values() if (v['p_debris'] or 0) >= 0.5)
+log.info("Summary: %d total tracks, %d scored, %d (%.1f%%) predicted as debris (p >= 0.5)",
+         n_total, n_scored, n_debris, 100 * n_debris / n_scored if n_scored > 0 else 0)
