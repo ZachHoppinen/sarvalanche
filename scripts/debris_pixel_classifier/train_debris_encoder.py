@@ -47,7 +47,9 @@ WEIGHTS_DIR = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/weights')
 
 PATCH_SIZE    = 64
 BATCH_SIZE    = 32
-N_EPOCHS      = 50
+N_EPOCHS    = 200
+T_0         = 50   # first restart period (epochs)
+T_MULT      = 2    # each restart period doubles: 50 → 100 → 200
 LR            = 1e-3
 VAL_FRACTION  = 0.15
 RANDOM_SEED   = 42
@@ -158,19 +160,45 @@ log.info('Train: %d  Val: %d  Batches/epoch: %d', n_train, n_val, len(train_load
 # ── Model, optimiser, scheduler ───────────────────────────────────────────────
 
 model     = DebrisSegmenter().to(device)
+
+start_epoch   = 1
+best_val_loss = float('inf')
+log_rows: list[dict] = []
+
+try:
+    RESUME_FROM = find_weights('debris_segmenter')
+    model.load_state_dict(torch.load(RESUME_FROM, map_location=device))
+    log_path = save_weights('debris_segmenter', 'best').parent / 'seg_training_log.csv'
+    if log_path.exists():
+        prev_log      = pd.read_csv(log_path)
+        start_epoch   = int(prev_log['epoch'].max()) + 1
+        best_val_loss = float(prev_log['val_loss'].min())
+        log_rows      = prev_log.to_dict('records')
+        log.info('Resumed from epoch %d, best val loss %.4f', start_epoch, best_val_loss)
+except FileNotFoundError:
+    log.info('No checkpoint found, training from scratch')
+
 criterion = WeightedDebrisLoss()
 optimiser = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=N_EPOCHS, eta_min=1e-5)
+# scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=N_EPOCHS, eta_min=1e-5)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+    optimiser, T_0=T_0, T_mult=T_MULT, eta_min=1e-5
+)
+
+# Fast-forward scheduler to match start_epoch so LR is correct on resume
+if start_epoch > 1:
+    for _ in range(start_epoch - 1):
+        scheduler.step()
+
+
 
 log.info('Model parameters: %s', f'{sum(p.numel() for p in model.parameters()):,}')
 
 # ── Training loop ─────────────────────────────────────────────────────────────
 
 WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
-best_val_loss = float('inf')
-log_rows: list[dict] = []
 
-for epoch in range(1, N_EPOCHS + 1):
+for epoch in range(start_epoch, N_EPOCHS + 1):
     t0 = time.perf_counter()
 
     # Train
@@ -217,7 +245,7 @@ for epoch in range(1, N_EPOCHS + 1):
     lr_now     = scheduler.get_last_lr()[0]
     elapsed    = time.perf_counter() - t0
 
-    scheduler.step()
+    scheduler.step(epoch)
 
     # Checkpoint
     is_best = val_loss < best_val_loss
@@ -241,7 +269,8 @@ for epoch in range(1, N_EPOCHS + 1):
 
 # ── Save training log ─────────────────────────────────────────────────────────
 
-log_path = WEIGHTS_DIR / 'seg_training_log.csv'
+log_path = save_weights('debris_segmenter', 'best').parent / 'seg_training_log.csv'
+log_path.parent.mkdir(parents=True, exist_ok=True)  # ← ensure dir exists
 pd.DataFrame(log_rows).to_csv(log_path, index=False)
 log.info('Training complete. Best val loss: %.4f', best_val_loss)
 log.info('Saved weights to %s', WEIGHTS_DIR)

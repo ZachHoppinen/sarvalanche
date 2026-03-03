@@ -1,29 +1,29 @@
 """Centralized discovery of ML model weight files.
 
 Each model family stores weights under ``ml/weights/<subdir>/``.
-This module provides ``find_weights(model, variant)`` to locate the
-latest matching file by glob, so callers never hard-code a specific
-versioned filename.
+This module provides ``find_weights(model)`` to locate the latest
+matching file by glob, so callers never hard-code a specific versioned
+filename.
 
 Supported models
 ----------------
-- ``"rtc_predictor"``   → ``weights/rtc_predictor/sar_transformer_best*.pth``
-- ``"cnn_seg_encoder"`` → ``weights/cnn_debris_detector/track_seg_encoder*.pt``
-- ``"cnn_patch_encoder"`` → ``weights/cnn_debris_detector/track_patch_encoder*.pt``
-- ``"track_classifier"`` → ``weights/track_predictor/track_classifier*.joblib``
+- ``"rtc_predictor"``   → weights/rtc_predictor/sar_transformer_best*.pth
+                          SAR Transformer for baseline RTC prediction.
+- ``"track_classifier"``→ weights/track_predictor/track_classifier*.joblib
+                          XGBoost track-level debris classifier.
+- ``"debris_segmenter"``→ weights/cnn_debris_detector/seg_model_best*.pt
+                          UNet++ pixel-wise debris segmentation CNN.
 """
+
 
 from pathlib import Path
 
 _WEIGHTS_ROOT = Path(__file__).parent / "weights"
 
-# (subdir, glob pattern) for each model family
 _REGISTRY: dict[str, tuple[str, str]] = {
-    "rtc_predictor":    ("rtc_predictor",       "sar_transformer_best*.pth"),
-    "cnn_seg_encoder":  ("cnn_debris_detector",  "track_seg_encoder.pt"),
-    "cnn_patch_encoder":("cnn_debris_detector",  "track_patch_encoder.pt"),
-    "track_classifier": ("track_predictor",      "track_classifier*.joblib"),
-    "debris_segmenter": ("debris_segmenter",     "seg_model_best*.pt"),
+    "rtc_predictor":    ("rtc_predictor",      "sar_transformer_best*.pth"),
+    "track_classifier": ("track_predictor",    "track_classifier*.joblib"),
+    "debris_segmenter": ("cnn_debris_detector", "seg_model_best*.pt"),
 }
 
 

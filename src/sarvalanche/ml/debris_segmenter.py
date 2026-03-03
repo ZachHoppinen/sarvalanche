@@ -32,6 +32,7 @@ class DebrisSegmenter(nn.Module):
         encoder_weights=None,
         patch_size: int = 64,  # stored for reference, not used by forward
     ):
+        super().__init__()
         self.patch_size = patch_size
         self.unetpp = smp.UnetPlusPlus(
             encoder_name=encoder_name,
