@@ -8,7 +8,7 @@ log = logging.getLogger(__name__)
 def get_temporal_weights(
     times_1: xr.DataArray,
     times_2: xr.DataArray | np.datetime64 | pd.Timestamp,
-    tau_days: float = 24,
+    tau_days: float = 6,
 ) -> xr.DataArray:
     """
     Calculate temporal weights that sum to 1.0 based on time separation.

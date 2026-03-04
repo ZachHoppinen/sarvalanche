@@ -62,7 +62,7 @@ clf_cv = XGBClassifier(
     n_estimators=100,
     max_depth=3,
     learning_rate=0.1,
-    scale_pos_weight=(neg / pos) if neg > pos else 1.0,
+    scale_pos_weight=neg / pos if pos > 0 else 1.0,
     eval_metric='logloss',
     random_state=42,
 )

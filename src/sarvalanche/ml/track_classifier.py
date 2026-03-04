@@ -179,10 +179,10 @@ def train_classifier(X: pd.DataFrame, y: pd.Series) -> XGBClassifier:
     Notes
     -----
     Missing values are imputed with column medians before fitting.
-    scale_pos_weight is set to n_neg/n_pos when negatives outnumber positives.
+    scale_pos_weight is set to n_neg/n_pos to correct class imbalance.
     """
     neg, pos = int((y == 0).sum()), int((y == 1).sum())
-    scale_pos_weight = (neg / pos) if pos > 0 and neg > pos else 1.0
+    scale_pos_weight = neg / pos if pos > 0 else 1.0
     log.info(
         'train_classifier: %d pos / %d neg, scale_pos_weight=%.2f',
         pos, neg, scale_pos_weight,

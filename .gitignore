@@ -163,3 +163,5 @@ $*
 *.gpkg
 *.nc
 *.tif
+
+*.parquet
