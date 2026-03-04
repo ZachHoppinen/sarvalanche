@@ -403,3 +403,15 @@ def test_two_zones_path_list_nonempty(two_zone_dem_and_release):
     for gdf in path_list:
         # Each zone should produce at least one flow path polygon
         assert len(gdf) >= 0  # GeoDataFrame is valid (may be empty after small buffer)
+
+
+def test_path_list_order_is_deterministic(two_zone_dem_and_release):
+    """Running twice must produce path_list in the same order (by zone)."""
+    dem, release = two_zone_dem_and_release
+
+    _, _, path_list_1 = run_flowpy(dem=dem, release=release)
+    _, _, path_list_2 = run_flowpy(dem=dem, release=release)
+
+    assert len(path_list_1) == len(path_list_2)
+    for gdf1, gdf2 in zip(path_list_1, path_list_2):
+        assert gdf1.geometry.equals(gdf2.geometry)

@@ -32,8 +32,8 @@ log = logging.getLogger(__name__)
 
 LABELS_PATH = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/track_labels.json')
 RUNS_DIRS   = [
-    Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/high_danger_output/sarvalanche_runs'),
-    Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/low_danger_output/sarvalanche_runs'),
+    Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/high_low_framing_outputs/v1_high_danger_output/sarvalanche_runs'),
+    Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/high_low_framing_outputs/v1_low_danger_output/sarvalanche_runs'),
 ]
 
 # ── Load labels ───────────────────────────────────────────────────────────────

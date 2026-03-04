@@ -222,10 +222,26 @@ def run_flowpy(
     log.info("Found %d release zones", n_zones)
 
     sparse_list = []
+    zone_ids = []
     for zone_id in range(1, n_zones + 1):
         coords = np.argwhere(labeled == zone_id).astype(np.int32)
         if len(coords):
             sparse_list.append(coords)
+            # Deterministic ID from release-zone centroid (projected coords)
+            mean_row, mean_col = coords.mean(axis=0)
+            geo_x = release_header['xllcorner'] + mean_col * release_header['cellsize']
+            geo_y = release_header['yllcorner'] + (release_header['nrows'] - mean_row) * release_header['cellsize']
+            zone_ids.append(f"E{int(round(geo_x, -2))}_N{int(round(geo_y, -2))}")
+
+    # Disambiguate duplicate IDs (two centroids rounding to same 100m cell)
+    from collections import Counter
+    counts = Counter(zone_ids)
+    if any(c > 1 for c in counts.values()):
+        seen = {}
+        for i, zid in enumerate(zone_ids):
+            if counts[zid] > 1:
+                seen[zid] = seen.get(zid, 0) + 1
+                zone_ids[i] = f"{zid}_{seen[zid]}"
 
     del labeled  # free the single int32 label array — done with it
 
@@ -235,8 +251,10 @@ def run_flowpy(
         (pixels, alpha, exp, flux_threshold, max_z)
         for pixels in sparse_list
     ]
-    # run biggest zones first.
-    args.sort(key=lambda a: len(a[0]))
+    # run biggest zones first — keep zone_ids in sync.
+    order = sorted(range(len(args)), key=lambda i: len(args[i][0]))
+    args = [args[i] for i in order]
+    zone_ids = [zone_ids[i] for i in order]
     # Log the distribution of zone sizes
     sizes = [len(a[0]) for a in args]
     log.info("Zone size stats: min=%d, max=%d, mean=%.1f, p95=%d, p99=%d",
@@ -255,7 +273,9 @@ def run_flowpy(
 
     log.info("Starting flow calculation (%d tasks, %d workers)", n_tasks, n_workers)
 
-    path_list = []
+    # Pre-allocate path_list so results go into submission order,
+    # not completion order (which is non-deterministic).
+    path_list = [None] * n_tasks
 
     executor = concurrent.futures.ProcessPoolExecutor(
             max_workers=n_workers,
@@ -277,6 +297,7 @@ def run_flowpy(
 
         for future in tqdm(concurrent.futures.as_completed(futures), total=n_tasks,
                         desc="FlowPy calculation", unit="task"):
+            task_idx = futures.pop(future)
             res = future.result()
             z_delta     = np.maximum(z_delta,     res[0])
             flux        = np.maximum(flux,         res[1])
@@ -287,8 +308,9 @@ def run_flowpy(
             sl_ta       = np.maximum(sl_ta,        res[6])
 
             path = (res[2] > 0).astype(float)
-            path_list.append(generate_path_vector(path, ref_da))
-            futures.pop(future)
+            gdf = generate_path_vector(path, ref_da)
+            gdf['id'] = zone_ids[task_idx]
+            path_list[task_idx] = gdf
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
         signal.signal(signal.SIGTERM, signal.SIG_DFL)  # restore default

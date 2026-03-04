@@ -58,14 +58,10 @@ HEADERS = {
 _STALE_PATTERNS = [
     re.compile(r"^p_\d+_V[VH]_empirical$"),
     re.compile(r"^d_\d+_V[VH]_empirical$"),
-    re.compile(r"^d_\d+_V[VH]_ml$"),
-    re.compile(r"^sigma_\d+_V[VH]_ml$"),
 ]
 _STALE_EXACT = {
     "p_empirical",
     "d_empirical",
-    "distance_mahalanobis",
-    "combined_distance",
     "unmasked_p_target",
     "p_pixelwise",
     "detections",
@@ -164,7 +160,9 @@ def prepare_season_dataset(
     fetch_start = (
         pd.Timestamp(season_start) - pd.Timedelta(days=baseline_days)
     ).strftime("%Y-%m-%d")
-    fetch_end = season_end
+    fetch_end = (
+        pd.Timestamp(season_end) + pd.Timedelta(days=baseline_days)
+    ).strftime("%Y-%m-%d")
 
     # ── 1. Assemble or load dataset ───────────────────────────────────────
     if season_nc.exists() and season_nc.stat().st_size > 0:
@@ -312,34 +310,6 @@ def prepare_season_dataset(
 # ---------------------------------------------------------------------------
 
 
-def compute_ml_distances(
-    ds: xr.Dataset,
-    reference_date: np.datetime64,
-) -> xr.Dataset | None:
-    """
-    Compute ML distances for a step. Tau-independent — only needs to run
-    once per step date, not once per tau.
-
-    Returns ds with distance_mahalanobis and combined_distance, or None on failure.
-    """
-    from sarvalanche.detection.mahalanobis import calculate_ml_distances
-
-    log.info("Computing ML distances (date=%s)", reference_date)
-    try:
-        ds["distance_mahalanobis"], ds["combined_distance"] = (
-            calculate_ml_distances(ds, reference_date)
-        )
-    except ValueError as e:
-        log.warning(
-            "Skipping step date=%s — ML distances failed: %s",
-            reference_date,
-            e,
-        )
-        return None
-
-    return ds
-
-
 def compute_empirical_features(
     ds: xr.Dataset,
     reference_date: np.datetime64,
@@ -348,9 +318,8 @@ def compute_empirical_features(
     """
     Compute tau-dependent SAR features for a single step/tau combination.
 
-    Cleans stale empirical intermediates, computes temporal weights,
-    empirical backscatter probability, and pixelwise target.
-    Assumes distance_mahalanobis is already in ds.
+    Cleans stale empirical intermediates, computes temporal weights and
+    empirical backscatter probability.
     Returns modified ds, or None on failure.
     """
     from sarvalanche.weights.temporal import get_temporal_weights
@@ -405,28 +374,6 @@ def compute_empirical_features(
         )
         return None
 
-    # Compute pixelwise target (needed by XGBoost features)
-    from sarvalanche.probabilities.combine import combine_probabilities
-
-    p_prior = combine_probabilities(
-        xr.concat([ds["p_fcf"], ds["p_runout"], ds["p_slope"]], dim="factor"),
-        dim="factor",
-        method="weighted_mean",
-    )
-    p_likelihood = xr.ufuncs.maximum(
-        ds["p_empirical"], ds["distance_mahalanobis"]
-    )
-    eps = 1e-10
-    denominator = p_prior * p_likelihood + (1 - p_prior) * (1 - p_likelihood)
-    p_bayesian = p_prior * p_likelihood / denominator.clip(min=eps)
-    p_pixelwise = xr.ufuncs.minimum(p_likelihood, p_bayesian)
-    ds["unmasked_p_target"] = p_pixelwise
-    ds["unmasked_p_target"].attrs = {
-        "source": "sarvalanche",
-        "units": "percentage",
-        "product": "unmasked_pixel_wise_probability",
-    }
-
     return ds
 
 
@@ -448,7 +395,7 @@ def accumulate_inventory(
     inventory[track_idx] = {
         'slow_confidences': [...], 'fast_confidences': [...],
         'slow_dates': [...], 'fast_dates': [...],
-        'seg_masks': [...], ...
+        ...
     }
     """
     for idx, row in result_gdf.iterrows():
@@ -458,7 +405,6 @@ def accumulate_inventory(
                 "fast_confidences": [],
                 "slow_dates": [],
                 "fast_dates": [],
-                "seg_masks_fast": [],
             }
         rec = inventory[idx]
         p = float(row["p_debris"])
@@ -469,7 +415,6 @@ def accumulate_inventory(
         else:
             rec["fast_confidences"].append(p)
             rec["fast_dates"].append(step_date)
-            rec["seg_masks_fast"].append(row.get("seg_mask"))
 
 
 def build_inventory_gdf(
@@ -487,21 +432,6 @@ def build_inventory_gdf(
         fast = np.array(rec["fast_confidences"])
         fast_dates = rec["fast_dates"]
 
-        # Find peak fast detection
-        peak_idx = int(np.argmax(fast)) if len(fast) > 0 else None
-        seg_mask_peak = (
-            rec["seg_masks_fast"][peak_idx]
-            if peak_idx is not None
-            else None
-        )
-
-        # Compute debris area fraction from peak seg mask
-        debris_area_fraction = 0.0
-        if seg_mask_peak is not None:
-            debris_area_fraction = float(
-                (seg_mask_peak > 0.5).sum() / seg_mask_peak.size
-            )
-
         row = {
             "track_idx": idx,
             "ran_this_season": bool(np.any(fast >= threshold)) if len(fast) > 0 else False,
@@ -515,11 +445,10 @@ def build_inventory_gdf(
                 else pd.NaT
             ),
             "peak_detection_date": (
-                fast_dates[peak_idx] if peak_idx is not None else pd.NaT
+                fast_dates[int(fast.argmax())] if len(fast) > 0 else pd.NaT
             ),
             "n_active_slow": int((slow >= threshold).sum()) if len(slow) > 0 else 0,
             "n_active_fast": int((fast >= threshold).sum()) if len(fast) > 0 else 0,
-            "debris_area_fraction": debris_area_fraction,
         }
         rows.append(row)
 
@@ -555,7 +484,7 @@ def run_dual_tau_season(
     resolution: float | None = None,
     static_fp: Path | None = None,
     track_gpkg: Path | None = None,
-    detection_threshold: float = 0.5,
+    detection_threshold: float = 0.9,
     timeseries_threshold: float = 0.9,
     dry_run: bool = False,
 ) -> tuple[gpd.GeoDataFrame, pd.DataFrame]:
@@ -568,8 +497,6 @@ def run_dual_tau_season(
 
     Returns (inventory_gdf, timeseries_df).
     """
-    from sarvalanche.ml.inference import DebrisInference
-
     safe_name = zone_name.replace(" ", "_").replace("/", "-")
 
     # ── 1. Prepare dataset ────────────────────────────────────────────────
@@ -585,9 +512,11 @@ def run_dual_tau_season(
         track_gpkg=track_gpkg,
     )
 
-    # ── 2. Load ML pipeline ───────────────────────────────────────────────
-    log.info("Loading ML inference pipeline")
-    pipeline = DebrisInference.load()
+    # ── 2. Load XGBoost classifier ────────────────────────────────────────
+    import joblib
+    from sarvalanche.ml.track_classifier import predict_tracks, TRACK_PREDICTOR_MODEL
+    log.info("Loading XGBoost classifier from %s", TRACK_PREDICTOR_MODEL)
+    xgb_clf = joblib.load(TRACK_PREDICTOR_MODEL)
 
     # ── 3. Derive step dates ──────────────────────────────────────────────
     season_start_ts = pd.Timestamp(season_start)
@@ -648,13 +577,8 @@ def run_dual_tau_season(
             "Step %d/%d: %s", i + 1, len(step_dates), step_date.date()
         )
 
-        # ── ML distances (once per step, tau-independent) ────────────
+        # ── Clean stale variables from previous step ─────────────────
         ds = _clean_stale_variables(ds)
-        ds_result = compute_ml_distances(ds, step_ts)
-        if ds_result is None:
-            log.warning("Skipping step %s — ML distances failed", step_date.date())
-            continue
-        ds = ds_result
 
         # ── tau_slow pass ─────────────────────────────────────────────
         ds_result = compute_empirical_features(ds, step_ts, tau_slow)
@@ -663,9 +587,7 @@ def run_dual_tau_season(
             continue
         ds = ds_result
 
-        result_slow = pipeline.predict(
-            paths_gdf, ds, show_progress=False
-        )
+        result_slow = predict_tracks(xgb_clf, paths_gdf, ds)
         accumulate_inventory(
             inventory, result_slow, step_date, "slow", detection_threshold
         )
@@ -701,10 +623,8 @@ def run_dual_tau_season(
             continue
         ds = ds_result
 
-        result_fast = pipeline.predict(
-            paths_gdf,
-            ds,
-            show_progress=False,
+        result_fast = predict_tracks(
+            xgb_clf, paths_gdf, ds,
             prior_estimate=slow_priors,
         )
         accumulate_inventory(
@@ -774,14 +694,11 @@ def run_dual_tau_season(
 def _estimate_debris_area(
     result_gdf: gpd.GeoDataFrame, threshold: float
 ) -> float:
-    """Estimate total debris area from seg masks above threshold."""
-    total = 0.0
-    for _, row in result_gdf.iterrows():
-        if row["p_debris"] >= threshold and row.get("seg_mask") is not None:
-            mask = row["seg_mask"]
-            frac = float((mask > 0.5).sum() / mask.size)
-            total += frac * row.geometry.area
-    return total
+    """Estimate total debris area from tracks above threshold (no CNN seg)."""
+    return float(
+        result_gdf.loc[result_gdf["p_debris"] >= threshold, "geometry"]
+        .area.sum()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -832,6 +749,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--crs",
         default="EPSG:4326",
         help="CRS for processing (default: EPSG:4326)",
+    )
+    parser.add_argument(
+        "--detection-threshold",
+        type=float,
+        default=0.9,
+        help="Confidence threshold for counting a detection (default: 0.9)",
     )
     parser.add_argument(
         "--dry-run",
@@ -907,6 +830,7 @@ def main():
         crs=args.crs,
         static_fp=static_fp,
         track_gpkg=track_gpkg,
+        detection_threshold=args.detection_threshold,
         dry_run=args.dry_run,
     )
 
