@@ -413,6 +413,7 @@ class DebrisInference:
         src_crs=None,
         n_jobs: int = 1,
         show_progress: bool = True,
+        prior_estimate=None,
     ) -> gpd.GeoDataFrame:
         """Run the full inference pipeline on all tracks.
 
@@ -429,6 +430,10 @@ class DebrisInference:
             Parallel workers for XGBoost feature extraction.
         show_progress : bool
             Show tqdm progress bar for CNN inference.
+        prior_estimate : float or array-like or None
+            Prior debris probability to shift XGBoost outputs via log-odds.
+            0.5 = neutral (no change), >0.5 pushes up, <0.5 pushes down.
+            None = no adjustment (default).
 
         Returns
         -------
@@ -443,7 +448,7 @@ class DebrisInference:
 
         # ── Step 1: XGBoost — score all tracks ───────────────────────────────
         log.info('Step 1/2: XGBoost scoring %d tracks...', len(gdf))
-        result = predict_tracks(self.xgb_clf, gdf, ds, n_jobs=n_jobs)
+        result = predict_tracks(self.xgb_clf, gdf, ds, n_jobs=n_jobs, prior_estimate=prior_estimate)
 
         # ── Step 2: CNN — score tracks above threshold ────────────────────────
         cnn_candidates = result[result['p_debris'] >= self.cnn_threshold]
@@ -493,6 +498,7 @@ class DebrisInference:
         ds: xr.Dataset,
         src_crs=None,
         scene_ctx: dict | None = None,
+        prior_estimate=None,
     ) -> tuple[float, np.ndarray | None]:
         """Score a single track — useful for debugging and notebooks.
 
@@ -503,6 +509,9 @@ class DebrisInference:
         src_crs : CRS or None
         scene_ctx : dict or None
             Pre-computed scene context. Computed fresh if None.
+        prior_estimate : float or None
+            Prior debris probability. 0.5 = neutral, >0.5 pushes up.
+            None = no adjustment.
 
         Returns
         -------
@@ -510,6 +519,7 @@ class DebrisInference:
         seg_mask : np.ndarray (patch_size, patch_size) or None
         """
         from sarvalanche.ml.track_features import extract_track_features
+        from sarvalanche.ml.track_classifier import _apply_prior
 
         if scene_ctx is None:
             scene_ctx = compute_scene_context(ds)
@@ -523,6 +533,9 @@ class DebrisInference:
             columns=self.xgb_clf.feature_names_in_
         ).fillna(0)
         p_debris = float(self.xgb_clf.predict_proba(X)[0, 1])
+
+        if prior_estimate is not None:
+            p_debris = float(_apply_prior(np.array([p_debris]), prior_estimate)[0])
 
         seg_mask = None
         if p_debris >= self.cnn_threshold:

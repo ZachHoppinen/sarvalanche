@@ -8,7 +8,8 @@ from sarvalanche.ml.track_classifier import (
     TRACK_PREDICTOR_DIR,
     TRACK_PREDICTOR_MODEL,
     train_classifier,
-    _zone_from_gpkg,
+    _apply_prior,
+    zone_from_path,
 )
 
 
@@ -29,16 +30,16 @@ def test_predictor_paths():
 
 
 def test_zone_from_gpkg_basic():
-    assert _zone_from_gpkg(Path('Zone_Name_2025-02-04.gpkg')) == 'Zone_Name'
+    assert zone_from_path(Path('Zone_Name_2025-02-04.gpkg')) == 'Zone_Name'
 
 
 def test_zone_from_gpkg_multiple_underscores():
-    assert _zone_from_gpkg(Path('Some_Long_Zone_Name_2024-12-31.gpkg')) == 'Some_Long_Zone_Name'
+    assert zone_from_path(Path('Some_Long_Zone_Name_2024-12-31.gpkg')) == 'Some_Long_Zone_Name'
 
 
 def test_zone_from_gpkg_no_date():
     """Should return full stem if no date pattern found."""
-    assert _zone_from_gpkg(Path('NoDateHere.gpkg')) == 'NoDateHere'
+    assert zone_from_path(Path('NoDateHere.gpkg')) == 'NoDateHere'
 
 
 # ── train_classifier ────────────────────────────────────────────────────────
@@ -92,3 +93,45 @@ def test_train_classifier_balanced():
     y = pd.Series([0] * 5 + [1] * 5, name='debris')
     clf = train_classifier(X, y)
     assert clf.get_params()['scale_pos_weight'] == 1.0
+
+
+# ── _apply_prior ───────────────────────────────────────────────────────────
+
+
+def test_apply_prior_neutral():
+    """prior=0.5 should not change probabilities."""
+    p = np.array([0.2, 0.5, 0.8])
+    adjusted = _apply_prior(p, 0.5)
+    np.testing.assert_allclose(adjusted, p, atol=1e-6)
+
+
+def test_apply_prior_pushes_up():
+    """prior > 0.5 should increase all probabilities."""
+    p = np.array([0.3, 0.5, 0.7])
+    adjusted = _apply_prior(p, 0.8)
+    assert np.all(adjusted > p)
+
+
+def test_apply_prior_pushes_down():
+    """prior < 0.5 should decrease all probabilities."""
+    p = np.array([0.3, 0.5, 0.7])
+    adjusted = _apply_prior(p, 0.2)
+    assert np.all(adjusted < p)
+
+
+def test_apply_prior_stays_in_bounds():
+    """Output should always be in (0, 1)."""
+    p = np.array([0.01, 0.5, 0.99])
+    for prior in [0.01, 0.5, 0.99]:
+        adjusted = _apply_prior(p, prior)
+        assert np.all(adjusted > 0) and np.all(adjusted < 1)
+
+
+def test_apply_prior_array_prior():
+    """Should accept per-track array of priors."""
+    p = np.array([0.5, 0.5, 0.5])
+    priors = np.array([0.2, 0.5, 0.8])
+    adjusted = _apply_prior(p, priors)
+    assert adjusted[0] < 0.5  # pushed down
+    np.testing.assert_allclose(adjusted[1], 0.5, atol=1e-6)  # neutral
+    assert adjusted[2] > 0.5  # pushed up

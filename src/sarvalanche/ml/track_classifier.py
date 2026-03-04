@@ -44,6 +44,30 @@ log = logging.getLogger(__name__)
 # Labels 0/1 → no debris, labels 2/3 → debris
 BINARY_THRESHOLD: int = 2
 
+
+def _apply_prior(p: np.ndarray, prior: float | np.ndarray) -> np.ndarray:
+    """Adjust probabilities with a prior estimate via log-odds addition.
+
+    Parameters
+    ----------
+    p : np.ndarray
+        Raw XGBoost probabilities in (0, 1).
+    prior : float or np.ndarray
+        Prior estimate(s) in (0, 1). 0.5 = neutral (no adjustment),
+        >0.5 pushes probabilities up, <0.5 pushes down.
+
+    Returns
+    -------
+    np.ndarray
+        Adjusted probabilities clipped to (0, 1).
+    """
+    eps = 1e-7
+    p = np.clip(p, eps, 1 - eps)
+    prior = np.clip(prior, eps, 1 - eps)
+    logit_p = np.log(p / (1 - p))
+    logit_prior = np.log(prior / (1 - prior))  # 0 when prior=0.5
+    return 1 / (1 + np.exp(-(logit_p + logit_prior)))
+
 def zone_from_path(path: Path) -> str:
     """Extract zone name from a gpkg or nc filename like ``Zone_Name_2025-02-04.gpkg``."""
     return re.sub(r'_\d{4}-\d{2}-\d{2}$', '', path.stem)
@@ -204,18 +228,41 @@ def train_classifier(X: pd.DataFrame, y: pd.Series) -> XGBClassifier:
     )
     return clf
 
-def predict_track(clf, row, ds, scene_ctx, src_crs = None):
+def predict_track(clf, row, ds, scene_ctx, src_crs=None, prior_estimate=None):
     """Mostly a testing function for single tracks"""
     feats = extract_track_features(row, ds, scene_ctx=scene_ctx, src_crs=src_crs)
     X = pd.DataFrame([feats]).reindex(columns=clf.feature_names_in_).fillna(0)
-    return float(clf.predict_proba(X)[0, 1])
+    p = float(clf.predict_proba(X)[0, 1])
+    if prior_estimate is not None:
+        p = float(_apply_prior(np.array([p]), prior_estimate)[0])
+    return p
 
 def _extract_one(row, ds, static_vars, scene_ctx, precomputed, src_crs):
     """Single-track wrapper for parallel execution."""
     return extract_track_features(row, ds, static_vars, scene_ctx, precomputed, src_crs)
 
 
-def predict_tracks(clf, gdf, ds, n_jobs=1, seg_features_path=None):
+def predict_tracks(clf, gdf, ds, n_jobs=1, seg_features_path=None, prior_estimate=None):
+    """Score all tracks in a GeoDataFrame, returning p_debris.
+
+    Parameters
+    ----------
+    clf : XGBClassifier
+        Fitted model.
+    gdf : gpd.GeoDataFrame
+        Track polygons.
+    ds : xr.Dataset
+        Dataset with SAR and terrain variables.
+    n_jobs : int
+        Parallel workers for feature extraction.
+    seg_features_path : Path or None
+        Optional parquet of CNN seg features.
+    prior_estimate : float or array-like or None
+        Prior debris probability to shift XGBoost outputs via log-odds.
+        0.5 = neutral (no change), >0.5 pushes up, <0.5 pushes down.
+        Can be a scalar (applied to all tracks) or array-like matching gdf length.
+        None = no adjustment (default).
+    """
     scene_ctx  = compute_scene_context(ds)
     precomputed = precompute_group_arrays(ds)
 
@@ -240,6 +287,11 @@ def predict_tracks(clf, gdf, ds, n_jobs=1, seg_features_path=None):
 
     result          = gdf.copy()
     result['p_debris'] = clf.predict_proba(X_pred)[:, 1]
+
+    if prior_estimate is not None:
+        log.info('predict_tracks: applying prior_estimate adjustment')
+        result['p_debris'] = _apply_prior(result['p_debris'].values, prior_estimate)
+
     log.info('predict_tracks: scored %d tracks, mean p_debris=%.3f',
              len(result), float(result['p_debris'].mean()))
     return result

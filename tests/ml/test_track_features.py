@@ -5,17 +5,18 @@ import geopandas as gpd
 from shapely.geometry import box
 
 from sarvalanche.ml.track_features import (
+    STATIC_FEATURE_VARS,
+    extract_track_features,
+)
+from sarvalanche.ml.track_patch_extraction import (
     PATCH_CHANNELS,
     N_PATCH_CHANNELS,
-    STATIC_FEATURE_VARS,
     TRACK_MASK_CHANNEL,
     _NORTHING_CH,
     _EASTING_CH,
+    _PATCH_DATA_VARS,
     aggregate_seg_features,
-    extract_track_features,
-    extract_track_patch,
-    extract_track_patch_with_target,
-    _pixel_max_da,
+    extract_context_patch,
     _normalize_channel,
 )
 
@@ -118,24 +119,12 @@ def test_aggregate_seg_features_empty_mask():
         assert np.isnan(v)
 
 
-# ── _pixel_max_da ───────────────────────────────────────────────────────────
-
-
-def test_pixel_max_da_basic():
-    """Should return pixel-wise max across variables."""
-    ds = _make_ds(10, 10)
-    ds['a'] = ds['fcf'] * 0 + 1.0
-    ds['b'] = ds['fcf'] * 0 + 2.0
-    ds['a'] = ds['a'].rio.write_crs('EPSG:32611')
-    ds['b'] = ds['b'].rio.write_crs('EPSG:32611')
-    result = _pixel_max_da(ds, ['a', 'b'])
-    assert np.allclose(result.values, 2.0)
-
-
-def test_pixel_max_da_empty():
-    """Empty var list should return None."""
-    ds = _make_ds(10, 10)
-    assert _pixel_max_da(ds, []) is None
+def test_aggregate_seg_features_no_mask():
+    """When track_mask=None, should aggregate over all pixels."""
+    seg_map = np.array([[0.8, 0.6], [0.3, 0.9]], dtype=np.float32)
+    result = aggregate_seg_features(seg_map)
+    assert abs(result['seg_mean'] - np.mean([0.8, 0.6, 0.3, 0.9])) < 1e-5
+    assert abs(result['seg_max'] - 0.9) < 1e-5
 
 
 # ── extract_track_features ──────────────────────────────────────────────────
@@ -174,39 +163,7 @@ def test_extract_track_features_missing_var():
     assert 'cell_counts_mean' not in feats
 
 
-# ── extract_track_patch ─────────────────────────────────────────────────────
-
-
-def test_extract_track_patch_shape():
-    """Output shape should be (N_PATCH_CHANNELS, size, size)."""
-    ds = _make_ds()
-    row = _make_track_row(ds)
-    patch = extract_track_patch(row, ds, size=32)
-    assert patch.shape == (N_PATCH_CHANNELS, 32, 32)
-    assert patch.dtype == np.float32
-
-
-def test_extract_track_patch_coordinate_channels():
-    """Northing and easting channels should have correct ranges."""
-    ds = _make_ds()
-    row = _make_track_row(ds)
-    patch = extract_track_patch(row, ds, size=64)
-    # Northing — top=+1, bottom=-1
-    assert abs(patch[_NORTHING_CH, 0, 0] - 1.0) < 1e-5  # top-left
-    assert abs(patch[_NORTHING_CH, -1, 0] - (-1.0)) < 1e-5  # bottom-left
-    # Easting — left=-1, right=+1
-    assert abs(patch[_EASTING_CH, 0, 0] - (-1.0)) < 1e-5  # top-left
-    assert abs(patch[_EASTING_CH, 0, -1] - 1.0) < 1e-5  # top-right
-
-
-def test_extract_track_patch_track_mask():
-    """Track mask channel should have values in {0, 1}."""
-    ds = _make_ds()
-    row = _make_track_row(ds)
-    patch = extract_track_patch(row, ds, size=64)
-    mask = patch[TRACK_MASK_CHANNEL]
-    assert set(np.unique(mask)).issubset({0.0, 1.0})
-    assert mask.sum() > 0  # should have some pixels inside track
+# ── _normalize_channel ─────────────────────────────────────────────────────
 
 
 def test_channel_normalization():
@@ -228,104 +185,7 @@ def test_channel_normalization():
     out = _normalize_channel(arr, 'slope')
     np.testing.assert_allclose(out, [0.0, 0.5, 1.0])
 
-    # fcf: no-op
-    arr = np.array([0.0, 0.5, 1.0], dtype=np.float32)
+    # fcf: /100
+    arr = np.array([0.0, 50.0, 100.0], dtype=np.float32)
     out = _normalize_channel(arr, 'fcf')
-    np.testing.assert_allclose(out, arr)
-
-
-def test_extract_track_patch_normalization():
-    """Extracted patch cell_counts channel should be log-scaled."""
-    ds = _make_ds()
-    # Set cell_counts to a known large value
-    ds['cell_counts'].values[:] = 1000.0
-    row = _make_track_row(ds)
-    patch = extract_track_patch(row, ds, size=32)
-    # Channel 4 is cell_counts: log1p(1000)/5 ≈ 1.38
-    expected = np.log1p(1000.0) / 5.0
-    assert patch[4].mean() == pytest.approx(expected, abs=0.1)
-    # Should NOT be raw 1000
-    assert patch[4].max() < 2.0
-
-
-def test_extract_track_patch_missing_vars():
-    """If no data vars found, should return zeros."""
-    ds = _make_ds()
-    row = _make_track_row(ds)
-    # Remove all patch data vars
-    from sarvalanche.ml.track_features import _PATCH_DATA_VARS
-    for v in _PATCH_DATA_VARS:
-        if v in ds:
-            del ds[v]
-    patch = extract_track_patch(row, ds, size=32)
-    assert np.allclose(patch, 0.0)
-
-
-# ── extract_track_patch_with_target ─────────────────────────────────────────
-
-
-def test_extract_track_patch_with_target_shapes():
-    """Should return patch and target with correct shapes."""
-    ds = _make_ds()
-    row = _make_track_row(ds)
-    patch, target = extract_track_patch_with_target(row, ds, size=32)
-    assert patch.shape == (N_PATCH_CHANNELS, 32, 32)
-    assert target.shape == (1, 32, 32)
-    assert target.dtype == np.float32
-
-
-def test_extract_track_patch_with_target_no_pixelwise():
-    """Without p_pixelwise, target should be all zeros."""
-    ds = _make_ds()
-    del ds['p_pixelwise']
-    row = _make_track_row(ds)
-    patch, target = extract_track_patch_with_target(row, ds, size=32)
-    assert np.allclose(target, 0.0)
-
-
-def test_extract_track_patch_with_target_debris_shapes():
-    """Debris shapes should be blended into target via max."""
-    ds = _make_ds()
-    # Zero out p_pixelwise so we can check that shapes add signal
-    ds['p_pixelwise'].values[:] = 0.0
-    row = _make_track_row(ds)
-    # Create a debris shape covering the track center
-    geom = row.geometry
-    shapes_gdf = gpd.GeoDataFrame({'key': ['test'], 'geometry': [geom]}, crs='EPSG:32611')
-    _, target_with = extract_track_patch_with_target(row, ds, size=32, debris_shapes=shapes_gdf)
-    _, target_without = extract_track_patch_with_target(row, ds, size=32)
-    # Target with shapes should have more nonzero pixels
-    assert target_with.sum() >= target_without.sum()
-
-
-# ── row=None (full raster) mode ─────────────────────────────────────────────
-
-
-def test_extract_track_patch_no_geometry():
-    """When row=None, should use full dataset extent with track_mask all ones."""
-    ds = _make_ds()
-    patch = extract_track_patch(None, ds, size=32)
-    assert patch.shape == (N_PATCH_CHANNELS, 32, 32)
-    assert patch.dtype == np.float32
-    # track_mask should be all ones
-    assert np.allclose(patch[TRACK_MASK_CHANNEL], 1.0)
-    # Coordinate channels should still be correct
-    assert abs(patch[_NORTHING_CH, 0, 0] - 1.0) < 1e-5
-    assert abs(patch[_EASTING_CH, 0, -1] - 1.0) < 1e-5
-
-
-def test_extract_track_patch_with_target_no_geometry():
-    """When row=None, should extract patch and target from full raster."""
-    ds = _make_ds()
-    patch, target = extract_track_patch_with_target(None, ds, size=32)
-    assert patch.shape == (N_PATCH_CHANNELS, 32, 32)
-    assert target.shape == (1, 32, 32)
-    assert np.allclose(patch[TRACK_MASK_CHANNEL], 1.0)
-
-
-def test_aggregate_seg_features_no_mask():
-    """When track_mask=None, should aggregate over all pixels."""
-    seg_map = np.array([[0.8, 0.6], [0.3, 0.9]], dtype=np.float32)
-    result = aggregate_seg_features(seg_map)
-    assert abs(result['seg_mean'] - np.mean([0.8, 0.6, 0.3, 0.9])) < 1e-5
-    assert abs(result['seg_max'] - 0.9) < 1e-5
+    np.testing.assert_allclose(out, [0.0, 0.5, 1.0])

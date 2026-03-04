@@ -61,6 +61,7 @@ def run_detection(
         track_gpkg = None,
         overwrite=False,
         job_name=None,
+        temporal_decay_factor=6,
         debug=False):
     """
     Run the SARvalanche detection pipeline for a given AOI and date range.
@@ -102,6 +103,10 @@ def run_detection(
         If True, recompute and overwrite all cached results. Default False.
     job_name : str, optional
         Stem for output filenames. Defaults to avalanche_date as 'YYYY-MM-DD'.
+    temporal_decay_factor : float, optional
+        Exponential decay constant (tau) in days for temporal weighting.
+        Larger values give more weight to SAR acquisitions farther from the
+        avalanche date. Default 6.
     debug : bool, optional
         If True, enables DEBUG logging for the sarvalanche logger. Default False.
 
@@ -253,7 +258,7 @@ def run_detection(
     # ================================================================
     timer.step('4_calculate_weights')
 
-    ds = get_static_weights(ds, avalanche_date)
+    ds = get_static_weights(ds, avalanche_date, temporal_decay_factor=temporal_decay_factor)
 
     # ================================================================
     # Step 5: Calculate static probabilities (terrain, snow, etc.)

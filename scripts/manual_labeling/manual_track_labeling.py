@@ -23,18 +23,19 @@ import torch
 from sarvalanche.ml.track_classifier import (
     TRACK_PREDICTOR_DIR,
     TRACK_PREDICTOR_MODEL,
-    build_patch_training_set,
+    # build_patch_training_set,
     build_training_set,
     train_classifier,
 )
+# from sarvalanche.ml.track_features import build_patch_training_Set
 from sarvalanche.ml.track_features import (
-    TRACK_MASK_CHANNEL,
-    aggregate_seg_features,
+    # TRACK_MASK_CHANNEL,
+    # aggregate_seg_features,
     compute_scene_context,
     extract_track_features,
-    extract_track_patch,
+    # extract_track_patch,
 )
-from sarvalanche.ml.track_patch_encoder import CNN_SEG_ENCODER_PATH, TrackSegEncoder
+# from sarvalanche.ml.track_patch_encoder import CNN_SEG_ENCODER_PATH, TrackSegEncoder
 import warnings
 warnings.filterwarnings('ignore', category=RuntimeWarning, message='All-NaN slice encountered')
 
@@ -59,7 +60,7 @@ SHAPES_PATH = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/debris_sh
 
 layers = {
     'combined_distance':    {'cmap': 'RdBu_r',   'label': 'Combined Distance',     'vmin': 0, 'vmax': 3,    'thresholds': [1.0, 2.0]},
-    'd_empirical':          {'cmap': 'RdBu_r',   'label': 'Empirical Distance',    'vmin': -1.5, 'vmax': 1.5, 'thresholds': [0.5, 1.0]},
+    'd_empirical':          {'cmap': 'RdBu_r',   'label': 'Empirical Distance',    'vmin': -2.0, 'vmax': 2.0, 'thresholds': [0.5, 1.0]},
     'slope':                {'cmap': 'bone',      'label': 'Slope (rad)',           'vmin': np.deg2rad(15), 'vmax': np.deg2rad(45), 'thresholds': [np.deg2rad(30), np.deg2rad(38)]},
     'cell_counts':          {'cmap': 'Blues',     'label': 'Cell Counts',           'vmin': None, 'vmax': None, 'thresholds': [5, 20]},
 }
@@ -132,17 +133,17 @@ else:
 
 # ── Load CNN seg encoder (optional) ──────────────────────────────────────────
 seg_enc = None
-if CNN_SEG_ENCODER_PATH.exists():
-    try:
-        seg_enc = TrackSegEncoder()
-        seg_enc.load_state_dict(torch.load(CNN_SEG_ENCODER_PATH, weights_only=True))
-        seg_enc.eval()
-        print(f"Seg encoder loaded from {CNN_SEG_ENCODER_PATH}")
-    except RuntimeError as exc:
-        print(f"Seg encoder weights incompatible (retrain needed), skipping: {exc}")
-        seg_enc = None
-else:
-    print(f"No seg encoder found at {CNN_SEG_ENCODER_PATH}, seg predictions disabled")
+# if CNN_SEG_ENCODER_PATH.exists():
+#     try:
+#         seg_enc = TrackSegEncoder()
+#         seg_enc.load_state_dict(torch.load(CNN_SEG_ENCODER_PATH, weights_only=True))
+#         seg_enc.eval()
+#         print(f"Seg encoder loaded from {CNN_SEG_ENCODER_PATH}")
+#     except RuntimeError as exc:
+#         print(f"Seg encoder weights incompatible (retrain needed), skipping: {exc}")
+#         seg_enc = None
+# else:
+#     print(f"No seg encoder found at {CNN_SEG_ENCODER_PATH}, seg predictions disabled")
 
 # ── Load existing debris shapes ──────────────────────────────────────────────
 if SHAPES_PATH.exists():

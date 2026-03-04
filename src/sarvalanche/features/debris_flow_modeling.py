@@ -229,6 +229,7 @@ def generate_release_mask_simple(
     sizes = np.bincount(labeled.ravel())
     sizes[0] = 0
     keep = (sizes >= min_px) & (sizes <= max_px)
+    keep[0] = False  # background label is never a release zone
     mask_arr = keep[labeled]
     log.debug("generate_release_mask_simple: size filter [%d, %d] px -> %d zones, %d px",
               min_px, max_px, int(keep.sum()), int(mask_arr.sum()))

@@ -1,5 +1,5 @@
 """
-Integration tests for terrain-based filtering and splitting in generate_release_mask.
+Integration tests for generate_release_mask_simple in debris_flow_modeling.
 
 All inputs are synthetic 30×30 UTM arrays (10 m pixels), so no file I/O needed.
 """
@@ -7,6 +7,8 @@ import numpy as np
 import pytest
 import xarray as xr
 from scipy.ndimage import label as ndlabel
+
+from sarvalanche.features.debris_flow_modeling import generate_release_mask_simple
 
 
 # ---------------------------------------------------------------------------
@@ -40,218 +42,178 @@ def base_inputs():
     """
     30×30 UTM arrays that pass the default slope+FCF filter everywhere.
 
-    slope = 35° (0.611 rad), forest = 0, aspect = flat (all zeros),
-    DEM = simple slope from 600 to 300 m (top-to-bottom).
+    slope = 35° (0.611 rad), forest = 0,
+    DEM = simple slope from 600 to 300 m (top-to-bottom),
+    flow_accum = 1 everywhere (no channels).
     """
     n = 30
     slope_val = np.deg2rad(35.0)
     slope_arr = np.full((n, n), slope_val)
     fcf_arr   = np.zeros((n, n))
-    aspect_arr = np.zeros((n, n))
-    dem_arr = np.linspace(600, 300, n)[:, None] * np.ones((1, n))
+    dem_arr   = np.linspace(600, 300, n)[:, None] * np.ones((1, n))
+    fa_arr    = np.ones((n, n))
 
-    slope  = _make_utm_da(slope_arr, "slope")
-    fcf    = _make_utm_da(fcf_arr,   "fcf")
-    aspect = _make_utm_da(aspect_arr, "aspect")
-    dem    = _make_utm_da(dem_arr,    "dem")
-    return slope, fcf, aspect, dem
+    slope      = _make_utm_da(slope_arr, "slope")
+    fcf        = _make_utm_da(fcf_arr,   "fcf")
+    dem        = _make_utm_da(dem_arr,    "dem")
+    flow_accum = _make_utm_da(fa_arr,     "flow_accumulation")
+    return slope, fcf, dem, flow_accum
+
+
+# Shared kwargs to disable size filter and smoothing for unit-test clarity
+_COMMON = dict(
+    min_slope_deg=25,
+    max_slope_deg=60,
+    max_fcf=10,
+    min_release_area_m2=0,
+    max_release_area_m2=1e12,
+    smooth=False,
+)
 
 
 # ---------------------------------------------------------------------------
-# Backward-compatibility: no terrain params
+# Basic: slope + FCF filter produces a non-empty mask
 # ---------------------------------------------------------------------------
 
-def test_backward_compatible_no_terrain_params(base_inputs):
-    """No terrain params → all valid pixels survive (same as before)."""
-    from sarvalanche.features.debris_flow_modeling import generate_release_mask
-
-    slope, fcf, aspect, dem = base_inputs
-    mask = generate_release_mask(
-        slope=slope,
-        forest_cover=fcf,
-        min_slope_deg=25,
-        max_slope_deg=60,
-        max_fcf=10,
-        min_group_size=1,
-        smooth=False,
-        reference=dem,
+def test_basic_mask_nonempty(base_inputs):
+    """All valid pixels should survive slope+FCF filter."""
+    slope, fcf, dem, flow_accum = base_inputs
+    mask = generate_release_mask_simple(
+        slope=slope, dem=dem, flow_accum=flow_accum,
+        forest_cover=fcf, reference=dem, **_COMMON,
     )
     assert (mask.values > 0).any(), "Expected non-empty mask"
 
 
 # ---------------------------------------------------------------------------
-# Flow accumulation filter
+# Flow accumulation filter: entire top half is a channel
 # ---------------------------------------------------------------------------
 
-def test_flow_accum_filter_excludes_channel(base_inputs):
-    """Pixels with flow_accum > max_flow_accum are excluded."""
-    from sarvalanche.features.debris_flow_modeling import generate_release_mask
-
-    slope, fcf, aspect, dem = base_inputs
+def test_flow_accum_filter_reduces_mask(base_inputs):
+    """High flow_accum pixels reduce the total mask area."""
+    slope, fcf, dem, _ = base_inputs
     n = 30
 
-    # High flow accumulation along column 15 (drainage channel)
+    # Baseline: low flow accum everywhere
+    fa_low = _make_utm_da(np.ones((n, n)), "flow_accumulation")
+    mask_all = generate_release_mask_simple(
+        slope=slope, dem=dem, flow_accum=fa_low,
+        forest_cover=fcf, reference=dem, max_flow_accum_channel=10.0, **_COMMON,
+    )
+
+    # High flow accum in top half
     fa_arr = np.ones((n, n))
-    fa_arr[:, 15] = 2000.0  # well above threshold
-    fa = _make_utm_da(fa_arr, "flow_accumulation")
+    fa_arr[0:15, :] = 2000.0
+    fa_high = _make_utm_da(fa_arr, "flow_accumulation")
+    mask_filtered = generate_release_mask_simple(
+        slope=slope, dem=dem, flow_accum=fa_high,
+        forest_cover=fcf, reference=dem, max_flow_accum_channel=10.0, **_COMMON,
+    )
 
-    mask = generate_release_mask(
-        slope=slope,
-        forest_cover=fcf,
-        min_slope_deg=25,
-        max_slope_deg=60,
-        max_fcf=10,
-        min_group_size=1,
-        smooth=False,
-        reference=dem,
-        flow_accum=fa,
-        max_flow_accum=1000.0,
+    assert mask_filtered.values.sum() < mask_all.values.sum(), (
+        "High flow_accum should reduce the mask area"
     )
-    # Column 15 should be zeroed out
-    assert (mask.values[:, 15] == 0).all(), (
-        "Expected channel column to be excluded by flow_accum filter"
-    )
-    # Other pixels should still be present
-    assert (mask.values[:, 10] > 0).any()
 
 
 # ---------------------------------------------------------------------------
-# TPI filters
+# Forest cover filter: top half is forested
 # ---------------------------------------------------------------------------
 
-def test_tpi_max_filter_excludes_ridge(base_inputs):
-    """Pixels with TPI > max_tpi are excluded."""
-    from sarvalanche.features.debris_flow_modeling import generate_release_mask
-
-    slope, fcf, aspect, dem = base_inputs
+def test_fcf_filter_reduces_mask(base_inputs):
+    """High forest cover pixels reduce the total mask area."""
+    slope, _, dem, flow_accum = base_inputs
     n = 30
 
-    tpi_arr = np.zeros((n, n))
-    tpi_arr[5, :] = 50.0  # ridge row
-    tpi = _make_utm_da(tpi_arr, "tpi")
-
-    mask = generate_release_mask(
-        slope=slope,
-        forest_cover=fcf,
-        min_slope_deg=25,
-        max_slope_deg=60,
-        max_fcf=10,
-        min_group_size=1,
-        smooth=False,
-        reference=dem,
-        tpi=tpi,
-        max_tpi=30.0,
+    # Baseline: no forest
+    fcf_none = _make_utm_da(np.zeros((n, n)), "fcf")
+    mask_all = generate_release_mask_simple(
+        slope=slope, dem=dem, flow_accum=flow_accum,
+        forest_cover=fcf_none, reference=dem, **_COMMON,
     )
-    assert (mask.values[5, :] == 0).all(), "Ridge row should be excluded by max_tpi filter"
-    assert (mask.values[15, :] > 0).any()
 
-
-def test_tpi_min_filter_excludes_valley(base_inputs):
-    """Pixels with TPI < min_tpi are excluded."""
-    from sarvalanche.features.debris_flow_modeling import generate_release_mask
-
-    slope, fcf, aspect, dem = base_inputs
-    n = 30
-
-    tpi_arr = np.zeros((n, n))
-    tpi_arr[5, :] = -50.0  # valley row
-    tpi = _make_utm_da(tpi_arr, "tpi")
-
-    mask = generate_release_mask(
-        slope=slope,
-        forest_cover=fcf,
-        min_slope_deg=25,
-        max_slope_deg=60,
-        max_fcf=10,
-        min_group_size=1,
-        smooth=False,
-        reference=dem,
-        tpi=tpi,
-        min_tpi=-30.0,
+    # Dense forest in top half
+    fcf_arr = np.zeros((n, n))
+    fcf_arr[0:15, :] = 50.0
+    fcf_forest = _make_utm_da(fcf_arr, "fcf")
+    mask_filtered = generate_release_mask_simple(
+        slope=slope, dem=dem, flow_accum=flow_accum,
+        forest_cover=fcf_forest, reference=dem, **_COMMON,
     )
-    assert (mask.values[5, :] == 0).all(), "Valley row should be excluded by min_tpi filter"
-    assert (mask.values[15, :] > 0).any()
+
+    assert mask_filtered.values.sum() < mask_all.values.sum(), (
+        "Forested area should reduce the mask"
+    )
 
 
 # ---------------------------------------------------------------------------
-# TPI split threshold
+# Slope filter: only a band of valid slope
 # ---------------------------------------------------------------------------
 
-def test_tpi_split_threshold_increases_zone_count(base_inputs):
-    """A sharp TPI step should split the mask into more zones."""
-    from sarvalanche.features.debris_flow_modeling import generate_release_mask
+def test_slope_filter_flat_produces_empty():
+    """Entirely flat slope should produce an empty mask."""
+    n = 30
+    slope = _make_utm_da(np.full((n, n), np.deg2rad(10.0)), "slope")
+    dem   = _make_utm_da(np.linspace(600, 300, n)[:, None] * np.ones((1, n)), "dem")
+    fa    = _make_utm_da(np.ones((n, n)), "flow_accumulation")
+    fcf   = _make_utm_da(np.zeros((n, n)), "fcf")
 
-    slope, fcf, aspect, dem = base_inputs
+    mask = generate_release_mask_simple(
+        slope=slope, dem=dem, flow_accum=fa,
+        forest_cover=fcf, reference=dem, **_COMMON,
+    )
+    assert (mask.values == 0).all(), "Entirely flat region should produce empty mask"
+
+
+def test_slope_filter_steep_produces_empty():
+    """Entirely over-steep slope should produce an empty mask."""
+    n = 30
+    slope = _make_utm_da(np.full((n, n), np.deg2rad(70.0)), "slope")
+    dem   = _make_utm_da(np.linspace(600, 300, n)[:, None] * np.ones((1, n)), "dem")
+    fa    = _make_utm_da(np.ones((n, n)), "flow_accumulation")
+    fcf   = _make_utm_da(np.zeros((n, n)), "fcf")
+
+    mask = generate_release_mask_simple(
+        slope=slope, dem=dem, flow_accum=fa,
+        forest_cover=fcf, reference=dem, **_COMMON,
+    )
+    assert (mask.values == 0).all(), "Entirely over-steep region should produce empty mask"
+
+
+# ---------------------------------------------------------------------------
+# Size filter
+# ---------------------------------------------------------------------------
+
+def test_size_filter_removes_small_zones(base_inputs):
+    """Zones smaller than min_release_area_m2 are removed."""
+    _, fcf, dem, flow_accum = base_inputs
     n = 30
 
-    # TPI step at row 15 → top half near 0, bottom half near +60
-    tpi_arr = np.zeros((n, n))
-    tpi_arr[15:, :] = 60.0
-    tpi = _make_utm_da(tpi_arr, "tpi")
+    # Only a tiny 2x2 patch of valid slope, rest flat
+    slope_arr = np.full((n, n), np.deg2rad(10.0))
+    slope_arr[14:16, 14:16] = np.deg2rad(35.0)
+    slope = _make_utm_da(slope_arr, "slope")
 
-    mask_no_split = generate_release_mask(
-        slope=slope, forest_cover=fcf,
+    mask = generate_release_mask_simple(
+        slope=slope, dem=dem, flow_accum=flow_accum,
+        forest_cover=fcf, reference=dem,
         min_slope_deg=25, max_slope_deg=60, max_fcf=10,
-        min_group_size=1, smooth=False, reference=dem,
-        tpi=tpi,
+        min_release_area_m2=10000,  # 100x100m — much larger than 2x2 at 10m
+        max_release_area_m2=1e12,
+        smooth=False,
     )
-    mask_with_split = generate_release_mask(
-        slope=slope, forest_cover=fcf,
-        min_slope_deg=25, max_slope_deg=60, max_fcf=10,
-        min_group_size=1, smooth=False, reference=dem,
-        tpi=tpi, tpi_split_threshold=30.0,
-    )
-    n_no_split   = _count_zones(mask_no_split.values)
-    n_with_split = _count_zones(mask_with_split.values)
-    assert n_with_split >= n_no_split, (
-        f"Expected more zones after TPI split: got {n_with_split} vs {n_no_split}"
-    )
+    assert (mask.values == 0).all(), "Tiny zone should be removed by size filter"
 
 
 # ---------------------------------------------------------------------------
-# _apply_linear_split unit test
+# No forest cover (optional param)
 # ---------------------------------------------------------------------------
 
-def test_apply_linear_split_creates_split():
-    """Sharp field gradient → _apply_linear_split creates ≥ 2 zones."""
-    from sarvalanche.features.debris_flow_modeling import _apply_linear_split
+def test_no_forest_cover(base_inputs):
+    """forest_cover=None should work without error."""
+    slope, _, dem, flow_accum = base_inputs
 
-    n = 20
-    mask_arr = np.ones((n, n), dtype=bool)
-
-    # Field step at column 10
-    field = np.zeros((n, n))
-    field[:, 10:] = 100.0
-
-    result = _apply_linear_split(mask_arr, field, threshold=50.0)
-    _, n_zones = ndlabel(result)
-    assert n_zones >= 2, f"Expected ≥ 2 zones after linear split, got {n_zones}"
-
-
-def test_apply_linear_split_no_split_below_threshold():
-    """Field gradient below threshold → mask unchanged (1 zone)."""
-    from sarvalanche.features.debris_flow_modeling import _apply_linear_split
-
-    n = 20
-    mask_arr = np.ones((n, n), dtype=bool)
-
-    # Small gradient — below threshold
-    field = np.zeros((n, n))
-    field[:, 10:] = 5.0
-
-    result = _apply_linear_split(mask_arr, field, threshold=50.0)
-    _, n_zones = ndlabel(result)
-    assert n_zones == 1
-
-
-def test_apply_linear_split_nan_safe():
-    """NaN values in field are treated as 0 — no crash."""
-    from sarvalanche.features.debris_flow_modeling import _apply_linear_split
-
-    n = 10
-    mask_arr = np.ones((n, n), dtype=bool)
-    field = np.full((n, n), np.nan)
-
-    # Should not raise; output should still be boolean
-    result = _apply_linear_split(mask_arr, field, threshold=1.0)
-    assert result.dtype == bool
+    mask = generate_release_mask_simple(
+        slope=slope, dem=dem, flow_accum=flow_accum,
+        forest_cover=None, reference=dem, **_COMMON,
+    )
+    assert (mask.values > 0).any(), "Should produce non-empty mask without FCF"

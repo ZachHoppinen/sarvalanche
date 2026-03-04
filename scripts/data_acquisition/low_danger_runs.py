@@ -556,8 +556,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Output directory (default: /Users/zmhoppinen/Documents/sarvalanche/local/issw/low_danger_output)"
     )
     parser.add_argument(
-        "--min-days-from-high", type=int, default=20, metavar="DAYS",
-        help="Hard minimum days from any level 3+ danger day (default: 20)"
+        "--min-days-from-high", type=int, default=10, metavar="DAYS",
+        help="Hard minimum days from any level 3+ danger day (default: 10)"
     )
     parser.add_argument(
         "--no-fetch", action="store_true",
