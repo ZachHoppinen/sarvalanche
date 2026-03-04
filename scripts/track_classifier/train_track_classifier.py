@@ -48,7 +48,8 @@ for v in labels.values():
 log.info("Raw label distribution: %s  (threshold for debris: >=%d)", label_counts, BINARY_THRESHOLD)
 
 # ── Build feature matrix ──────────────────────────────────────────────────────
-parts = [build_training_set(labels, d) for d in RUNS_DIRS]
+SEG_FEATURES_PATH = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/seg_features.parquet')
+parts = [build_training_set(labels, d, SEG_FEATURES_PATH) for d in RUNS_DIRS]
 parts = [(X_i, y_i) for X_i, y_i in parts if len(X_i) > 0]
 X = pd.concat([p[0] for p in parts])
 y = pd.concat([p[1] for p in parts])

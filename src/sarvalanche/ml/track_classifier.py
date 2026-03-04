@@ -102,43 +102,37 @@ def _discover_run_files(
 def build_training_set(
     labels: dict,
     runs_dir: Path,
+    seg_features_path: Path | None = None,
 ) -> tuple[pd.DataFrame, pd.Series]:
     """Extract features and binary labels for all labeled tracks.
-
-    Tracks with label >= BINARY_THRESHOLD (2 or 3) are treated as debris-present
-    (y=1); labels 0 or 1 are debris-absent (y=0).
 
     Parameters
     ----------
     labels : dict
-        Contents of ``track_labels.json``. Keys are ``zone|date|track_idx``;
-        values have ``zone``, ``date``, ``track_idx``, ``label`` fields.
     runs_dir : Path
-        Directory containing .gpkg and .nc run file pairs.
-
-    Returns
-    -------
-    X : pd.DataFrame
-        Feature matrix, one row per labeled track, indexed by label key.
-    y : pd.Series
-        Binary labels (0 = no debris, 1 = debris), same index as X.
+    seg_features_path : Path or None
+        Optional parquet of CNN seg features indexed by label key.
+        If provided, seg features are joined onto the feature matrix.
     """
-
     gpkg_paths, nc_paths = _discover_run_files(runs_dir)
 
     rows: list[dict] = []
     current_stem: str | None = None
-    scene_ctx: dict | None = None
+    scene_ctx = None
+    precomputed_arrays = None
 
     for key, meta, row, ds, crs in iter_labeled_run_tracks(gpkg_paths, nc_paths, labels):
         stem = f"{meta['zone']}_{meta['date']}"
         if stem != current_stem:
             scene_ctx = compute_scene_context(ds)
-            current_stem = stem
             precomputed_arrays = precompute_group_arrays(ds)
+            current_stem = stem
 
-        feats = extract_track_features(row, ds, scene_ctx=scene_ctx, precomputed=precomputed_arrays, src_crs=crs)
-        feats['_key'] = key
+        feats = extract_track_features(
+            row, ds, scene_ctx=scene_ctx,
+            precomputed=precomputed_arrays, src_crs=crs,
+        )
+        feats['_key']   = key
         feats['_label'] = meta['label']
         rows.append(feats)
 
@@ -147,14 +141,25 @@ def build_training_set(
         return pd.DataFrame(), pd.Series([], name='debris', dtype=int)
 
     df = pd.DataFrame(rows).set_index('_key')
-    y = (df.pop('_label') >= BINARY_THRESHOLD).astype(int).rename('debris')
+    y  = (df.pop('_label') >= BINARY_THRESHOLD).astype(int).rename('debris')
+
+    # Join seg features if available
+    if seg_features_path is not None and Path(seg_features_path).exists():
+        seg_feats = pd.read_parquet(seg_features_path)
+        before    = df.shape[1]
+        df        = df.join(seg_feats, how='left')
+        added     = df.shape[1] - before
+        coverage  = df[seg_feats.columns].notna().any(axis=1).mean()
+        log.info(
+            'build_training_set: joined %d seg features (%.0f%% coverage)',
+            added, 100 * coverage,
+        )
 
     log.info(
         'build_training_set: %d samples, %d features, %.0f%% positive',
         len(df), df.shape[1], 100 * y.mean(),
     )
     return df, y
-
 
 def train_classifier(X: pd.DataFrame, y: pd.Series) -> XGBClassifier:
     """Fit an XGBoost binary classifier on labeled tracks.
@@ -210,20 +215,30 @@ def _extract_one(row, ds, static_vars, scene_ctx, precomputed, src_crs):
     return extract_track_features(row, ds, static_vars, scene_ctx, precomputed, src_crs)
 
 
-def predict_tracks(clf, gdf, ds, n_jobs=1):
-    scene_ctx = compute_scene_context(ds)
+def predict_tracks(clf, gdf, ds, n_jobs=1, seg_features_path=None):
+    scene_ctx  = compute_scene_context(ds)
     precomputed = precompute_group_arrays(ds)
 
     feature_rows = Parallel(n_jobs=n_jobs, prefer='processes', max_nbytes=None)(
-        delayed(_extract_one)(row, ds, STATIC_FEATURE_VARS, scene_ctx, precomputed, gdf.crs)
+        delayed(_extract_one)(
+            row, ds, STATIC_FEATURE_VARS, scene_ctx, precomputed, gdf.crs
+        )
         for _, row in tqdm(gdf.iterrows(), total=len(gdf), desc='extracting features', unit='track')
     )
 
     X_pred = pd.DataFrame(feature_rows, index=gdf.index)
-    train_cols = list(clf.feature_names_in_)
-    X_pred = X_pred.reindex(columns=train_cols).fillna(X_pred.median())
 
-    result = gdf.copy()
+    # Join seg features if provided
+    if seg_features_path is not None and Path(seg_features_path).exists():
+        seg_feats = pd.read_parquet(seg_features_path)
+        X_pred    = X_pred.join(seg_feats, how='left')
+        log.info('predict_tracks: joined seg features for %d / %d tracks',
+                 X_pred[seg_feats.columns].notna().any(axis=1).sum(), len(X_pred))
+
+    train_cols = list(clf.feature_names_in_)
+    X_pred     = X_pred.reindex(columns=train_cols).fillna(X_pred.median())
+
+    result          = gdf.copy()
     result['p_debris'] = clf.predict_proba(X_pred)[:, 1]
     log.info('predict_tracks: scored %d tracks, mean p_debris=%.3f',
              len(result), float(result['p_debris'].mean()))

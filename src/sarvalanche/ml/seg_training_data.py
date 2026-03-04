@@ -107,6 +107,10 @@ def build_seg_training_set(
         )
 
         for key, meta in tqdm(entries, desc=stem, unit='trk'):
+            # if no debris labeled skip.
+            if meta['label'] < BINARY_THRESHOLD:
+                continue
+
             idx = meta['track_idx']
             if idx not in gdf.index:
                 log.warning(
@@ -135,10 +139,10 @@ def build_seg_training_set(
                 continue
 
             # Zero out target inside track polygon for no-debris tracks
-            if meta['label'] < BINARY_THRESHOLD:
-                from sarvalanche.ml.track_patch_extraction import TRACK_MASK_CHANNEL
-                track_mask = patch[TRACK_MASK_CHANNEL]
-                target[0] *= (1.0 - track_mask)
+            # if meta['label'] < BINARY_THRESHOLD:
+                # from sarvalanche.ml.track_patch_extraction import TRACK_MASK_CHANNEL
+                # track_mask = patch[TRACK_MASK_CHANNEL]
+                # target[0] *= (1.0 - track_mask)
 
             patch_list.append(patch)
             target_list.append(target)

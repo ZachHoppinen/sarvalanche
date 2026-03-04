@@ -23,7 +23,7 @@ _WEIGHTS_ROOT = Path(__file__).parent / "weights"
 _REGISTRY: dict[str, tuple[str, str]] = {
     "rtc_predictor":    ("rtc_predictor",      "sar_transformer_best*.pth"),
     "track_classifier": ("track_predictor",    "track_classifier*.joblib"),
-    "debris_segmenter": ("cnn_debris_detector", "seg_model_best*.pt"),
+    "debris_segmenter": ("cnn_debris_detector", "seg_model_best_best*.pt"),
 }
 
 

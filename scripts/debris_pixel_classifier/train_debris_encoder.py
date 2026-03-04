@@ -115,22 +115,52 @@ log.info('Building training data from %d runs dirs...', len(RUNS_DIRS))
 with open(LABELS_PATH) as f:
     labels = json.load(f)
 
-all_patches: list[np.ndarray] = []
-all_targets: list[np.ndarray] = []
-all_y:       list[pd.Series]  = []
+CACHE_DIR  = Path('/Users/zmhoppinen/Documents/sarvalanche/local/issw/patch_cache')
+CACHE_FILE = CACHE_DIR / 'seg_patches_v1.npz'
 
-for runs_dir in RUNS_DIRS:
-    patches, targets, y = build_seg_training_set(
-        labels, runs_dir, size=PATCH_SIZE, shapes_path=SHAPES_PATH
+if CACHE_FILE.exists():
+    log.info('Loading patches from cache: %s', CACHE_FILE)
+    cache = np.load(CACHE_FILE, allow_pickle=False)
+    patches = cache['patches']
+    targets = cache['targets']
+    y       = pd.Series(
+        cache['y'].astype(int),
+        index=cache['y_index'].astype(str),
+        name='debris',
+        dtype=int,
     )
-    if len(patches) > 0:
-        all_patches.append(patches)
-        all_targets.append(targets)
-        all_y.append(y)
+    log.info('Loaded %d patches from cache', len(patches))
+else:
+    log.info('Building training data from %d runs dirs...', len(RUNS_DIRS))
+    with open(LABELS_PATH) as f:
+        labels = json.load(f)
 
-patches = np.concatenate(all_patches, axis=0)
-targets = np.concatenate(all_targets, axis=0)
-y       = pd.concat(all_y)
+    all_patches: list[np.ndarray] = []
+    all_targets: list[np.ndarray] = []
+    all_y:       list[pd.Series]  = []
+
+    for runs_dir in RUNS_DIRS:
+        p, t, yi = build_seg_training_set(
+            labels, runs_dir, size=PATCH_SIZE, shapes_path=SHAPES_PATH
+        )
+        if len(p) > 0:
+            all_patches.append(p)
+            all_targets.append(t)
+            all_y.append(yi)
+
+    patches = np.concatenate(all_patches, axis=0)
+    targets = np.concatenate(all_targets, axis=0)
+    y       = pd.concat(all_y)
+
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        CACHE_FILE,
+        patches=patches,
+        targets=targets,
+        y=y.values,
+        y_index=np.array(y.index.tolist(), dtype='U64'),
+    )
+    log.info('Saved patch cache to %s', CACHE_FILE)
 
 log.info(
     'Total: %d patches, %.0f%% debris, patch shape %s',
@@ -191,8 +221,6 @@ scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
 if start_epoch > 1:
     for _ in range(start_epoch - 1):
         scheduler.step()
-
-
 
 log.info('Model parameters: %s', f'{sum(p.numel() for p in model.parameters()):,}')
 

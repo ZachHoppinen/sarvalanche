@@ -14,7 +14,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 class WeightedDebrisLoss(nn.Module):
     """BCE loss with per-pixel weights based on label source and track interior.
 
@@ -74,7 +73,6 @@ class WeightedDebrisLoss(nn.Module):
         """
         bce = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
 
-        # Base weights from label source
         weights = torch.full_like(targets, self.bg_weight)
         weak_pos = targets >= self.weak_threshold
         weights[weak_pos] = self.weak_weight
@@ -84,7 +82,6 @@ class WeightedDebrisLoss(nn.Module):
         else:
             weights[weak_pos] = self.manual_weight
 
-        # Upweight track interior
         if track_masks is not None:
             weights = weights * (
                 1.0 + (self.track_interior_weight - 1.0) * track_masks
