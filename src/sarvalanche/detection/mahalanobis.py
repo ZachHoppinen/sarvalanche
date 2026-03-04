@@ -78,7 +78,8 @@ def calculate_ml_distances(
                 da = linear_to_dB(da)
 
             distance, sigma_da = mahalanobis_distance(da, avalanche_date, model, device=device,
-                                             stride=stride, batch_size=batch_size)
+                                             stride=stride, batch_size=batch_size,
+                                             desc=f"SAR transformer track={track} pol={pol}")
 
             # Store per-combo products in dataset for reference / debugging
             ds[f'd_{track}_{pol}_ml']    = distance

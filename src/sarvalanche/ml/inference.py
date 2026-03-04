@@ -49,7 +49,7 @@ def prep_dataset_for_inference(VV, VH):
 
 def predict_with_sweeping_fast(model, baseline, patch_size=16, stride=8,
                                batch_size=128, device=None, use_fp16=False,
-                               min_valid_fraction=0.5):
+                               min_valid_fraction=0.5, desc=None):
     """
     Fast batched inference with configurable options.
 
@@ -140,7 +140,7 @@ def predict_with_sweeping_fast(model, baseline, patch_size=16, stride=8,
 
     # Batched inference
     with torch.no_grad():
-        for batch_start in tqdm(range(0, len(patches), batch_size), desc='Processing batches'):
+        for batch_start in tqdm(range(0, len(patches), batch_size), desc=desc or 'Processing batches'):
             batch_end = min(batch_start + batch_size, len(patches))
 
             batch_patches = torch.FloatTensor(patches[batch_start:batch_end])
@@ -322,9 +322,6 @@ class DebrisInference:
         Fitted XGBoost track classifier.
     seg_model : DebrisSegmenter
         Fitted CNN segmentation model.
-    sar_transformer : SARTransformer or None
-        SAR transformer for upstream RTC prediction. If None, assumes
-        unmasked_p_target is already present in the dataset.
     cnn_threshold : float
         XGBoost p_debris threshold above which the CNN is run.
         Tracks below this threshold get seg_mask=None.

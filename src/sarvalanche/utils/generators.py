@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Iterator, Sequence
 
 import numpy as np
+import pandas as pd
 import geopandas as gpd
 import xarray as xr
 
@@ -75,12 +76,35 @@ def iter_track_pol_combinations(
 
             # Select data for this track
             da = ds[pol].sel(time=ds[track_var] == track)
+            n_times = da.sizes.get('time', 0)
 
-            if da.sizes.get('time', 0) == 0:
+            if n_times == 0:
                 log.warning(f"No data for track {track}, polarization {pol}")
                 if not skip_missing:
                     raise ValueError(f"Empty data for track {track}, pol {pol}")
                 continue
+
+            if n_times < 2:
+                log.warning(
+                    "Track %s pol %s has only %d time step — cannot form "
+                    "crossing pairs; skipping",
+                    track, pol, n_times,
+                )
+                continue
+
+            # Check that time spacing is ~multiples of 6 days (S1 half-cycle)
+            if n_times >= 2:
+                times = pd.DatetimeIndex(da.time.values)
+                diffs_days = np.diff(times).astype('timedelta64[D]').astype(float)
+                remainder = diffs_days % 6
+                # Allow ±1 day tolerance for orbit timing jitter
+                bad = (remainder > 1) & (remainder < 5)
+                if bad.any():
+                    bad_diffs = diffs_days[bad]
+                    log.warning(
+                        "Track %s pol %s has time gaps not multiples of 6 days: %s days",
+                        track, pol, bad_diffs.tolist(),
+                    )
 
             yield track, pol, da
 
