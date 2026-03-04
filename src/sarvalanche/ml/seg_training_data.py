@@ -212,72 +212,77 @@ def build_all_seg_patches(
         memmap_dir.mkdir(parents=True, exist_ok=True)
         patches_fp = memmap_dir / 'patches.bin'
         targets_fp = memmap_dir / 'targets.bin'
-        patch_fh = open(patches_fp, 'wb')
-        target_fh = open(targets_fp, 'wb')
+        patch_fh = None
+        target_fh = None
         write_count = 0
     else:
         patch_list:  list[np.ndarray] = []
         target_list: list[np.ndarray] = []
 
-    done = False
-    for nc_path in nc_paths:
-        if done:
-            break
-        zone = zone_from_path(nc_path)
-        gpkg_path = zone_to_gpkg.get(zone)
-        if gpkg_path is None:
-            continue
-
-        gdf = gpd.read_file(gpkg_path)
-        ds = load_netcdf_to_dataset(nc_path)
-        log.info(
-            'build_all_seg_patches: %d tracks — %s', len(gdf), nc_path.name
-        )
-
-        for idx in tqdm(gdf.index, desc=nc_path.stem, unit='trk'):
-            try:
-                dual, targets = extract_dual_scale_with_target(
-                    gdf.loc[idx], ds, size=size, src_crs=gdf.crs,
-                )
-                patch  = dual.context
-                target = targets[0]
-            except Exception:
-                log.debug(
-                    'build_all_seg_patches: failed on track %d in %s',
-                    idx, nc_path.name, exc_info=True,
-                )
-                continue
-
-            expected_p = (N_PATCH_CHANNELS, size, size)
-            expected_t = (1, size, size)
-            if patch.shape != expected_p or target.shape != expected_t:
-                log.debug(
-                    'build_all_seg_patches: skipping track %d — shape mismatch', idx
-                )
-                continue
-
-            if use_disk:
-                patch_fh.write(patch.astype(np.float32).tobytes())
-                target_fh.write(target.astype(np.float32).tobytes())
-                write_count += 1
-            else:
-                patch_list.append(patch)
-                target_list.append(target)
-
-            count = write_count if use_disk else len(patch_list)
-            if max_tracks is not None and count >= max_tracks:
-                done = True
-                log.info(
-                    'build_all_seg_patches: hit max_tracks=%d, stopping', max_tracks
-                )
-                break
-
-        ds.close()
-        gc.collect()
-
     if use_disk:
-        patch_fh.close()
-        target_fh.close()
+        patch_fh = open(patches_fp, 'wb')
+        target_fh = open(targets_fp, 'wb')
+
+    try:
+        done = False
+        for nc_path in nc_paths:
+            if done:
+                break
+            zone = zone_from_path(nc_path)
+            gpkg_path = zone_to_gpkg.get(zone)
+            if gpkg_path is None:
+                continue
+
+            gdf = gpd.read_file(gpkg_path)
+            ds = load_netcdf_to_dataset(nc_path)
+            log.info(
+                'build_all_seg_patches: %d tracks — %s', len(gdf), nc_path.name
+            )
+
+            for idx in tqdm(gdf.index, desc=nc_path.stem, unit='trk'):
+                try:
+                    dual, targets = extract_dual_scale_with_target(
+                        gdf.loc[idx], ds, size=size, src_crs=gdf.crs,
+                    )
+                    patch  = dual.context
+                    target = targets[0]
+                except Exception:
+                    log.debug(
+                        'build_all_seg_patches: failed on track %d in %s',
+                        idx, nc_path.name, exc_info=True,
+                    )
+                    continue
+
+                expected_p = (N_PATCH_CHANNELS, size, size)
+                expected_t = (1, size, size)
+                if patch.shape != expected_p or target.shape != expected_t:
+                    log.debug(
+                        'build_all_seg_patches: skipping track %d — shape mismatch', idx
+                    )
+                    continue
+
+                if use_disk:
+                    patch_fh.write(patch.astype(np.float32).tobytes())
+                    target_fh.write(target.astype(np.float32).tobytes())
+                    write_count += 1
+                else:
+                    patch_list.append(patch)
+                    target_list.append(target)
+
+                count = write_count if use_disk else len(patch_list)
+                if max_tracks is not None and count >= max_tracks:
+                    done = True
+                    log.info(
+                        'build_all_seg_patches: hit max_tracks=%d, stopping', max_tracks
+                    )
+                    break
+
+            ds.close()
+            gc.collect()
+    finally:
+        if use_disk:
+            patch_fh.close()
+            target_fh.close()
 
         if write_count == 0:
             patches_fp.unlink(missing_ok=True)

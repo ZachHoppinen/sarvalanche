@@ -52,6 +52,7 @@ def filter_pixel_groups(
         remove_labels |= (sizes < min_size)
     if max_size is not None:
         remove_labels |= (sizes > max_size)
+    remove_labels[0] = False  # label 0 is background, never remove it
 
     n_removed = int(remove_labels.sum())
     log.debug(
@@ -72,7 +73,7 @@ def filter_pixel_groups(
     )
 
     if return_nlabels:
-        n_labels_post = np.sum(~remove_labels)
+        n_labels_post = np.sum(~remove_labels) - 1  # exclude background label 0
         return out, n_labels_post
 
     return out

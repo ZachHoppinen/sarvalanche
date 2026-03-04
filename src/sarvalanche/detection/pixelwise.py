@@ -57,9 +57,9 @@ def get_pixelwise_probabilities(
     p_likelihood = xr.ufuncs.maximum(ds['p_empirical'], ds['distance_mahalanobis'])
 
     # Standard Bayesian update (allows increases and decreases)
-    p_bayesian = p_prior * p_likelihood / (
-        p_prior * p_likelihood + (1 - p_prior) * (1 - p_likelihood)
-    )
+    eps = 1e-10
+    denominator = p_prior * p_likelihood + (1 - p_prior) * (1 - p_likelihood)
+    p_bayesian = p_prior * p_likelihood / denominator.clip(min=eps)
 
     # Take minimum: this caps the result at the prior probability
     # If Bayesian update > prior: use prior (don't increase)
@@ -71,6 +71,11 @@ def get_pixelwise_probabilities(
     # Soft runout constraint: linearly ramp p_pixelwise from 0 at p_runout=0
     # to full signal at p_runout=0.1, instead of a hard cutoff
     runout_scale = (ds['p_runout'] / 0.1).clip(min=0, max=1)
+    if float(ds['p_runout'].max()) < 0.1:
+        log.warning(
+            'Max p_runout=%.4f < 0.1; runout_scale will suppress all signal',
+            float(ds['p_runout'].max()),
+        )
     p_pixelwise = p_pixelwise * runout_scale
 
     log.debug(f'Filling NaN values in p_pixelwise with 0')

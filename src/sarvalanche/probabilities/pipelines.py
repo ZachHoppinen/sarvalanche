@@ -53,6 +53,11 @@ def group_classes(pixel_wise_probability, cache_dir, smooth = True):
     if smooth: arr = spatial_smooth(arr)
     arr = np.asarray(arr, dtype='<f4')
 
+    n_nonfinite = int((~np.isfinite(arr)).sum())
+    if n_nonfinite > 0:
+        log.warning('group_classes: input has %d non-finite values, replacing with 0', n_nonfinite)
+        arr = np.where(np.isfinite(arr), arr, 0.0)
+
     P_debris = np.clip(arr, eps, 1 - eps)
     P_background = 1.0 - P_debris
 

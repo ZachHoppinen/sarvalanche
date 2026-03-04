@@ -42,7 +42,7 @@ from rasterio.transform import from_bounds as _from_bounds
 from skimage.transform import resize as _resize
 from shapely.geometry import box
 
-from sarvalanche.ml.track_features import reproject_geom
+from sarvalanche.utils.vector_utils import reproject_geom
 from sarvalanche.utils.raster_utils import _y_slice
 
 log = logging.getLogger(__name__)
