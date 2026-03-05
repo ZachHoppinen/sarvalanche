@@ -27,6 +27,7 @@ def compute_track_empirical_probability(
     avalanche_date,
     *,
     smooth_method: str | None = None,
+    tau_days: float = 6.0,
     pair_dim: str = "pair",
 ) -> xr.DataArray:
     """
@@ -61,7 +62,7 @@ def compute_track_empirical_probability(
 
     # --- Backscatter changes crossing avalanche date ---
     diffs = backscatter_changes_crossing_date(da, avalanche_date, pair_dim=pair_dim)
-    w_pair_temporal = get_temporal_weights(diffs['t_start'], diffs['t_end'])
+    w_pair_temporal = get_temporal_weights(diffs['t_start'], diffs['t_end'], tau_days=tau_days)
     validate_weights_sum_to_one(w_pair_temporal, dim = 'pair')
 
     # --- Combine weights ---

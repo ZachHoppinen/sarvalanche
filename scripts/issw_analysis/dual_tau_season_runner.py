@@ -220,12 +220,14 @@ def prepare_season_dataset(
         del donor_ds
         paths_gdf = gpd.read_file(track_gpkg)
         log.info("Saving dataset with FlowPy vars to %s", season_nc)
+        ds = ds.load()
         export_netcdf(ds, season_nc, overwrite=True)
     else:
         log.info("Running FlowPy terrain modeling")
         ds, paths_gdf = generate_runcount_alpha_angle(ds)
         paths_gdf.to_file(track_gpkg, driver="GPKG")
         log.info("Saving dataset with FlowPy vars to %s", season_nc)
+        ds = ds.load()
         export_netcdf(ds, season_nc, overwrite=True)
 
     validate_canonical(ds)
@@ -263,9 +265,32 @@ def prepare_season_dataset(
     # Persist so subsequent runs skip preprocessing/weights/static probs
     if needs_save:
         log.info("Saving preprocessed dataset to %s", season_nc)
+        ds = ds.load()
         export_netcdf(ds, season_nc, overwrite=True)
 
-    # ── 6. Drop tracks with < 3 acquisitions ────────────────────────────
+    # ── 6. Debug: show dataset time/track structure ─────────────────────
+    all_times_debug = pd.DatetimeIndex(ds["time"].values)
+    log.info(
+        "Dataset time range: %s to %s (%d steps)",
+        all_times_debug.min().date(),
+        all_times_debug.max().date(),
+        len(all_times_debug),
+    )
+    if "track" in ds.coords:
+        track_vals_debug, track_counts_debug = np.unique(
+            ds["track"].values, return_counts=True
+        )
+        log.info("Tracks before filtering: %s", dict(zip(track_vals_debug, track_counts_debug)))
+        for tv in track_vals_debug:
+            track_times = all_times_debug[ds["track"].values == tv]
+            log.info(
+                "  Track %s: %d times, %s to %s",
+                tv, len(track_times), track_times.min().date(), track_times.max().date(),
+            )
+    else:
+        log.warning("No 'track' coordinate found in dataset")
+
+    # ── 6b. Drop tracks with < 3 acquisitions ────────────────────────
     # Tracks with too few time steps can never form crossing pairs and
     # cause ValueError in backscatter_changes_crossing_date.
     if "track" in ds.coords:
@@ -285,6 +310,18 @@ def prepare_season_dataset(
                 n_before,
                 len(ds.time),
             )
+            # Show what survived
+            surv_vals, surv_counts = np.unique(
+                ds["track"].values, return_counts=True
+            )
+            surv_times = pd.DatetimeIndex(ds["time"].values)
+            log.info("Tracks after filtering: %s", dict(zip(surv_vals, surv_counts)))
+            for tv in surv_vals:
+                track_times = surv_times[ds["track"].values == tv]
+                log.info(
+                    "  Track %s: %d times, %s to %s",
+                    tv, len(track_times), track_times.min().date(), track_times.max().date(),
+                )
 
     # Load into memory — the dataset is ~2 GB but feature extraction
     # needs random pixel access per track; dask lazy loading is 10-100x slower.

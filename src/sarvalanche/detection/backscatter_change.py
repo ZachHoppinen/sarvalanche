@@ -82,7 +82,11 @@ def calculate_empirical_backscatter_probability(
     for track, pol, da in iter_track_pol_combinations(ds):
         log.debug("Processing track=%s, pol=%s", track, pol)
 
-        p, d = compute_track_empirical_probability(da, avalanche_date, **kwargs)
+        try:
+            p, d = compute_track_empirical_probability(da, avalanche_date, **kwargs)
+        except ValueError as e:
+            log.warning("Skipping track=%s pol=%s: %s", track, pol, e)
+            continue
 
         ds[f'p_{track}_{pol}_empirical'] = p
         ds[f'p_{track}_{pol}_empirical'].attrs = {'units': '1', 'source': 'sarvalanche', 'product': 'orbit_empirical_probabilities'}

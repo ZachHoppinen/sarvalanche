@@ -632,6 +632,54 @@ def _build_file_groups(items):
     return [(k, groups[k]) for k in keys]
 
 
+# ── Track area cache (gpkg_path → {idx: area}) ──────────────────────────────
+_area_cache: dict[Path, dict[int, float]] = {}
+
+
+def _get_track_area(gpkg_path: Path, idx: int) -> float:
+    """Return track polygon area in m² (cached per gpkg)."""
+    if gpkg_path not in _area_cache:
+        gdf = gpd.read_file(gpkg_path)
+        _area_cache[gpkg_path] = {i: geom.area for i, geom in zip(gdf.index, gdf.geometry) if geom is not None}
+    return _area_cache[gpkg_path].get(idx, 0.0)
+
+
+def _bias_towards_large(items, large_frac=0.8):
+    """Reorder items so ~80% are from the larger half and ~20% from the smaller half.
+
+    Within each half, order is preserved (so uncertainty sorting still applies).
+    The two streams are interleaved: 4 large, 1 small, repeat.
+    """
+    # Sort by area to find median, then split
+    areas = [_get_track_area(item[3], item[2]) for item in items]
+    if not areas:
+        return items
+    median_area = float(np.median(areas))
+
+    large = [item for item, a in zip(items, areas) if a >= median_area]
+    small = [item for item, a in zip(items, areas) if a < median_area]
+
+    # Interleave: 4 large per 1 small
+    result = []
+    li, si = 0, 0
+    cycle = 0
+    while li < len(large) or si < len(small):
+        if cycle % 5 < 4 and li < len(large):
+            result.append(large[li])
+            li += 1
+        elif si < len(small):
+            result.append(small[si])
+            si += 1
+        elif li < len(large):
+            result.append(large[li])
+            li += 1
+        else:
+            break
+        cycle += 1
+
+    return result
+
+
 def _score_and_sort_group(items, classifier, low_prob=False):
     """Score a single file group and return sorted (item, tag) list."""
     scores = _score_unlabeled_tracks(items, classifier)
@@ -643,8 +691,13 @@ def _score_and_sort_group(items, classifier, low_prob=False):
         ]
         print(f"[low-prob] Filtered to {len(items)} tracks with p < 0.50 (from {before})")
     if scores:
-        return _sort_by_uncertainty(items, scores), scores
+        sorted_items = _sort_by_uncertainty(items, scores)
+        # Apply size bias: reorder so ~80% large, ~20% small
+        reordered = _bias_towards_large([item for item, _ in sorted_items])
+        tag_lookup = {(it[0], it[1], it[2]): tag for it, tag in sorted_items}
+        return [(item, tag_lookup.get((item[0], item[1], item[2]), 'random')) for item in reordered], scores
     random.shuffle(items)
+    items = _bias_towards_large(items)
     return [(item, 'random') for item in items], scores
 
 
@@ -653,11 +706,12 @@ if args.random:
     if args.low_prob:
         print("[low-prob] ERROR: --low-prob requires XGBoost scores. Run without --random first.")
         raise SystemExit(1)
-    # Random mode: shuffle within each file group, then flatten
+    # Random mode: shuffle within each file group, then bias towards large tracks
     file_groups = _build_file_groups(unlabeled_all)
     unlabeled_with_tags = []
     for _key, group_items in file_groups:
         random.shuffle(group_items)
+        group_items = _bias_towards_large(group_items)
         unlabeled_with_tags.extend((item, 'random') for item in group_items)
 else:
     # Lazy scoring: group by file, score one group at a time

@@ -778,6 +778,31 @@ sarvalanche/
 --
 ## ISSW plan
 
+### Avalanche Debris CNN: Two-Pass Architecture
+
+#### Core Concept
+A two-pass pipeline separating *where* from *how much*:
+
+- **Pass 1** — Normalized input (`max→1, zero→0, min→-1`), scale invariant, detects spatially coherent change patterns, outputs both **detections and a per-location confidence score**
+- **Pass 2** — Absolute magnitude data, receives Pass 1 confidence as an additional input channel, culls low-change areas and arbitrates ambiguous detections
+
+##### Input
+Sentinel-1 backscatter **change pairs** (variable number of pairs and tracks)
+
+##### Why Two Passes
+SAR speckle creates false structure at the single-pixel level. Pass 1 finds candidate features without being fooled by absolute magnitude differences between tracks/incidence angles. Pass 2 then gates those candidates against real magnitude thresholds.
+
+##### The Paradox Resolved
+- **Scale invariance** is handled by Pass 1 normalization → same pattern detection regardless of how many pairs or their absolute values
+- **Magnitude sensitivity** is preserved in Pass 2 → changes that are real but small get culled
+- The two signals are **disentangled** into separate pathways rather than forcing one network to handle both
+
+##### Fusion
+Pass 1 confidence score + Pass 2 magnitude assessment → joint decision, allowing the model to handle edge cases like:
+- **Weakly detected + high magnitude** → possibly debris, worth flagging
+- **Strongly detected + low magnitude** → likely speckle artifact, cull
+- **Strongly detected + high magnitude** → confident debris detection
+
 ### Background and Motivation
 
 Sentinel-1 revisits every 12 days, and including 24-day pairs substantially improves signal quality by suppressing noise. However, this creates a fundamental temporal bleed problem: avalanche debris persists across multiple acquisition windows, meaning detections cannot be cleanly assigned to specific danger periods or avalanche cycles. Comparing "high danger" vs. "low danger" periods using image-pair detections is unsound because the signal does not respect those period boundaries.

@@ -1,6 +1,9 @@
 import logging
+import os
+
 import numpy as np
 import pandas as pd
+import psutil
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +60,25 @@ def export_netcdf(ds, filepath, overwrite=True):
     if overwrite:
         if filepath.exists():
             filepath.unlink()
+
+    # Load dask-backed data into memory if it fits in available RAM —
+    # avoids the slow read-compress-write pipeline that makes large saves crawl.
+    if any(var.chunks is not None for var in ds.variables.values()):
+        nbytes = sum(
+            var.nbytes for var in ds.variables.values()
+        )
+        avail = psutil.virtual_memory().available
+        if nbytes < avail * 0.8:
+            log.info(
+                "Loading %.1f GB dataset into memory before writing (%.1f GB available)",
+                nbytes / 1e9, avail / 1e9,
+            )
+            ds = ds.load()
+        else:
+            log.warning(
+                "Dataset too large to load (%.1f GB, %.1f GB available) — writing lazily",
+                nbytes / 1e9, avail / 1e9,
+            )
 
     log.info("Writing netCDF: %s", filepath)
     ds.to_netcdf(filepath, encoding=encoding)
