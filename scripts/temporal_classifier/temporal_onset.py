@@ -1,4 +1,4 @@
-"""Temporal onset localization via bump detection on CNN probability time series.
+"""Temporal onset localization via multi-pass confirmation on CNN probability time series.
 
 Stage 2 of the two-stage pipeline:
   Stage 1 (CNN) identifies *where* debris exists (per-date probability maps).
@@ -43,7 +43,7 @@ Outputs:
     pre_existing          - debris present from first observation
 
 Usage:
-    conda run -n sarvalanche python scripts/debris_pixel_classifier/v2/temporal_onset.py \
+    conda run -n sarvalanche python scripts/temporal_classifier/temporal_onset.py \
         --cnn-nc local/issw/v2_season_inference/season_v2_debris_probabilities.nc \
         --sar-nc local/issw/dual_tau_output/zone/season_dataset.nc \
         --threshold 0.5
@@ -363,7 +363,7 @@ def gaussian_smooth_prob_cube(
         valid = ~np.isnan(frame)
         frame_filled = np.where(valid, frame, 0.0)
 
-        # Gaussian blur of values and weights separately → weighted mean
+        # Gaussian blur of values and weights separately -> weighted mean
         blurred_vals = ndimage.gaussian_filter(frame_filled, sigma=sigma_px, mode="constant", cval=0)
         blurred_weights = ndimage.gaussian_filter(valid.astype(np.float64), sigma=sigma_px, mode="constant", cval=0)
 
@@ -389,7 +389,6 @@ def compute_local_prob_bump(
 
     2. bump_symmetry: how symmetric the rise and fall are. Computed as
        correlation between the rising and (time-reversed) falling portions.
-       Real debris should rise and fall similarly. Noise is one-sided.
 
     3. peak_alignment: does the smoothed local prob peak at the same time as
        this pixel's individual peak? Real debris: yes (the whole neighborhood
@@ -451,8 +450,8 @@ def compute_local_prob_bump(
             bump_symmetry[y, x] = 0.5
             continue
 
-        rise_norm = rise_norm / rise_range  # 0 → 1
-        fall_norm = fall_norm / fall_range  # 1 → 0
+        rise_norm = rise_norm / rise_range  # 0 -> 1
+        fall_norm = fall_norm / fall_range  # 1 -> 0
 
         # Resample shorter side to match longer for correlation
         shorter_len = min(len(rise_norm), len(fall_norm))
@@ -465,7 +464,7 @@ def compute_local_prob_bump(
             np.linspace(0, 1, len(rise_norm)),
             rise_norm,
         )
-        # Reverse the fall so both go 0→1 for correlation
+        # Reverse the fall so both go 0->1 for correlation
         fall_reversed = fall_norm[::-1]
         fall_resampled = np.interp(
             np.linspace(0, 1, shorter_len),
@@ -473,9 +472,9 @@ def compute_local_prob_bump(
             fall_reversed,
         )
 
-        # Pearson correlation — perfect symmetry = 1.0
+        # Pearson correlation -- perfect symmetry = 1.0
         corr = np.corrcoef(rise_resampled, fall_resampled)[0, 1]
-        bump_symmetry[y, x] = np.clip((corr + 1) / 2.0, 0, 1)  # map [-1,1] → [0,1]
+        bump_symmetry[y, x] = np.clip((corr + 1) / 2.0, 0, 1)  # map [-1,1] -> [0,1]
 
     return bump_amplitude, bump_symmetry, peak_alignment
 
@@ -499,7 +498,7 @@ def compute_confidence(
 ) -> np.ndarray:
     """Combine multi-pass confirmation and spatial metrics into 0-1 confidence.
 
-    Heavily weights multi-pass confirmation — the most reliable indicator
+    Heavily weights multi-pass confirmation -- the most reliable indicator
     that debris was independently detected by multiple SAR passes.
 
     Factors (in order of importance):
@@ -632,11 +631,11 @@ def run_temporal_onset(
     vv_ts = vv_avg[:, cy, cx]
     vh_ts = vh_avg[:, cy, cx] if vh_avg is not None else None
 
-    # ── Peak finding and multi-pass confirmation ────────────────────────
+    # -- Peak finding and multi-pass confirmation
     log.info("Finding probability peaks and measuring multi-pass confirmation...")
     peak_idx, peak_val, bump_width, n_above, mean_det_prob, persistence, bump_smooth = find_peaks_batch(cnn_ts, threshold)
 
-    # ── Backscatter step at peak ──────────────────────────────────────
+    # -- Backscatter step at peak
     log.info("Measuring VV backscatter step at peak...")
     vv_step = fit_step_at_peak(vv_ts, peak_idx)
 
@@ -645,13 +644,13 @@ def run_temporal_onset(
         log.info("Measuring VH backscatter step at peak...")
         vh_step = fit_step_at_peak(vh_ts, peak_idx)
 
-    # ── Spike detection ───────────────────────────────────────────────
+    # -- Spike detection
     spike_flag = detect_spikes(bump_width, min_width=min_bump_width)
     n_spikes = spike_flag.sum()
     log.info("  %d / %d candidates flagged as spikes (bump width < %d)",
              n_spikes, n_candidates, min_bump_width)
 
-    # ── Pre-existing flag ─────────────────────────────────────────────
+    # -- Pre-existing flag
     pre_existing = peak_idx <= pre_existing_max_idx
 
     # Map peak index to date
@@ -660,7 +659,7 @@ def run_temporal_onset(
         dtype="datetime64[ns]",
     )
 
-    # ── Gaussian spatial context ────────────────────────────────────────
+    # -- Gaussian spatial context
     log.info("Gaussian-smoothing probability cube (sigma=%d px)...", spatial_radius_px)
     smoothed = gaussian_smooth_prob_cube(cnn_probs, sigma_px=float(spatial_radius_px))
 
@@ -672,7 +671,7 @@ def run_temporal_onset(
         smoothed, peak_idx_map_full, candidate_mask,
     )
 
-    # ── Confidence (includes spatial context) ─────────────────────────
+    # -- Confidence (includes spatial context)
     confidence = compute_confidence(
         peak_val, bump_width, n_above, mean_det_prob, persistence, bump_smooth,
         vv_step,
@@ -681,7 +680,7 @@ def run_temporal_onset(
     )
     confidence[spike_flag] *= 0.3
 
-    # ── Assemble spatial maps ─────────────────────────────────────────
+    # -- Assemble spatial maps
     onset_date_map = np.full((H, W), np.datetime64("NaT"), dtype="datetime64[ns]")
     peak_prob_map = np.full((H, W), np.nan, dtype=np.float32)
     width_map = np.full((H, W), 0, dtype=np.int32)
@@ -710,7 +709,7 @@ def run_temporal_onset(
     spike_map[cy, cx] = spike_flag
     pre_existing_map[cy, cx] = pre_existing
 
-    # ── Build output dataset ──────────────────────────────────────────
+    # -- Build output dataset
     coords = {"y": cnn_ds.y, "x": cnn_ds.x}
     result = xr.Dataset(
         {
@@ -738,7 +737,7 @@ def run_temporal_onset(
     if cnn_ds.rio.crs is not None:
         result = result.rio.write_crs(cnn_ds.rio.crs)
 
-    # ── Summary ───────────────────────────────────────────────────────
+    # -- Summary
     log.info("Onset detection complete:")
     log.info("  Candidates: %d pixels", n_candidates)
     log.info("  Spikes: %d (%.1f%%)", n_spikes, 100 * n_spikes / max(n_candidates, 1))

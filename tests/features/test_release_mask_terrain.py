@@ -63,10 +63,8 @@ def base_inputs():
 # Shared kwargs to disable size filter and smoothing for unit-test clarity
 _COMMON = dict(
     min_slope_deg=25,
-    max_slope_deg=60,
-    max_fcf=10,
+    fuzzy_threshold=0.15,
     min_release_area_m2=0,
-    max_release_area_m2=1e12,
     smooth=False,
 )
 
@@ -98,7 +96,8 @@ def test_flow_accum_filter_reduces_mask(base_inputs):
     fa_low = _make_utm_da(np.ones((n, n)), "flow_accumulation")
     mask_all = generate_release_mask_simple(
         slope=slope, dem=dem, flow_accum=fa_low,
-        forest_cover=fcf, reference=dem, max_flow_accum_channel=10.0, **_COMMON,
+        forest_cover=fcf, reference=dem, max_flow_accum_channel=10.0,
+        **_COMMON,
     )
 
     # High flow accum in top half
@@ -107,7 +106,8 @@ def test_flow_accum_filter_reduces_mask(base_inputs):
     fa_high = _make_utm_da(fa_arr, "flow_accumulation")
     mask_filtered = generate_release_mask_simple(
         slope=slope, dem=dem, flow_accum=fa_high,
-        forest_cover=fcf, reference=dem, max_flow_accum_channel=10.0, **_COMMON,
+        forest_cover=fcf, reference=dem, max_flow_accum_channel=10.0,
+        **_COMMON,
     )
 
     assert mask_filtered.values.sum() < mask_all.values.sum(), (
@@ -131,9 +131,9 @@ def test_fcf_filter_reduces_mask(base_inputs):
         forest_cover=fcf_none, reference=dem, **_COMMON,
     )
 
-    # Dense forest in top half
+    # Dense forest in top half (FCF=95 pushes fuzzy score below threshold)
     fcf_arr = np.zeros((n, n))
-    fcf_arr[0:15, :] = 50.0
+    fcf_arr[0:15, :] = 95.0
     fcf_forest = _make_utm_da(fcf_arr, "fcf")
     mask_filtered = generate_release_mask_simple(
         slope=slope, dem=dem, flow_accum=flow_accum,
@@ -196,9 +196,8 @@ def test_size_filter_removes_small_zones(base_inputs):
     mask = generate_release_mask_simple(
         slope=slope, dem=dem, flow_accum=flow_accum,
         forest_cover=fcf, reference=dem,
-        min_slope_deg=25, max_slope_deg=60, max_fcf=10,
+        min_slope_deg=25, fuzzy_threshold=0.15,
         min_release_area_m2=10000,  # 100x100m — much larger than 2x2 at 10m
-        max_release_area_m2=1e12,
         smooth=False,
     )
     assert (mask.values == 0).all(), "Tiny zone should be removed by size filter"

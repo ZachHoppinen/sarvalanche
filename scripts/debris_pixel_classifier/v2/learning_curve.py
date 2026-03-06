@@ -15,6 +15,7 @@ Usage:
 """
 
 import argparse
+import gc
 import itertools
 import json
 import logging
@@ -190,6 +191,16 @@ def train_and_evaluate(
         scheduler.step()
 
     metrics = _evaluate(model, test_loader, device)
+
+    # Free GPU memory between runs
+    del model, optimizer, scheduler, pos_weight
+    del train_loader, test_loader, train_combined, test_combined
+    gc.collect()
+    if device.type == "mps":
+        torch.mps.empty_cache()
+    elif device.type == "cuda":
+        torch.cuda.empty_cache()
+
     return metrics
 
 
@@ -219,9 +230,16 @@ def run_lodo_cv(
                 "LODO [%d/%d]: test=%s, train=%s, seed=%d",
                 run_i, total_runs, test_date, train_dates, seed,
             )
-            metrics = train_and_evaluate(
-                datasets, train_dates, [test_date], epochs, batch_size, device, seed,
-            )
+            try:
+                metrics = train_and_evaluate(
+                    datasets, train_dates, [test_date], epochs, batch_size, device, seed,
+                )
+            except Exception as e:
+                log.warning("  FAILED: %s — skipping", e)
+                gc.collect()
+                if device.type == "mps":
+                    torch.mps.empty_cache()
+                continue
             rows.append({
                 "test_date": test_date,
                 "train_dates": ",".join(train_dates),
@@ -264,9 +282,16 @@ def run_learning_curve(
                         "LearningCurve [%d/%d]: test=%s, train=%s (N=%d), seed=%d",
                         run_i, total_runs, test_date, train_dates, n, seed,
                     )
-                    metrics = train_and_evaluate(
-                        datasets, train_dates, [test_date], epochs, batch_size, device, seed,
-                    )
+                    try:
+                        metrics = train_and_evaluate(
+                            datasets, train_dates, [test_date], epochs, batch_size, device, seed,
+                        )
+                    except Exception as e:
+                        log.warning("  FAILED: %s — skipping", e)
+                        gc.collect()
+                        if device.type == "mps":
+                            torch.mps.empty_cache()
+                        continue
                     rows.append({
                         "test_date": test_date,
                         "train_dates": ",".join(train_dates),

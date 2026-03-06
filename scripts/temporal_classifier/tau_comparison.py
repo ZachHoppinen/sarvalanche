@@ -4,7 +4,7 @@ Reads CNN probability cubes for each tau, runs temporal onset detection,
 and outputs a summary CSV + comparison plots.
 
 Usage:
-    conda run -n sarvalanche python scripts/debris_pixel_classifier/v2/tau_comparison.py
+    conda run -n sarvalanche python scripts/temporal_classifier/tau_comparison.py
 """
 
 import logging
@@ -16,10 +16,6 @@ import pandas as pd
 import xarray as xr
 
 from sarvalanche.io.dataset import load_netcdf_to_dataset
-
-# Import temporal onset functions
-import sys
-sys.path.insert(0, str(Path(__file__).parent))
 from temporal_onset import run_temporal_onset
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -51,7 +47,7 @@ def run_all():
 
     for tau, cnn_path in sorted(TAU_CONFIGS.items()):
         if not cnn_path.exists():
-            log.warning("Skipping tau=%d — %s not found", tau, cnn_path)
+            log.warning("Skipping tau=%d -- %s not found", tau, cnn_path)
             continue
 
         log.info("=" * 60)
@@ -194,10 +190,6 @@ def make_per_date_plot(df):
     for _, row in df.iterrows():
         tau = int(row["tau"])
         onset_nc = BASE_DIR / f"tau{tau}" / "temporal_onset.nc"
-        if tau == 6:
-            onset_nc = Path("local/issw/dual_tau_output/Sawtooth_&_Western_Smoky_Mtns/v2_season_inference/temporal_onset.nc")
-            if not onset_nc.exists():
-                onset_nc = BASE_DIR / "tau6" / "temporal_onset.nc"
         if not onset_nc.exists():
             continue
 
@@ -205,7 +197,6 @@ def make_per_date_plot(df):
         cm = ds["candidate_mask"].values
         spike = ds["spike_flag"].values
         valid = cm & ~spike
-        onset_idx = ds["onset_step_idx"].values[valid]
         onset_dates = ds["onset_date"].values[valid]
 
         # Get unique dates and counts

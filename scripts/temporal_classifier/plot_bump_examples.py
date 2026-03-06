@@ -5,7 +5,6 @@ import pandas as pd
 import xarray as xr
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from matplotlib.gridspec import GridSpec
 from scipy import ndimage
 from pathlib import Path
 
@@ -19,11 +18,11 @@ TAU_FILES = {
 
 # High-prob pixels near the target locations
 EXAMPLES = {
-    "Pt1 — Sawtooth (43.87, -115.12)": {"y": 1936, "x": 293},
-    "Pt2 — Smoky Mtns (43.79, -114.96)": {"y": 2209, "x": 876},
-    "Pt3 — (44.11, -115.11)": {"y": 1065, "x": 331},
-    "Pt4 — (44.15, -115.00)": {"y": 920, "x": 742},
-    "Pt5 — (44.33, -114.85)": {"y": 265, "x": 1279},
+    "Pt1 -- Sawtooth (43.87, -115.12)": {"y": 1936, "x": 293},
+    "Pt2 -- Smoky Mtns (43.79, -114.96)": {"y": 2209, "x": 876},
+    "Pt3 -- (44.11, -115.11)": {"y": 1065, "x": 331},
+    "Pt4 -- (44.15, -115.00)": {"y": 920, "x": 742},
+    "Pt5 -- (44.33, -114.85)": {"y": 265, "x": 1279},
 }
 
 SPATIAL_RADIUS = 15  # pixels for spatial context
@@ -92,8 +91,8 @@ def plot_temporal_bumps(cubes, examples, out_path):
 
             dates = times.to_pydatetime()
             ax.plot(dates, pixel_ts, "o-", markersize=3, linewidth=1.5, label="This pixel", color="C0")
-            ax.plot(dates, gauss_ts, "s-", markersize=2, linewidth=1.5, label=f"Gaussian (σ={SIGMA})", color="C1")
-            ax.plot(dates, neigh_mean, "^-", markersize=2, linewidth=1, label=f"Neighborhood mean", color="C2", alpha=0.7)
+            ax.plot(dates, gauss_ts, "s-", markersize=2, linewidth=1.5, label=f"Gaussian (s={SIGMA})", color="C1")
+            ax.plot(dates, neigh_mean, "^-", markersize=2, linewidth=1, label="Neighborhood mean", color="C2", alpha=0.7)
 
             # Mark peak
             pk = int(np.nanargmax(pixel_ts))
@@ -119,11 +118,11 @@ def plot_temporal_bumps(cubes, examples, out_path):
     print(f"Saved: {out_path}")
 
 
-def plot_spatial_evolution(cubes, examples, out_path, steps_around_peak=4):
+def plot_spatial_evolution(cubes, examples, out_dir, steps_around_peak=4):
     """Plot spatial probability maps at +-N steps around peak for each tau."""
     for label, pix in examples.items():
         yi, xi = pix["y"], pix["x"]
-        safe_label = label.split("—")[0].strip().replace(" ", "")
+        safe_label = label.split("--")[0].strip().replace(" ", "")
 
         for tau, data in sorted(cubes.items()):
             probs = data["probs"]
@@ -147,7 +146,7 @@ def plot_spatial_evolution(cubes, examples, out_path, steps_around_peak=4):
             if n_frames == 1:
                 axes = axes.reshape(2, 1)
 
-            fig.suptitle(f"{label} — tau={tau}  (peak at {times[pk].strftime('%Y-%m-%d')})",
+            fig.suptitle(f"{label} -- tau={tau}  (peak at {times[pk].strftime('%Y-%m-%d')})",
                          fontsize=12, fontweight="bold")
 
             # Row 1: raw probability patches
@@ -194,7 +193,7 @@ def plot_spatial_evolution(cubes, examples, out_path, steps_around_peak=4):
                         spine.set_edgecolor("red")
                         spine.set_linewidth(2)
 
-            axes[1, 0].set_ylabel(f"Gaussian σ={SIGMA}", fontsize=9)
+            axes[1, 0].set_ylabel(f"Gaussian s={SIGMA}", fontsize=9)
 
             # Colorbar
             fig.subplots_adjust(right=0.92)
@@ -202,7 +201,7 @@ def plot_spatial_evolution(cubes, examples, out_path, steps_around_peak=4):
             fig.colorbar(im, cax=cbar_ax, label="Probability")
 
             plt.tight_layout(rect=[0, 0, 0.92, 0.95])
-            fname = OUT_DIR / f"spatial_evolution_{safe_label}_tau{tau}.png"
+            fname = out_dir / f"spatial_evolution_{safe_label}_tau{tau}.png"
             fig.savefig(fname, dpi=150, bbox_inches="tight")
             plt.close(fig)
             print(f"Saved: {fname}")
