@@ -22,6 +22,15 @@ log = logging.getLogger(__name__)
 V2_PATCH_SIZE = 128
 
 
+def normalize_anf(arr: np.ndarray) -> np.ndarray:
+    """Normalize ANF to [0, 1] where 1 = best quality (low ANF).
+
+    ANF ranges from ~1 (good) to 100s (poor). Log-compress and invert
+    so that good viewing geometry → high values.
+    """
+    return 1.0 / (1.0 + np.log1p(arr))
+
+
 def get_per_track_pol_changes(ds: xr.Dataset) -> list[tuple[str, str, np.ndarray]]:
     """Get per-track/pol empirical backscatter change maps from dataset.
 
@@ -31,20 +40,39 @@ def get_per_track_pol_changes(ds: xr.Dataset) -> list[tuple[str, str, np.ndarray
     Parameters
     ----------
     ds : xr.Dataset
-        Dataset with per-track/pol empirical change maps.
+        Dataset with per-track/pol empirical change maps and anf.
 
     Returns:
     -------
-    list of (track, pol, change_map) tuples where change_map is (H, W) float32.
+    list of (track, pol, change_map) tuples where change_map is
+    (2, H, W) float32 — channel 0 is log1p-compressed backscatter change,
+    channel 1 is normalized ANF for the matching track.
     """
     pattern = re.compile(r'^d_(\d+)_(V[VH])_empirical$')
+    has_anf = 'anf' in ds.data_vars
     results = []
     for var in sorted(ds.data_vars):
         m = pattern.match(var)
         if m:
             track, pol = m.group(1), m.group(2)
             arr = np.nan_to_num(ds[var].values.astype(np.float32), nan=0.0)
-            results.append((track, pol, arr))
+            # Compress dynamic range so winter (~3 dB) and spring (~7 dB)
+            # changes are handled consistently by the set encoder
+            arr = np.sign(arr) * np.log1p(np.abs(arr))
+
+            # Get matching ANF for this track
+            if has_anf:
+                track_int = int(track)
+                anf_arr = np.nan_to_num(
+                    ds['anf'].sel(static_track=track_int).values.astype(np.float32),
+                    nan=1.0,
+                )
+                anf_norm = normalize_anf(anf_arr)
+            else:
+                anf_norm = np.ones_like(arr)
+
+            stacked = np.stack([arr, anf_norm], axis=0)  # (2, H, W)
+            results.append((track, pol, stacked))
     return results
 
 
@@ -136,8 +164,8 @@ def build_v2_patch(
 
     Returns:
     -------
-    sar_maps : (N, patch_size, patch_size) float32
-        Per-track/pol backscatter change maps.
+    sar_maps : (N, 2, patch_size, patch_size) float32
+        Per-track/pol backscatter change + ANF maps.
     static : (N_STATIC, patch_size, patch_size) float32
         Normalized static terrain channels.
     """
@@ -145,10 +173,10 @@ def build_v2_patch(
 
     if not track_pol_maps:
         log.warning('No per-track/pol change maps found in dataset')
-        sar_maps = np.zeros((1, patch_size, patch_size), dtype=np.float32)
+        sar_maps = np.zeros((1, 2, patch_size, patch_size), dtype=np.float32)
     else:
         sar_maps = np.stack([
-            arr[y0:y0 + patch_size, x0:x0 + patch_size]
+            arr[:, y0:y0 + patch_size, x0:x0 + patch_size]
             for _, _, arr in track_pol_maps
         ], axis=0)
 

@@ -83,6 +83,7 @@ def compute_empirical(ds, reference_date, tau_days):
             use_agreement_boosting=True,
             agreement_strength=0.8,
             min_prob_threshold=0.2,
+            tau_days=tau_days,
         )
     except ValueError as e:
         log.warning("Empirical failed for %s: %s", reference_date, e)
@@ -140,12 +141,33 @@ def update_empirical_channel(static_stack, ds, d_emp_idx):
 # ---------------------------------------------------------------------------
 
 def get_sar_change_maps(ds):
-    """Extract per-track/pol change maps from current empirical variables."""
+    """Extract per-track/pol change maps with ANF from current empirical variables.
+
+    Returns list of (2, H, W) arrays: channel 0 = log1p-compressed change,
+    channel 1 = normalized ANF for matching track.
+    """
+    from sarvalanche.ml.v2.patch_extraction import normalize_anf
+
     pattern = re.compile(r"^d_(\d+)_(V[VH])_empirical$")
+    has_anf = "anf" in ds.data_vars
     results = []
     for var in sorted(ds.data_vars):
-        if pattern.match(var):
-            results.append(np.nan_to_num(ds[var].values.astype(np.float32), nan=0.0))
+        m = pattern.match(var)
+        if m:
+            track = m.group(1)
+            arr = np.nan_to_num(ds[var].values.astype(np.float32), nan=0.0)
+            arr = np.sign(arr) * np.log1p(np.abs(arr))
+
+            if has_anf:
+                anf_arr = np.nan_to_num(
+                    ds["anf"].sel(static_track=int(track)).values.astype(np.float32),
+                    nan=1.0,
+                )
+                anf_norm = normalize_anf(anf_arr)
+            else:
+                anf_norm = np.ones_like(arr)
+
+            results.append(np.stack([arr, anf_norm], axis=0))
     return results
 
 
@@ -182,11 +204,11 @@ def run_inference(sar_maps, static_stack, model, coords, patch_size, batch_size,
             sar_batch = []
             for change_map in sar_maps:
                 patches = np.stack([
-                    change_map[y0:y0 + patch_size, x0:x0 + patch_size]
+                    change_map[:, y0:y0 + patch_size, x0:x0 + patch_size]
                     for y0, x0 in batch_coords
                 ])
                 sar_batch.append(
-                    torch.from_numpy(patches[:, np.newaxis]).float().to(device)
+                    torch.from_numpy(patches).float().to(device)
                 )
 
             static_patches = np.stack([

@@ -70,6 +70,7 @@ def compute_empirical_for_date(ds, reference_date, tau_days):
         use_agreement_boosting=True,
         agreement_strength=0.8,
         min_prob_threshold=0.2,
+        tau_days=tau_days,
     )
     ds['p_empirical'] = p_empirical
     ds['d_empirical'] = d_empirical
@@ -89,7 +90,7 @@ def sliding_window_inference(
 
     Parameters
     ----------
-    sar_change_maps : list of (H, W) arrays, one per track/pol
+    sar_change_maps : list of (2, H, W) arrays, one per track/pol
     static_stack : (N_STATIC, H, W)
     model : DebrisDetector
     patch_size, stride, batch_size, device : inference settings
@@ -98,7 +99,7 @@ def sliding_window_inference(
     -------
     (H, W) probability map averaged over overlapping patches.
     """
-    H, W = sar_change_maps[0].shape
+    H, W = sar_change_maps[0].shape[-2:]
     prob_sum = np.zeros((H, W), dtype=np.float64)
     count = np.zeros((H, W), dtype=np.float64)
 
@@ -131,15 +132,15 @@ def sliding_window_inference(
         for i in tqdm(range(0, len(coords), batch_size), total=n_batches, desc='Inference'):
             batch_coords = coords[i:i + batch_size]
 
-            # Build batch SAR maps: list of (B, 1, H, W)
+            # Build batch SAR maps: list of (B, 2, H, W)
             sar_batch = []
             for change_map in sar_change_maps:
                 patches = np.stack([
-                    change_map[y0:y0 + patch_size, x0:x0 + patch_size]
+                    change_map[:, y0:y0 + patch_size, x0:x0 + patch_size]
                     for y0, x0 in batch_coords
                 ])
                 sar_batch.append(
-                    torch.from_numpy(patches[:, np.newaxis]).float().to(device)
+                    torch.from_numpy(patches).float().to(device)
                 )
 
             # Static batch: (B, C, H, W) — per-patch DEM normalization

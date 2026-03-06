@@ -811,6 +811,39 @@ The reframed architecture abandons the danger-period comparison framing entirely
 
 ---
 
+### Avalanche Onset Localization: Change Point Detection
+
+#### Framing
+The problem is not binary detection — it is **onset localization in time**. For each location flagged as debris by the CNN, the question becomes:
+
+> "In which 6-12 day pair window did the backscatter transition from clean snow to debris signal?"
+
+#### Two-Stage Pipeline
+
+- **Stage 1 — CNN**: identifies *where* debris exists at the end of the season, no temporal reasoning
+- **Stage 2 — Change Point Detection**: for each flagged location, finds *when* the transition occurred by fitting a step function to the backscatter time series
+
+#### What the Time Series Looks Like
+```
+pair 1:  low/stable   ← clean snow
+pair 2:  low/stable   ← clean snow
+pair 3:  LOW → HIGH   ← onset window (avalanche occurs here)
+pair 4:  high/stable  ← persisting debris
+pair 5:  high/stable  ← persisting debris
+```
+
+#### What You Get Out
+- **Step position** → estimated onset window
+- **Step height** → confidence (large clean step = reliable, small/gradual = uncertain)
+- **Pre-existing debris** → step appears at pair 1 or 2, filter these out automatically
+
+#### Why This Framing Works
+The two stages are fully decoupled — the CNN learns one thing only, and the temporal reasoning is interpretable and tunable without retraining. Confidence in the onset estimate falls out naturally from the step function fit.
+
+
+
+---
+
 ### Core Concept: Parallel Tau Regimes
 
 Every 6-day acquisition step, the full detection pipeline runs twice — once with a slow temporal weighting window and once with a fast temporal weighting window. Both use the same `get_temporal_weights` exponential decay function, differing only in `tau_days`.

@@ -77,7 +77,19 @@ class V2PatchDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict:
         data = np.load(self.files[idx], allow_pickle=True)
-        sar_maps = data['sar_maps'].astype(np.float32)   # (N, 128, 128)
+        sar_maps = data['sar_maps'].astype(np.float32)
+        if sar_maps.ndim == 2:
+            # Single map: (H, W) → (1, H, W)
+            sar_maps = sar_maps[np.newaxis]
+        if sar_maps.ndim == 3:
+            # Legacy format: (N, H, W) — no ANF channel
+            # Apply log1p compression and add a dummy ANF channel (all ones)
+            sar_maps = np.sign(sar_maps) * np.log1p(np.abs(sar_maps))
+            ones = np.ones_like(sar_maps)
+            # Interleave: (N, 2, H, W)
+            sar_maps = np.stack([sar_maps, ones], axis=1)
+        # sar_maps is now (N, 2, H, W)
+        # New-format patches already have log1p + ANF from build_v2_patch
         static = data['static'].astype(np.float32)       # (N_STATIC, 128, 128)
         label = int(data['label'])
 
@@ -85,22 +97,22 @@ class V2PatchDataset(Dataset):
         if 'label_mask' in data:
             label_mask = data['label_mask'].astype(np.float32)  # (128, 128)
         else:
-            label_mask = np.full(sar_maps.shape[1:], label, dtype=np.float32)
+            label_mask = np.full(sar_maps.shape[-2:], label, dtype=np.float32)
 
-        # Augmentation: random horizontal flip
+        # Augmentation: random horizontal flip (flip last axis = W)
         if self.augment and np.random.random() > 0.5:
-            sar_maps = sar_maps[:, :, ::-1].copy()
+            sar_maps = sar_maps[:, :, :, ::-1].copy()
             static = static[:, :, ::-1].copy()
             label_mask = label_mask[:, ::-1].copy()
 
-        # Augmentation: small additive noise on SAR
+        # Augmentation: small additive noise on SAR change channel only (not ANF)
         if self.augment:
             noise_scale = 0.05
             for i in range(len(sar_maps)):
-                sar_maps[i] += np.random.randn(*sar_maps[i].shape).astype(np.float32) * noise_scale
+                sar_maps[i, 0] += np.random.randn(*sar_maps[i, 0].shape).astype(np.float32) * noise_scale
 
-        # Convert each SAR map to individual (1, H, W) tensors
-        sar_list = [torch.from_numpy(np.ascontiguousarray(sar_maps[i:i+1])) for i in range(len(sar_maps))]
+        # Convert each SAR map to individual (2, H, W) tensors
+        sar_list = [torch.from_numpy(np.ascontiguousarray(sar_maps[i])) for i in range(len(sar_maps))]
 
         # Label as (1, H, W)
         label_tensor = torch.from_numpy(np.ascontiguousarray(label_mask[np.newaxis]))
@@ -121,7 +133,7 @@ def v2_collate_fn(batch: list[dict]) -> dict:
     Returns:
     -------
     dict with:
-        sar_maps: list of (B, 1, H, W) tensors, one per track/pol slot
+        sar_maps: list of (B, 2, H, W) tensors, one per track/pol slot
         static: (B, C, H, W)
         label: (B, 1, H, W)
     """

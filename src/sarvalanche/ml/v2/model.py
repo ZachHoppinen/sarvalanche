@@ -8,7 +8,7 @@ per sample (typically 2-8), handled via set encoding + spatial attention.
 
 Usage:
     model = DebrisDetector()
-    sar_maps = [torch.randn(B, 1, 128, 128) for _ in range(N)]
+    sar_maps = [torch.randn(B, 2, 128, 128) for _ in range(N)]
     static = torch.randn(B, 8, 128, 128)
     out = model(sar_maps, static)  # (B, 1, 128, 128)
 """
@@ -41,7 +41,7 @@ class ConvBlock(nn.Module):
 class SetEncoder(nn.Module):
     """Shared-weight CNN encoding each track/pol map independently.
 
-    Input: (B, 1, 128, 128) per track/pol
+    Input: (B, 2, 128, 128) per track/pol (change + ANF)
     Output: (B, feat_dim, 8, 8)
     """
 
@@ -175,7 +175,7 @@ class DebrisDetector(nn.Module):
 
     def __init__(self, feat_dim: int = 64, n_static: int = N_STATIC):
         super().__init__()
-        self.set_encoder = SetEncoder(in_ch=1, feat_dim=feat_dim)
+        self.set_encoder = SetEncoder(in_ch=2, feat_dim=feat_dim)
         self.attention = SpatialSetAttention(feat_dim=feat_dim)
         self.static_encoder = StaticEncoder(in_ch=n_static)
         # 64 (SAR) + 32 (static) = 96 → 64
@@ -189,8 +189,8 @@ class DebrisDetector(nn.Module):
     ) -> torch.Tensor:
         """Parameters
         ----------
-        sar_maps : list of (B, 1, 128, 128) tensors
-            Per-track/pol backscatter change maps.
+        sar_maps : list of (B, 2, 128, 128) tensors
+            Per-track/pol backscatter change + ANF maps.
         static : (B, N_STATIC, 128, 128)
             Static terrain channels.
 
