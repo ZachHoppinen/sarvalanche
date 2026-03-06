@@ -179,8 +179,10 @@ def generate_release_mask_simple(
     smooth : bool
         Apply spatial smoothing to the base mask before ridgeline splitting.
     ridge_method : str
-        ``"ridgeline"`` for explicit TPI+Hessian ridgeline barrier, or
-        ``"wind"`` for wind shelter fuzzy membership (AutoATES-style).
+        ``"ridgeline"`` for explicit TPI+Hessian ridgeline barrier,
+        ``"wind"`` for wind shelter fuzzy membership (AutoATES-style), or
+        ``"wind+ridgeline"`` to compute PRA with wind gamma then apply
+        ridgeline splitting only to oversized zones.
     tpi_radius_m : float
         TPI neighbourhood radius for ridgeline detection (metres).
         Only used when ``ridge_method="ridgeline"``.
@@ -224,8 +226,8 @@ def generate_release_mask_simple(
     release_mask : xr.DataArray
         Binary release mask aligned to *reference*.
     """
-    if ridge_method not in ("ridgeline", "wind"):
-        raise ValueError(f"ridge_method must be 'ridgeline' or 'wind', got {ridge_method!r}")
+    if ridge_method not in ("ridgeline", "wind", "wind+ridgeline"):
+        raise ValueError(f"ridge_method must be 'ridgeline', 'wind', or 'wind+ridgeline', got {ridge_method!r}")
     # ── 1. Reproject ──────────────────────────────────────────────────────────
     if reference is not None:
         slope_r = slope.rio.reproject_match(reference)
@@ -260,7 +262,7 @@ def generate_release_mask_simple(
         fuzzy_forest = np.ones_like(fuzzy_slope)
 
     # ── 4. Wind shelter (if using wind method) ──────────────────────────────
-    if ridge_method == "wind":
+    if ridge_method in ("wind", "wind+ridgeline"):
         from sarvalanche.features.wind_scour import compute_wind_shelter
 
         shelter = compute_wind_shelter(
@@ -283,6 +285,10 @@ def generate_release_mask_simple(
     else:
         fuzzy_combined = fuzzy_slope * fuzzy_forest
 
+    # Zero out where DEM is nodata (avoids nonsensical values from nodata fill)
+    dem_nodata = ~np.isfinite(dem_r.values)
+    fuzzy_combined[dem_nodata] = 0.0
+
     # ── 5. Threshold ──────────────────────────────────────────────────────────
     mask_arr = fuzzy_combined >= fuzzy_threshold
     log.debug("generate_release_mask_simple: fuzzy threshold=%.2f -> %d px",
@@ -299,7 +305,7 @@ def generate_release_mask_simple(
         log.debug("generate_release_mask_simple: after smoothing: %d px", mask_arr.sum())
 
     # ── 8. Ridge separation ───────────────────────────────────────────────────
-    if ridge_method == "ridgeline":
+    if ridge_method in ("ridgeline", "wind+ridgeline"):
         ridgelines = generate_ridgelines(
             dem_r,
             tpi_radius_m=tpi_radius_m,
@@ -311,9 +317,25 @@ def generate_release_mask_simple(
             ridgelines.values.astype(bool),
             iterations=ridge_barrier_width,
         )
-        mask_arr[barrier] = False
-        log.debug("generate_release_mask_simple: after ridgeline barrier (width=%d): %d px",
-                  ridge_barrier_width, mask_arr.sum())
+        if ridge_method == "wind+ridgeline":
+            # Only split zones that exceed the max area threshold.
+            # Small zones that the wind already separated are left alone.
+            split_px = area_m2_to_pixels(dem_r, max_release_area_m2) if max_release_area_m2 is not None else 5000
+            labeled_pre, _ = ndlabel(mask_arr)
+            sizes_pre = np.bincount(labeled_pre.ravel())
+            oversized = sizes_pre > split_px
+            oversized[0] = False
+            needs_split = oversized[labeled_pre]
+            mask_arr[barrier & needs_split] = False
+            log.debug(
+                "generate_release_mask_simple: ridgeline split on %d oversized zones "
+                "(>%d px), removed %d barrier px",
+                int(oversized.sum()), split_px, int((barrier & needs_split).sum()),
+            )
+        else:
+            mask_arr[barrier] = False
+            log.debug("generate_release_mask_simple: after ridgeline barrier (width=%d): %d px",
+                      ridge_barrier_width, mask_arr.sum())
 
     # ── 8. Remove isolated single pixels ─────────────────────────────────────
     labeled, _ = ndlabel(mask_arr)

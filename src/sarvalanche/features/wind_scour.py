@@ -109,7 +109,8 @@ def compute_wind_shelter(
     Returns
     -------
     xr.DataArray
-        Wind shelter index (degrees), same shape as *dem*.
+        Wind shelter index (radians), same shape as *dem*.
+        Uses radians to match AutoATES Cauchy parameter calibration.
     """
     pixel_m = _pixel_size_m(dem)
     radius_px = max(1, int(round(radius_m / pixel_m)))
@@ -171,7 +172,7 @@ def compute_wind_shelter(
         dst_c = slice(max(0, dx), cols + min(0, dx))
 
         elev_diff = dem_filled[src_r, src_c] - dem_filled[dst_r, dst_c]
-        terrain_angle = np.rad2deg(np.arctan2(elev_diff, d))
+        terrain_angle = np.arctan2(elev_diff, d)
 
         # Mask invalid pixels (either source or destination)
         src_valid = valid_f[src_r, src_c]
@@ -193,7 +194,7 @@ def compute_wind_shelter(
         dims=dem.dims,
         coords=dem.coords,
         attrs={
-            "units": "degrees",
+            "units": "radians",
             "source": "sarvalanche",
             "product": "wind_shelter",
             "description": (

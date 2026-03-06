@@ -94,14 +94,14 @@ class TestComputeWindShelter:
         shelter = compute_wind_shelter(dem, radius_m=30)
         assert shelter.shape == dem.shape
         assert shelter.attrs["product"] == "wind_shelter"
-        assert shelter.attrs["units"] == "degrees"
+        assert shelter.attrs["units"] == "radians"
 
     def test_flat_dem_near_zero(self):
         """A perfectly flat DEM should give shelter values near zero."""
         dem = _make_utm_da(np.full((30, 30), 1500.0))
         shelter = compute_wind_shelter(dem, radius_m=30)
-        # All terrain angles are zero on a flat DEM
-        assert np.nanmax(np.abs(shelter.values)) < 0.01
+        # All terrain angles are zero on a flat DEM (radians)
+        assert np.nanmax(np.abs(shelter.values)) < 0.001
 
 
 # ---------------------------------------------------------------------------
