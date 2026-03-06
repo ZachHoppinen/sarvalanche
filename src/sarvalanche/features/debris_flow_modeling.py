@@ -124,22 +124,33 @@ def generate_release_mask_simple(
     fuzzy_threshold: float = 0.15,
     max_flow_accum_channel: float = 10.0,
     smooth: bool = True,
+    ridge_method: str = "ridgeline",
     tpi_radius_m: float = 300.0,
     tpi_threshold: float = 5.0,
     curv_threshold: float = -1.0,
     ridge_smooth_sigma: float = 2.0,
     ridge_barrier_width: int = 3,
+    wind_radius_m: float = 60.0,
+    wind_direction_deg: float = 0.0,
+    wind_tolerance_deg: float = 180.0,
+    wind_quantile: float = 0.5,
+    wind_cauchy: tuple[float, float, float] = (3.0, 10.0, 3.0),
     min_release_area_m2: float = 100 * 100,
     max_release_area_m2: float = None,
     reference: xr.DataArray = None,
 ) -> tuple[xr.DataArray, xr.DataArray]:
     """Generate release zone mask using slope, forest cover, flow accumulation,
-    and Hessian-based ridgeline splitting.
+    and either Hessian-based ridgeline splitting or wind shelter.
 
     Slope and forest cover are evaluated with Cauchy fuzzy membership
-    functions (Veitinger et al., 2016) and combined multiplicatively.
-    A hard lower-slope cutoff removes very flat terrain before fuzzy
-    evaluation.
+    functions (Veitinger et al., 2016).  Ridge separation is handled by
+    one of two methods selected via *ridge_method*:
+
+    - ``"ridgeline"`` (default): explicit TPI + Hessian ridgeline
+      detection with binary barrier masking.
+    - ``"wind"``: wind shelter index (Winstral et al., 2002) is computed
+      and included as a third fuzzy membership term using the AutoATES
+      fuzzy gamma operator, which naturally suppresses exposed ridgelines.
 
     Parameters
     ----------
@@ -167,16 +178,40 @@ def generate_release_mask_simple(
         Pixels with flow accumulation above this are excluded.
     smooth : bool
         Apply spatial smoothing to the base mask before ridgeline splitting.
+    ridge_method : str
+        ``"ridgeline"`` for explicit TPI+Hessian ridgeline barrier, or
+        ``"wind"`` for wind shelter fuzzy membership (AutoATES-style).
     tpi_radius_m : float
         TPI neighbourhood radius for ridgeline detection (metres).
+        Only used when ``ridge_method="ridgeline"``.
     tpi_threshold : float
         Minimum TPI to qualify as high ground for ridgeline detection.
+        Only used when ``ridge_method="ridgeline"``.
     curv_threshold : float
         Maximum lambda2 curvature for ridge classification.
+        Only used when ``ridge_method="ridgeline"``.
     ridge_smooth_sigma : float
         Gaussian smoothing sigma for Hessian computation (pixels).
+        Only used when ``ridge_method="ridgeline"``.
     ridge_barrier_width : int
         Dilation iterations to widen the ridgeline barrier.
+        Only used when ``ridge_method="ridgeline"``.
+    wind_radius_m : float
+        Look-distance for wind shelter (metres).
+        Only used when ``ridge_method="wind"``.
+    wind_direction_deg : float
+        Prevailing wind direction in compass degrees the wind comes FROM
+        (0=N, 90=E).  Only used when ``ridge_method="wind"``.
+    wind_tolerance_deg : float
+        Half-angle of the upwind sector (180 = omnidirectional).
+        Only used when ``ridge_method="wind"``.
+    wind_quantile : float
+        Quantile of terrain angles for shelter index.
+        Only used when ``ridge_method="wind"``.
+    wind_cauchy : tuple (a, b, c)
+        Cauchy parameters for wind shelter membership.  Default (3, 10, 3)
+        per AutoATES v2.0 / Veitinger et al. (2016).
+        Only used when ``ridge_method="wind"``.
     min_release_area_m2 : float
         Minimum release zone area in m².
     max_release_area_m2 : float, optional
@@ -189,6 +224,8 @@ def generate_release_mask_simple(
     release_mask : xr.DataArray
         Binary release mask aligned to *reference*.
     """
+    if ridge_method not in ("ridgeline", "wind"):
+        raise ValueError(f"ridge_method must be 'ridgeline' or 'wind', got {ridge_method!r}")
     # ── 1. Reproject ──────────────────────────────────────────────────────────
     if reference is not None:
         slope_r = slope.rio.reproject_match(reference)
@@ -222,39 +259,61 @@ def generate_release_mask_simple(
     else:
         fuzzy_forest = np.ones_like(fuzzy_slope)
 
-    # ── 4. Combine and threshold ──────────────────────────────────────────────
-    fuzzy_combined = fuzzy_slope * fuzzy_forest
+    # ── 4. Wind shelter (if using wind method) ──────────────────────────────
+    if ridge_method == "wind":
+        from sarvalanche.features.wind_scour import compute_wind_shelter
+
+        shelter = compute_wind_shelter(
+            dem_r,
+            radius_m=wind_radius_m,
+            direction_deg=wind_direction_deg,
+            tolerance_deg=wind_tolerance_deg,
+            quantile=wind_quantile,
+        )
+        a_w, b_w, c_w = wind_cauchy
+        fuzzy_wind = _cauchy_membership(shelter.values, a_w, b_w, c_w)
+        log.debug("generate_release_mask_simple: fuzzy wind range=[%.3f, %.3f]",
+                  np.nanmin(fuzzy_wind), np.nanmax(fuzzy_wind))
+
+        # AutoATES fuzzy gamma operator: (1-min)*min + min*mean(terms)
+        stack = np.stack([fuzzy_slope, fuzzy_forest, fuzzy_wind])
+        mn = np.nanmin(stack, axis=0)
+        avg = np.nanmean(stack, axis=0)
+        fuzzy_combined = (1 - mn) * mn + mn * avg
+    else:
+        fuzzy_combined = fuzzy_slope * fuzzy_forest
+
+    # ── 5. Threshold ──────────────────────────────────────────────────────────
     mask_arr = fuzzy_combined >= fuzzy_threshold
     log.debug("generate_release_mask_simple: fuzzy threshold=%.2f -> %d px",
               fuzzy_threshold, mask_arr.sum())
 
-    # ── 4. Channel exclusion ──────────────────────────────────────────────────
+    # ── 6. Channel exclusion ──────────────────────────────────────────────────
     mask_arr &= ~(np.isfinite(fa_vals) & (fa_vals > max_flow_accum_channel))
     log.debug("generate_release_mask_simple: after channel filter: %d px", mask_arr.sum())
 
-    # ── 5. Spatial smoothing ──────────────────────────────────────────────────
+    # ── 7. Spatial smoothing ──────────────────────────────────────────────────
     if smooth:
         mask_da  = xr.DataArray(mask_arr.astype(float), dims=slope_r.dims, coords=slope_r.coords)
         mask_arr = spatial_smooth(mask_da).round().values.astype(bool)
         log.debug("generate_release_mask_simple: after smoothing: %d px", mask_arr.sum())
 
-    # ── 6. Ridgeline detection (pixel size inferred from DEM) ─────────────────
-    ridgelines = generate_ridgelines(
-        dem_r,
-        tpi_radius_m=tpi_radius_m,
-        smooth_sigma=ridge_smooth_sigma,
-        tpi_threshold=tpi_threshold,
-        curv_threshold=curv_threshold,
-    )
-
-    # ── 7. Dilate skeleton into barrier and cut ───────────────────────────────
-    barrier = binary_dilation(
-        ridgelines.values.astype(bool),
-        iterations=ridge_barrier_width,
-    )
-    mask_arr[barrier] = False
-    log.debug("generate_release_mask_simple: after ridgeline barrier (width=%d): %d px",
-              ridge_barrier_width, mask_arr.sum())
+    # ── 8. Ridge separation ───────────────────────────────────────────────────
+    if ridge_method == "ridgeline":
+        ridgelines = generate_ridgelines(
+            dem_r,
+            tpi_radius_m=tpi_radius_m,
+            smooth_sigma=ridge_smooth_sigma,
+            tpi_threshold=tpi_threshold,
+            curv_threshold=curv_threshold,
+        )
+        barrier = binary_dilation(
+            ridgelines.values.astype(bool),
+            iterations=ridge_barrier_width,
+        )
+        mask_arr[barrier] = False
+        log.debug("generate_release_mask_simple: after ridgeline barrier (width=%d): %d px",
+                  ridge_barrier_width, mask_arr.sum())
 
     # ── 8. Remove isolated single pixels ─────────────────────────────────────
     labeled, _ = ndlabel(mask_arr)
