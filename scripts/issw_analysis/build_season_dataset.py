@@ -70,6 +70,12 @@ def fetch_snfac_zones() -> dict:
     return zones
 
 
+def season_nc_filename(season: str, zone: str) -> str:
+    """Build canonical season dataset filename from season and zone name."""
+    safe_zone = zone.replace(" ", "_").replace("/", "-").replace("&", "&")
+    return f"season_{season}_{safe_zone}.nc"
+
+
 def build_season_dataset(
     aoi,
     season_start: str,
@@ -80,6 +86,7 @@ def build_season_dataset(
     static_fp: Path | None = None,
     track_gpkg: Path | None = None,
     baseline_days: int = 60,
+    nc_filename: str = "season_dataset.nc",
 ) -> None:
     """Assemble full-season SAR + terrain, preprocess, compute static layers.
 
@@ -102,7 +109,7 @@ def build_season_dataset(
     from sarvalanche.probabilities.pipelines import get_static_probabilities
     from sarvalanche.utils.validation import validate_canonical
 
-    season_nc = cache_dir / "season_dataset.nc"
+    season_nc = cache_dir / nc_filename
 
     fetch_start = (
         pd.Timestamp(season_start) - pd.Timedelta(days=baseline_days)
@@ -314,6 +321,8 @@ def main():
                 except Exception:
                     continue
 
+    nc_fname = season_nc_filename(args.season, args.zone)
+
     build_season_dataset(
         aoi=aoi,
         season_start=season_start,
@@ -323,6 +332,7 @@ def main():
         static_fp=static_fp,
         track_gpkg=track_gpkg,
         baseline_days=args.baseline_days,
+        nc_filename=nc_fname,
     )
 
 

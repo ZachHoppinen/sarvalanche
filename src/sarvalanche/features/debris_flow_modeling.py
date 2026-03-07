@@ -124,7 +124,7 @@ def generate_release_mask_simple(
     fuzzy_threshold: float = 0.15,
     max_flow_accum_channel: float = 10.0,
     smooth: bool = True,
-    ridge_method: str = "ridgeline",
+    ridge_method: str = "wind+ridgeline",
     tpi_radius_m: float = 300.0,
     tpi_threshold: float = 5.0,
     curv_threshold: float = -1.0,

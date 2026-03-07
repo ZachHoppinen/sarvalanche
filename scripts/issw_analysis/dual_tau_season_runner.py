@@ -134,6 +134,7 @@ def prepare_season_dataset(
     static_fp: Path | None = None,
     track_gpkg: Path | None = None,
     baseline_days: int = 60,
+    nc_filename: str = "season_dataset.nc",
 ) -> tuple[xr.Dataset, gpd.GeoDataFrame]:
     """
     Assemble full-season SAR data + terrain, run FlowPy, preprocess, compute
@@ -153,7 +154,7 @@ def prepare_season_dataset(
     from sarvalanche.utils.validation import validate_canonical
 
     # Determine output paths
-    season_nc = cache_dir / "season_dataset.nc"
+    season_nc = cache_dir / nc_filename
 
     # Fetch window: start baseline_days before season to give the SAR
     # transformer enough pre-event acquisitions for early season steps.
@@ -524,6 +525,7 @@ def run_dual_tau_season(
     detection_threshold: float = 0.9,
     timeseries_threshold: float = 0.9,
     dry_run: bool = False,
+    nc_filename: str = "season_dataset.nc",
 ) -> tuple[gpd.GeoDataFrame, pd.DataFrame]:
     """
     Run dual-tau season analysis for one zone.
@@ -547,6 +549,7 @@ def run_dual_tau_season(
         resolution=resolution,
         static_fp=static_fp,
         track_gpkg=track_gpkg,
+        nc_filename=nc_filename,
     )
 
     # ── 2. Load XGBoost classifier ────────────────────────────────────────
@@ -856,6 +859,9 @@ def main():
                 continue
 
     # Run
+    safe_name_nc = args.zone.replace(" ", "_").replace("/", "-")
+    nc_fname = f"season_{args.season}_{safe_name_nc}.nc"
+
     inventory_gdf, timeseries_df = run_dual_tau_season(
         aoi=aoi,
         zone_name=args.zone,
@@ -869,6 +875,7 @@ def main():
         track_gpkg=track_gpkg,
         detection_threshold=args.detection_threshold,
         dry_run=args.dry_run,
+        nc_filename=nc_fname,
     )
 
     if not args.dry_run:

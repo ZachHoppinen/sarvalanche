@@ -287,7 +287,8 @@ def main():
 
         safe_name = args.zone.replace(" ", "_").replace("/", "-")
         zone_cache = args.nc_dir / safe_name
-        season_nc = zone_cache / "season_dataset.nc"
+        nc_fname = f"season_{args.season}_{safe_name}.nc"
+        season_nc = zone_cache / nc_fname
 
         if not season_nc.exists():
             log.info("Building season dataset for %s %s...", args.zone, args.season)
