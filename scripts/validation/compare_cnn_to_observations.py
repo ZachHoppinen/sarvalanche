@@ -156,9 +156,12 @@ def zonal_stats_for_path(
         "max_prob_path": float(np.max(inside)),
         "mean_prob_path": float(np.mean(inside)),
         "p90_prob_path": float(np.percentile(inside, 90)),
+        "p95_prob_path": float(np.percentile(inside, 95)),
+        "n_pixels_above_05": int((inside > 0.5).sum()),
         "n_pixels_bg": len(outside),
         "mean_prob_bg": float(np.mean(outside)) if len(outside) > 0 else np.nan,
         "max_prob_bg": float(np.max(outside)) if len(outside) > 0 else np.nan,
+        "p95_prob_bg": float(np.percentile(outside, 95)) if len(outside) > 0 else np.nan,
     }
 
 
@@ -167,7 +170,12 @@ def onset_stats_for_path(
     path_geom,
     obs_date: pd.Timestamp,
 ) -> dict:
-    """Compare CNN onset dates inside path to observation date."""
+    """Compare CNN onset dates inside path to observation date.
+
+    Supports multi-peak onset: if `all_onset_dates` is present (peak_rank, y, x),
+    checks ALL peaks per pixel for the closest match to the observation date.
+    This handles paths that avalanche multiple times per season.
+    """
     onset_da = onset_ds["onset_date"]
     candidate_da = onset_ds["candidate_mask"]
     confidence_da = onset_ds["confidence"]
@@ -189,11 +197,39 @@ def onset_stats_for_path(
             "mean_peak_prob": np.nan,
         }
 
-    onset_dates = onset_da.values[combined]
-    valid = ~np.isnat(onset_dates)
-    onset_dates = onset_dates[valid]
+    obs_dt64 = np.datetime64(obs_date)
 
-    if len(onset_dates) == 0:
+    # ── Multi-peak onset: check all peaks per pixel ──
+    has_multi = "all_onset_dates" in onset_ds
+    if has_multi:
+        # all_onset_dates is (peak_rank, y, x)
+        all_dates = onset_ds["all_onset_dates"].values  # (K, H, W)
+        K = all_dates.shape[0]
+
+        # Collect ALL onset dates from all peaks of all candidate pixels
+        all_diffs = []
+        for k in range(K):
+            k_dates = all_dates[k][combined]
+            valid_k = ~np.isnat(k_dates)
+            if valid_k.sum() > 0:
+                k_diffs = (k_dates[valid_k] - obs_dt64) / np.timedelta64(1, "D")
+                all_diffs.append(k_diffs)
+
+        if all_diffs:
+            all_diffs = np.concatenate(all_diffs)
+        else:
+            all_diffs = np.array([])
+    else:
+        # Fallback: single-peak onset (backward compatible)
+        onset_dates = onset_da.values[combined]
+        valid = ~np.isnat(onset_dates)
+        onset_dates = onset_dates[valid]
+        if len(onset_dates) > 0:
+            all_diffs = (onset_dates - obs_dt64) / np.timedelta64(1, "D")
+        else:
+            all_diffs = np.array([])
+
+    if len(all_diffs) == 0:
         return {
             "n_candidates_in_path": n_candidates,
             "onset_date_diff_days_mean": np.nan,
@@ -203,17 +239,14 @@ def onset_stats_for_path(
             "mean_peak_prob": np.nan,
         }
 
-    obs_dt64 = np.datetime64(obs_date)
-    diffs_days = (onset_dates - obs_dt64) / np.timedelta64(1, "D")
-
     conf_vals = confidence_da.values[combined]
     peak_vals = peak_prob_da.values[combined]
 
     return {
         "n_candidates_in_path": n_candidates,
-        "onset_date_diff_days_mean": float(np.nanmean(diffs_days)),
-        "onset_date_diff_days_median": float(np.nanmedian(diffs_days)),
-        "onset_date_diff_days_min": float(np.min(np.abs(diffs_days))),
+        "onset_date_diff_days_mean": float(np.nanmean(all_diffs)),
+        "onset_date_diff_days_median": float(np.nanmedian(all_diffs)),
+        "onset_date_diff_days_min": float(np.min(np.abs(all_diffs))),
         "mean_confidence": float(np.nanmean(conf_vals)),
         "mean_peak_prob": float(np.nanmean(peak_vals)),
     }
@@ -406,12 +439,13 @@ def main():
     # DETECTION: spatial signal AND temporal match within ±6 days
     #
     # An observation counts as "detected" only if:
-    #   1. max CNN prob inside path > max CNN prob in background annulus
-    #   2. CNN onset date for at least one pixel inside the path is
-    #      within ±ONSET_WINDOW days of the reported observation date
+    #   1a. 95th percentile CNN prob in path > 95th percentile in background
+    #       OR
+    #   1b. 10+ pixels inside the path have CNN prob > 0.5
+    #   2.  CNN onset date for at least one pixel inside the path is
+    #       within ±ONSET_WINDOW days of the reported observation date
     #
-    # For sources without onset data (Galena scene TIFs) we can only
-    # evaluate criterion 1 — those are reported as "spatial_only".
+    # For sources without onset data we can only evaluate criterion 1.
     # ══════════════════════════════════════════════════════════════════════
     ONSET_WINDOW = 6  # days
 
@@ -421,7 +455,11 @@ def main():
         return
 
     # Criterion 1: spatial — elevated probability in path vs background
-    valid["spatial_detected"] = valid["max_prob_path"] > valid["max_prob_bg"]
+    # Either p95 path > p95 background, OR 10+ pixels above 0.5 in path
+    valid["spatial_detected"] = (
+        (valid["p95_prob_path"] > valid["p95_prob_bg"])
+        | (valid["n_pixels_above_05"] >= 10)
+    )
 
     # Criterion 2: temporal — onset within ±ONSET_WINDOW days
     has_onset = valid["onset_date_diff_days_min"].notna()

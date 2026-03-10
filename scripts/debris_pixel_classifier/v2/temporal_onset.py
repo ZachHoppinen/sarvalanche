@@ -98,6 +98,59 @@ def find_peak_1d(series: np.ndarray, threshold: float) -> tuple[int, float]:
     return peak_idx, peak_val
 
 
+def find_all_peaks_1d(
+    series: np.ndarray,
+    threshold: float,
+    min_separation: int = 3,
+    max_peaks: int = 5,
+) -> list[tuple[int, float]]:
+    """Find ALL distinct peaks above threshold in a 1D time series.
+
+    Multiple avalanches can hit the same path in one season. This function
+    finds each distinct bump by iteratively masking already-found peaks.
+
+    Parameters
+    ----------
+    series : (T,) float array, may contain NaN
+    threshold : minimum probability to qualify as a peak
+    min_separation : minimum time steps between distinct peaks
+    max_peaks : maximum number of peaks to return
+
+    Returns
+    -------
+    peaks : list of (peak_idx, peak_val), sorted by peak_val descending.
+            Empty list if no peaks above threshold.
+    """
+    valid = ~np.isnan(series)
+    if valid.sum() == 0:
+        return []
+
+    s = series.copy()
+    peaks = []
+
+    for _ in range(max_peaks):
+        s_masked = np.where(valid & ~np.isnan(s), s, -np.inf)
+        idx = int(np.argmax(s_masked))
+        val = float(s_masked[idx])
+
+        if val < threshold:
+            break
+
+        peaks.append((idx, val))
+
+        # Mask out the bump around this peak so we find the next one
+        lo = idx
+        while lo > 0 and (s[lo - 1] >= threshold * 0.5 or abs(lo - 1 - idx) < min_separation):
+            lo -= 1
+        hi = idx
+        T = len(series)
+        while hi < T - 1 and (s[hi + 1] >= threshold * 0.5 or abs(hi + 1 - idx) < min_separation):
+            hi += 1
+        s[lo:hi + 1] = -np.inf
+
+    return peaks
+
+
 def measure_bump_1d(
     series: np.ndarray,
     peak_idx: int,
@@ -230,6 +283,42 @@ def find_peaks_batch(
         )
 
     return peak_idx, peak_val, bump_width, n_above, mean_det_prob, persistence, bump_smoothness
+
+
+MAX_PEAKS = 5  # Maximum number of onset peaks stored per pixel
+
+
+def find_all_peaks_batch(
+    cube: np.ndarray,
+    threshold: float,
+    max_peaks: int = MAX_PEAKS,
+    min_separation: int = 3,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Find all distinct peaks for all pixels.
+
+    Parameters
+    ----------
+    cube : (T, N) float array
+    threshold : minimum probability for a peak
+    max_peaks : maximum peaks per pixel
+    min_separation : minimum time steps between peaks
+
+    Returns
+    -------
+    all_peak_idx : (max_peaks, N) int, -1 for unused slots
+    all_peak_val : (max_peaks, N) float, 0.0 for unused slots
+    """
+    T, N = cube.shape
+    all_peak_idx = np.full((max_peaks, N), -1, dtype=np.int32)
+    all_peak_val = np.zeros((max_peaks, N), dtype=np.float32)
+
+    for i in range(N):
+        peaks = find_all_peaks_1d(cube[:, i], threshold, min_separation, max_peaks)
+        for k, (pidx, pval) in enumerate(peaks):
+            all_peak_idx[k, i] = pidx
+            all_peak_val[k, i] = pval
+
+    return all_peak_idx, all_peak_val
 
 
 # ---------------------------------------------------------------------------
@@ -636,6 +725,14 @@ def run_temporal_onset(
     log.info("Finding probability peaks and measuring multi-pass confirmation...")
     peak_idx, peak_val, bump_width, n_above, mean_det_prob, persistence, bump_smooth = find_peaks_batch(cnn_ts, threshold)
 
+    # ── Multi-peak detection (multiple avalanches per season) ─────────
+    log.info("Finding all distinct peaks per pixel (max %d)...", MAX_PEAKS)
+    all_peak_idx, all_peak_val = find_all_peaks_batch(
+        cnn_ts, threshold, max_peaks=MAX_PEAKS, min_separation=3
+    )
+    n_with_multi = (all_peak_idx[1, :] >= 0).sum()
+    log.info("  %d / %d candidates have 2+ distinct peaks", n_with_multi, n_candidates)
+
     # ── Backscatter step at peak ──────────────────────────────────────
     log.info("Measuring VV backscatter step at peak...")
     vv_step = fit_step_at_peak(vv_ts, peak_idx)
@@ -697,6 +794,20 @@ def run_temporal_onset(
 
     onset_date_map[cy, cx] = onset_dates
     peak_idx_map_full[cy, cx] = peak_idx
+
+    # Multi-peak onset date maps: (max_peaks, H, W)
+    all_onset_date_maps = np.full((MAX_PEAKS, H, W), np.datetime64("NaT"), dtype="datetime64[ns]")
+    all_peak_prob_maps = np.full((MAX_PEAKS, H, W), np.nan, dtype=np.float32)
+    for k in range(MAX_PEAKS):
+        k_dates = np.array(
+            [cnn_times[min(max(idx, 0), T - 1)] if idx >= 0 else np.datetime64("NaT")
+             for idx in all_peak_idx[k]],
+            dtype="datetime64[ns]",
+        )
+        # Set NaT for unused slots
+        k_dates[all_peak_idx[k] < 0] = np.datetime64("NaT")
+        all_onset_date_maps[k, cy, cx] = k_dates
+        all_peak_prob_maps[k, cy, cx] = all_peak_val[k]
     peak_prob_map[cy, cx] = peak_val
     width_map[cy, cx] = bump_width
     n_above_map[cy, cx] = n_above
@@ -711,9 +822,10 @@ def run_temporal_onset(
     pre_existing_map[cy, cx] = pre_existing
 
     # ── Build output dataset ──────────────────────────────────────────
-    coords = {"y": cnn_ds.y, "x": cnn_ds.x}
+    coords = {"y": cnn_ds.y, "x": cnn_ds.x, "peak_rank": np.arange(MAX_PEAKS)}
     result = xr.Dataset(
         {
+            # Primary (strongest) peak — backward compatible
             "onset_date": (["y", "x"], onset_date_map),
             "onset_step_idx": (["y", "x"], peak_idx_map_full),
             "peak_prob": (["y", "x"], peak_prob_map),
@@ -731,6 +843,10 @@ def run_temporal_onset(
             "spatial_peak_alignment": (["y", "x"], spatial_align),
             "pre_existing": (["y", "x"], pre_existing_map),
             "candidate_mask": (["y", "x"], candidate_mask),
+            # Multi-peak onset dates (peak_rank, y, x)
+            # peak_rank=0 is the strongest peak, 1 is second strongest, etc.
+            "all_onset_dates": (["peak_rank", "y", "x"], all_onset_date_maps),
+            "all_peak_probs": (["peak_rank", "y", "x"], all_peak_prob_maps),
         },
         coords=coords,
     )
@@ -765,7 +881,7 @@ def run_temporal_onset(
 def _empty_result(cnn_ds, cnn_times):
     """Return empty result dataset when no candidates found."""
     H, W = cnn_ds.sizes["y"], cnn_ds.sizes["x"]
-    coords = {"y": cnn_ds.y, "x": cnn_ds.x}
+    coords = {"y": cnn_ds.y, "x": cnn_ds.x, "peak_rank": np.arange(MAX_PEAKS)}
     result = xr.Dataset(
         {
             "onset_date": (["y", "x"], np.full((H, W), np.datetime64("NaT"), dtype="datetime64[ns]")),
@@ -785,6 +901,8 @@ def _empty_result(cnn_ds, cnn_times):
             "spatial_peak_alignment": (["y", "x"], np.zeros((H, W), dtype=np.float32)),
             "pre_existing": (["y", "x"], np.zeros((H, W), dtype=bool)),
             "candidate_mask": (["y", "x"], np.zeros((H, W), dtype=bool)),
+            "all_onset_dates": (["peak_rank", "y", "x"], np.full((MAX_PEAKS, H, W), np.datetime64("NaT"), dtype="datetime64[ns]")),
+            "all_peak_probs": (["peak_rank", "y", "x"], np.full((MAX_PEAKS, H, W), np.nan, dtype=np.float32)),
         },
         coords=coords,
     )

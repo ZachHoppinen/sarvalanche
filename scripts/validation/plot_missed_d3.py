@@ -323,7 +323,7 @@ def plot_observation(
             cmap="RdBu_r", vmin=-3, vmax=3, interpolation="nearest",
         )
         fig.colorbar(im1, ax=ax1, shrink=0.7, label="d_empirical (dB)")
-        ax1.set_title(f"d_empirical — {obs_date}", fontsize=11)
+        ax1.set_title(f"d_empirical — {cnn_date}", fontsize=11)
     else:
         ax1.text(0.5, 0.5, "d_empirical\nnot available", ha="center", va="center",
                  transform=ax1.transAxes, fontsize=14)
@@ -470,13 +470,13 @@ def main():
         if prob_clip is None:
             continue
 
-        # ── d_empirical ───────────────────────────────────────────────
+        # ── d_empirical (at CNN date so both panels match) ─────────────
         season_nc = find_season_nc(cnn_source)
         d_emp_clip, d_emp_extent = None, None
 
         if season_nc is not None:
             snc_key = str(season_nc)
-            demp_key = (snc_key, obs_date)
+            demp_key = (snc_key, cnn_date)  # use CNN acquisition date, not obs date
 
             if demp_key not in demp_cache:
                 # Load dataset if needed
@@ -503,8 +503,8 @@ def main():
                     ds = ds.drop_vars(stale)
                     ds_cache[snc_key] = ds
 
-                log.info("Computing d_empirical for %s (%s)", obs_date, season_nc.name)
-                d_emp = compute_d_empirical_for_date(ds, pd.Timestamp(obs_date))
+                log.info("Computing d_empirical for %s (%s)", cnn_date, season_nc.name)
+                d_emp = compute_d_empirical_for_date(ds, pd.Timestamp(cnn_date))
                 if d_emp is not None:
                     demp_cache[demp_key] = (d_emp.values, d_emp.y.values, d_emp.x.values)
                 else:
