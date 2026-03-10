@@ -38,11 +38,7 @@ CSV_PATH = ROOT / "local/issw/snfac_obs_2021_2025.csv"
 NC_DIR = ROOT / "local/issw/netcdfs"
 OUT_DIR = ROOT / "local/issw/observations"
 
-NETCDF_FILES = [
-    NC_DIR / "Banner_Summit/season_2022-2023_Banner_Summit.nc",
-    NC_DIR / "Galena_Summit_&_Eastern_Mtns/season_2023-2024_Galena_Summit_&_Eastern_Mtns.nc",
-    NC_DIR / "Sawtooth_&_Western_Smoky_Mtns/season_2024_2025_Sawtooth_&_Western_Smoky_Mtns.nc",
-]
+NETCDF_FILES = sorted(NC_DIR.glob("*/season_*.nc"))
 
 # Buffer around observation for DEM clip (pixels).  Must be large enough for
 # FlowPy runout (~200 px ≈ 6 km at 30 m).

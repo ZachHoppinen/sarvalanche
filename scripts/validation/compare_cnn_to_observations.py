@@ -39,27 +39,44 @@ NC_DIR = ROOT / "local/issw/netcdfs"
 CSV_PATH = ROOT / "local/issw/snfac_obs_2021_2025.csv"
 OUT_CSV = OBS_DIR / "comparison_summary.csv"
 
-# CNN data sources: (zone_dir, has_seasonal_nc, has_temporal_onset, scene_tif_dir)
-CNN_SOURCES = [
-    {
-        "name": "Banner_Summit",
-        "seasonal_nc": NC_DIR / "Banner_Summit/v2_season_inference/season_v2_debris_probabilities.nc",
-        "temporal_onset_nc": NC_DIR / "Banner_Summit/v2_season_inference/temporal_onset.nc",
-        "scene_tif_dir": None,
-    },
-    {
-        "name": "Galena_Summit_&_Eastern_Mtns",
-        "seasonal_nc": None,
-        "temporal_onset_nc": None,
-        "scene_tif_dir": NC_DIR / "Galena_Summit_&_Eastern_Mtns/v2_inference",
-    },
-    {
-        "name": "Sawtooth_&_Western_Smoky_Mtns",
-        "seasonal_nc": NC_DIR / "Sawtooth_&_Western_Smoky_Mtns/v2_season_inference/season_v2_debris_probabilities.nc",
-        "temporal_onset_nc": NC_DIR / "Sawtooth_&_Western_Smoky_Mtns/v2_season_inference/temporal_onset.nc",
-        "scene_tif_dir": NC_DIR / "Sawtooth_&_Western_Smoky_Mtns/v2_season_inference",
-    },
-]
+def discover_cnn_sources():
+    """Auto-discover CNN inference outputs from all zone directories."""
+    sources = []
+    for zone_dir in sorted(NC_DIR.iterdir()):
+        if not zone_dir.is_dir():
+            continue
+        zone_name = zone_dir.name
+        # Find all v2_season_inference* directories (including per-season ones)
+        inf_dirs = sorted(zone_dir.glob("v2_season_inference*"))
+        # Also check for v2_inference (scene TIF only, e.g. Galena)
+        v2_inf = zone_dir / "v2_inference"
+        if v2_inf.is_dir() and v2_inf not in inf_dirs:
+            inf_dirs.append(v2_inf)
+
+        for inf_dir in inf_dirs:
+            seasonal_nc = inf_dir / "season_v2_debris_probabilities.nc"
+            temporal_nc = inf_dir / "temporal_onset.nc"
+            scene_tifs = list(inf_dir.glob("scene_v2_debris_*.tif"))
+
+            if seasonal_nc.exists() or scene_tifs:
+                # Build a descriptive name including season if per-season dir
+                name = zone_name
+                if inf_dir.name != "v2_season_inference" and inf_dir.name != "v2_inference":
+                    # e.g. v2_season_inference_2023-2024 -> append season
+                    season_suffix = inf_dir.name.replace("v2_season_inference_", "")
+                    name = f"{zone_name}_{season_suffix}"
+
+                sources.append({
+                    "name": name,
+                    "seasonal_nc": seasonal_nc if seasonal_nc.exists() else None,
+                    "temporal_onset_nc": temporal_nc if temporal_nc.exists() else None,
+                    "scene_tif_dir": inf_dir if scene_tifs else None,
+                })
+
+    return sources
+
+
+CNN_SOURCES = discover_cnn_sources()
 
 # Spatial buffer around FlowPy paths (metres, applied in UTM before reprojecting)
 PATH_BUFFER_M = 500
