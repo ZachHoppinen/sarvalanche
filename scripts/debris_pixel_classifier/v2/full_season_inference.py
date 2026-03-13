@@ -28,7 +28,7 @@ import xarray as xr
 
 from sarvalanche.io.dataset import load_netcdf_to_dataset
 from sarvalanche.ml.v2.channels import N_STATIC, STATIC_CHANNELS, normalize_static_channel
-from sarvalanche.ml.v2.model import DebrisDetector
+from sarvalanche.ml.v2.model import DebrisDetector, DebrisDetectorSkip
 from sarvalanche.ml.v2.patch_extraction import (
     V2_PATCH_SIZE,
     DEM_CHANNEL,
@@ -51,6 +51,7 @@ log = logging.getLogger(__name__)
 _STALE_PATTERNS = [
     re.compile(r"^p_\d+_V[VH]_empirical$"),
     re.compile(r"^d_\d+_V[VH]_empirical$"),
+    re.compile(r"^m_\d+_V[VH]_empirical$"),
 ]
 _STALE_EXACT = {"p_empirical", "d_empirical", "w_temporal"}
 
@@ -249,6 +250,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size (default: 16)")
     parser.add_argument("--device", type=str, default=None, help="Device override")
     parser.add_argument("--no-tiffs", action="store_true", help="Skip per-date GeoTIFFs, only save NetCDF")
+    parser.add_argument("--skip", action="store_true", help="Use DebrisDetectorSkip (skip connections)")
     args = parser.parse_args()
 
     # Parse season
@@ -306,7 +308,8 @@ def main():
 
     # ── Load model (once) ────────────────────────────────────────────────
     log.info("Loading model from %s", args.weights)
-    model = DebrisDetector()
+    model_cls = DebrisDetectorSkip if args.skip else DebrisDetector
+    model = model_cls()
     model.load_state_dict(torch.load(args.weights, map_location=device, weights_only=True))
     model.to(device)
     model.eval()

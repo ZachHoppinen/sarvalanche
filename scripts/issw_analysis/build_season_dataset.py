@@ -49,9 +49,15 @@ HEADERS = {
 }
 
 
-def fetch_snfac_zones() -> dict:
-    """Fetch SNFAC forecast zone polygons from avalanche.org."""
-    url = "https://api.avalanche.org/v2/public/products/map-layer/SNFAC"
+def fetch_center_zones(center_id: str = "SNFAC") -> dict:
+    """Fetch forecast zone polygons from avalanche.org for any center.
+
+    Parameters
+    ----------
+    center_id : str
+        Avalanche center code (e.g. 'SNFAC', 'CNFAIC', 'GNFAC', 'CAIC').
+    """
+    url = f"https://api.avalanche.org/v2/public/products/map-layer/{center_id}"
     r = requests.get(url, headers=HEADERS, timeout=30)
     r.raise_for_status()
     geojson = r.json()
@@ -66,8 +72,12 @@ def fetch_snfac_zones() -> dict:
         except Exception as e:
             log.warning("Skipping zone %s: %s", name, e)
 
-    log.info("Fetched %d SNFAC zones", len(zones))
+    log.info("Fetched %d %s zones", len(zones), center_id)
     return zones
+
+
+# Backward-compatible alias
+fetch_snfac_zones = fetch_center_zones
 
 
 def season_nc_filename(season: str, zone: str) -> str:
@@ -250,7 +260,11 @@ def main():
     )
     parser.add_argument(
         "--zone", required=True,
-        help='SNFAC zone name (e.g. "Sawtooth & Western Smoky Mtns")',
+        help='Zone name (e.g. "Sawtooth & Western Smoky Mtns", "Turnagain Pass and Girdwood")',
+    )
+    parser.add_argument(
+        "--center", default="SNFAC",
+        help='Avalanche center ID (default: SNFAC). E.g. CNFAIC, GNFAC, CAIC.',
     )
     parser.add_argument(
         "--season", required=True,
@@ -283,7 +297,7 @@ def main():
         parser.error('--season must be "YYYY-YYYY" (e.g. "2024-2025")')
 
     # Fetch zone geometry
-    zones = fetch_snfac_zones()
+    zones = fetch_center_zones(args.center)
     if args.zone not in zones:
         available = "\n  ".join(sorted(zones.keys()))
         parser.error(f'Zone "{args.zone}" not found. Available:\n  {available}')

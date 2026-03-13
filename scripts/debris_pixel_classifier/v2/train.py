@@ -16,7 +16,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
 
 from sarvalanche.ml.v2.dataset import V2PatchDataset, v2_collate_fn
-from sarvalanche.ml.v2.model import DebrisDetector
+from sarvalanche.ml.v2.model import DebrisDetector, DebrisDetectorSkip
 
 
 logging.basicConfig(
@@ -70,6 +70,13 @@ def _weighted_bce(logits, targets, pos_weight):
     )
 
 
+def _dice_loss(logits, targets, smooth=1.0):
+    """Soft Dice loss — directly optimizes overlap."""
+    probs = torch.sigmoid(logits)
+    intersection = (probs * targets).sum()
+    return 1.0 - (2.0 * intersection + smooth) / (probs.sum() + targets.sum() + smooth)
+
+
 def train_epoch(model, loader, optimizer, device, pos_weight=None):
     model.train()
     total_loss = 0.0
@@ -84,7 +91,7 @@ def train_epoch(model, loader, optimizer, device, pos_weight=None):
         optimizer.zero_grad()
 
         logits = model(sar_maps, static)
-        loss = _weighted_bce(logits, targets, pos_weight)
+        loss = _weighted_bce(logits, targets, pos_weight) + _dice_loss(logits, targets)
 
         loss.backward()
 
@@ -144,6 +151,7 @@ def main():
     parser.add_argument('--pos-weight', type=float, default=0.0,
                         help='Positive class weight (0 = auto-compute from data)')
     parser.add_argument('--out', type=Path, default=None, help='Output weights path')
+    parser.add_argument('--skip', action='store_true', help='Use DebrisDetectorSkip (skip connections)')
     args = parser.parse_args()
 
     device = _resolve_device(args.device)
@@ -195,7 +203,8 @@ def main():
     log.info('Positive class weight: %.1f', pw)
 
     # Model
-    model = DebrisDetector().to(device)
+    model_cls = DebrisDetectorSkip if args.skip else DebrisDetector
+    model = model_cls().to(device)
     n_params = sum(p.numel() for p in model.parameters())
     log.info('Model parameters: %d', n_params)
 

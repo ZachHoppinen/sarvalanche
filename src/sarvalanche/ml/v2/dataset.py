@@ -53,8 +53,9 @@ class V2PatchDataset(Dataset):
                 # Find v2 tiles for this window
                 v2_tiles = sorted(parent.glob(f'{window_id}_v2_*.npz'))
                 for tile_path in v2_tiles:
-                    self.files.append(tile_path)
-                    self.labels.append(label)
+                    if tile_path.exists():
+                        self.files.append(tile_path)
+                        self.labels.append(label)
 
         if not self.files:
             # Fallback: load all v2 .npz files directly

@@ -31,6 +31,15 @@ def normalize_anf(arr: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.log1p(arr))
 
 
+def normalize_magnitude(arr: np.ndarray) -> np.ndarray:
+    """Normalize dB backscatter magnitude to ~[0, 1].
+
+    Sentinel-1 RTC backscatter typically ranges from -25 to +10 dB.
+    Maps linearly to [0, 1] then clips.
+    """
+    return np.clip((arr + 25.0) / 35.0, 0.0, 1.0)
+
+
 def get_per_track_pol_changes(ds: xr.Dataset) -> list[tuple[str, str, np.ndarray]]:
     """Get per-track/pol empirical backscatter change maps from dataset.
 

@@ -83,7 +83,7 @@ def calculate_empirical_backscatter_probability(
         log.debug("Processing track=%s, pol=%s", track, pol)
 
         try:
-            p, d = compute_track_empirical_probability(da, avalanche_date, **kwargs)
+            p, d, mag = compute_track_empirical_probability(da, avalanche_date, **kwargs)
         except ValueError as e:
             log.warning("Skipping track=%s pol=%s: %s", track, pol, e)
             continue
@@ -92,6 +92,8 @@ def calculate_empirical_backscatter_probability(
         ds[f'p_{track}_{pol}_empirical'].attrs = {'units': '1', 'source': 'sarvalanche', 'product': 'orbit_empirical_probabilities'}
         ds[f'd_{track}_{pol}_empirical'] = d
         ds[f'd_{track}_{pol}_empirical'].attrs = {'units': 'dB', 'source': 'sarvalanche', 'product': 'orbit_backscatter_change'}
+        ds[f'm_{track}_{pol}_empirical'] = mag
+        ds[f'm_{track}_{pol}_empirical'].attrs = {'units': 'dB', 'source': 'sarvalanche', 'product': 'orbit_backscatter_magnitude'}
         prob_results.append(p)
         change_results.append(d)
         resolution_weights.append(ds['w_resolution'].sel(static_track=track))

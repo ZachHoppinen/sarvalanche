@@ -61,6 +61,7 @@ def compute_empirical_for_date(ds, reference_date, tau_days):
     stale_patterns = [
         re.compile(r"^p_\d+_V[VH]_empirical$"),
         re.compile(r"^d_\d+_V[VH]_empirical$"),
+        re.compile(r"^m_\d+_V[VH]_empirical$"),
     ]
     stale_exact = {"p_empirical", "d_empirical", "w_temporal"}
     to_drop = [v for v in ds.data_vars if v in stale_exact]

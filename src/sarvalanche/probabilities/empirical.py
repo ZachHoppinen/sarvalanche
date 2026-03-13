@@ -48,9 +48,10 @@ def compute_track_empirical_probability(
 
     Returns
     -------
-    tuple[xr.DataArray, xr.DataArray]
-        ``(probability, mean_change)`` — the probability map and the
-        weighted-mean backscatter change in dB, both with dims ``(y, x)``.
+    tuple[xr.DataArray, xr.DataArray, xr.DataArray]
+        ``(probability, mean_change, magnitude)`` — the probability map,
+        the weighted-mean backscatter change in dB, and the temporally-weighted
+        mean backscatter level in dB, all with dims ``(y, x)``.
     """
     # --- Convert to dB and smooth ---
     if check_db_linear(da) != 'dB':
@@ -71,7 +72,11 @@ def compute_track_empirical_probability(
     # --- Weighted mean change ---
     mean_change = weighted_mean(diffs, w_pair_temporal, dim=pair_dim)
 
+    # --- Temporally-weighted mean backscatter magnitude (dB level) ---
+    w_ts = get_temporal_weights(da['time'], avalanche_date, tau_days=tau_days)
+    magnitude = weighted_mean(da, w_ts, dim='time')
+
     # --- Convert to probability ---
     p = probability_backscatter_change(mean_change)
 
-    return p, mean_change
+    return p, mean_change, magnitude

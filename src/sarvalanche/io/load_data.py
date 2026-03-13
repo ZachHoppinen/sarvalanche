@@ -295,15 +295,96 @@ def get_aspect(aoi, aoi_crs, ref_grid=None, resolution=30, dem=None):
         return aspect.assign_attrs(units="radians", source="computed_from_dem", product="aspect")
 
 
-def get_forest_cover(aoi, aoi_crs, ref_grid=None):
-    g = gpd.GeoSeries([aoi], crs=aoi_crs)
-    fcf = _with_retry(
-        lambda: gh.nlcd_bygeom(geometry=g)[0]["canopy_2021"],
-        label="nlcd_bygeom(canopy_2021)",
-    )
+def _get_hansen_tree_cover(aoi, aoi_crs, ref_grid=None):
+    """Fetch Hansen Global Forest Change tree cover (0-100%) for any location.
+
+    Uses COG tiles hosted on Google Cloud Storage.  Tile naming uses the
+    upper-left corner at 10° increments, e.g. ``70N_150W``.
+    """
+    import rioxarray  # noqa: F401
+    import math
+
+    # Project AOI to EPSG:4326 to determine which tiles we need
+    g = gpd.GeoSeries([aoi], crs=aoi_crs).to_crs("EPSG:4326")
+    minx, miny, maxx, maxy = g.total_bounds
+
+    # Hansen tiles: upper-left corner, 10° steps
+    # lat tiles: 80N, 70N, 60N, ..., 50S  (upper-left latitude)
+    # lon tiles: 180W, 170W, ..., 170E    (upper-left longitude)
+    def _tile_corner(val, step, is_lat=True):
+        """Round up to the next tile boundary."""
+        return math.ceil(val / step) * step
+
+    lat_lo = _tile_corner(miny, 10)
+    lat_hi = _tile_corner(maxy, 10)
+    lon_lo = _tile_corner(minx, -10) if minx < 0 else _tile_corner(minx, 10) - 10
+    lon_hi = _tile_corner(maxx, -10) if maxx < 0 else _tile_corner(maxx, 10) - 10
+
+    # Build tile URLs
+    base = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-v1.11"
+    tiles = []
+    for lat in range(lat_lo, lat_hi + 1, 10):
+        for lon in range(lon_lo, lon_hi + 1, 10):
+            lat_str = f"{abs(lat):02d}{'N' if lat >= 0 else 'S'}"
+            lon_str = f"{abs(lon):03d}{'E' if lon >= 0 else 'W'}"
+            url = f"{base}/Hansen_GFC-2023-v1.11_treecover2000_{lat_str}_{lon_str}.tif"
+            tiles.append(url)
+
+    log.info("Hansen tree cover: fetching %d tile(s)", len(tiles))
+
+    pieces = []
+    for url in tiles:
+        try:
+            da = rioxarray.open_rasterio(url)
+            clipped = da.rio.clip_box(minx=minx, miny=miny, maxx=maxx, maxy=maxy)
+            if "band" in clipped.dims:
+                clipped = clipped.isel(band=0, drop=True)
+            pieces.append(clipped.astype(np.float32))
+        except Exception as e:
+            log.warning("Hansen tile %s failed: %s", url, e)
+
+    if not pieces:
+        log.warning("No Hansen tree cover data found, returning zeros")
+        if ref_grid is not None:
+            return xr.zeros_like(ref_grid, dtype=np.float32).assign_attrs(
+                units="percent", source="hansen_gfc", product="forest_cover",
+            )
+        raise ValueError("No Hansen tree cover data and no ref_grid to create zeros")
+
+    if len(pieces) == 1:
+        fcf = pieces[0]
+    else:
+        from rioxarray.merge import merge_arrays
+        fcf = merge_arrays(pieces)
+
     if ref_grid is not None:
         fcf = fcf.rio.reproject_match(ref_grid)
-    return fcf.assign_attrs(units="percent", source="nlcd", product="forest_cover")
+
+    return fcf.assign_attrs(units="percent", source="hansen_gfc", product="forest_cover")
+
+
+def get_forest_cover(aoi, aoi_crs, ref_grid=None):
+    """Get forest cover fraction (0-100%).
+
+    Tries NLCD first (CONUS). If the result is all-NaN (e.g. Alaska),
+    falls back to Hansen Global Forest Change tree cover.
+    """
+    g = gpd.GeoSeries([aoi], crs=aoi_crs)
+    try:
+        fcf = _with_retry(
+            lambda: gh.nlcd_bygeom(geometry=g)[0]["canopy_2021"],
+            label="nlcd_bygeom(canopy_2021)",
+        )
+        # Check if NLCD actually has data (Alaska returns all-NaN)
+        if np.all(np.isnan(fcf.values)):
+            log.info("NLCD canopy is all-NaN (outside CONUS?), falling back to Hansen GFC")
+            raise ValueError("NLCD no data")
+        if ref_grid is not None:
+            fcf = fcf.rio.reproject_match(ref_grid)
+        return fcf.assign_attrs(units="percent", source="nlcd", product="forest_cover")
+    except Exception:
+        log.info("Using Hansen Global Forest Change tree cover")
+        return _get_hansen_tree_cover(aoi, aoi_crs, ref_grid)
 
 def get_water_extent(aoi, aoi_crs, ref_grid=None, year=2021):
     """
@@ -344,6 +425,10 @@ def get_water_extent(aoi, aoi_crs, ref_grid=None, year=2021):
 
     # Get land cover classification
     lc = gh.nlcd_bygeom(geometry=g, years=year)[0][f"cover_{year}"]
+
+    # Drop extra band dimension if present
+    if "band" in lc.dims:
+        lc = lc.isel(band=0, drop=True)
 
     # Create water mask
     # NLCD class 11 = Open Water

@@ -75,6 +75,7 @@ for nc in "$NC_DIR"/*/season_*_*.nc; do
             --no-tiffs \
             --stride 32 \
             --batch-size 16 \
+            --skip \
             2>&1 | tee -a "$LOG"; then
             log "  CNN inference done."
         else
