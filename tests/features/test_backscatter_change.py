@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -126,3 +128,23 @@ def test_spatial_dims_preserved(three_timestep_da):
     result = backscatter_changes_crossing_date(three_timestep_da, "2024-01-01 12:00")
     assert "y" in result.dims
     assert "x" in result.dims
+
+
+# ---------------------------------------------------------------------------
+# Large temporal gap warning
+# ---------------------------------------------------------------------------
+
+def test_large_gap_warns():
+    """A 60-day gap between the only crossing pair should emit a warning."""
+    times = pd.to_datetime(["2025-01-15", "2025-03-16"])
+    data = np.zeros((2, 3, 3))
+    da = xr.DataArray(data, dims=["time", "y", "x"], coords={"time": times})
+    with pytest.warns(UserWarning, match="missing Sentinel-1 acquisitions"):
+        backscatter_changes_crossing_date(da, "2025-02-01")
+
+
+def test_normal_gap_no_warning(three_timestep_da):
+    """Daily time steps should not trigger a gap warning."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        backscatter_changes_crossing_date(three_timestep_da, "2024-01-01 12:00")

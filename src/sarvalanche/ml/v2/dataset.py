@@ -1,7 +1,7 @@
-"""PyTorch Dataset for v2 two-pass CNN training patches.
+"""PyTorch Dataset for v2 CNN training patches.
 
 Reads .npz patches saved by patch_labeler.py --v2. Each .npz contains:
-  - sar_maps: (N, 128, 128) per-track/pol backscatter change maps
+  - sar_maps: (N, 4, 128, 128) per-track/pol [change, ANF, anomaly, edges]
   - static: (6, 128, 128) normalized static terrain channels
   - label: int8 (0 or 1)
 
@@ -40,6 +40,8 @@ class V2PatchDataset(Dataset):
         self.files: list[Path] = []
         self.labels: list[int] = []
 
+        self.confidences: list[float] = []
+
         # Load labels from all labels.json files in subdirectories
         for labels_path in sorted(self.data_dir.rglob('labels.json')):
             with open(labels_path) as f:
@@ -50,12 +52,14 @@ class V2PatchDataset(Dataset):
                 label = meta.get('label')
                 if label not in (0, 1):
                     continue
+                confidence = meta.get('confidence', 1.0)
                 # Find v2 tiles for this window
                 v2_tiles = sorted(parent.glob(f'{window_id}_v2_*.npz'))
                 for tile_path in v2_tiles:
                     if tile_path.exists():
                         self.files.append(tile_path)
                         self.labels.append(label)
+                        self.confidences.append(confidence)
 
         if not self.files:
             # Fallback: load all v2 .npz files directly
@@ -64,6 +68,7 @@ class V2PatchDataset(Dataset):
                 if 'sar_maps' in data and 'static' in data and 'label' in data:
                     self.files.append(npz_path)
                     self.labels.append(int(data['label']))
+                    self.confidences.append(1.0)
 
         log.info(
             'V2PatchDataset: %d patches (%d debris, %d no-debris) from %s',
@@ -77,20 +82,22 @@ class V2PatchDataset(Dataset):
         return len(self.files)
 
     def __getitem__(self, idx: int) -> dict:
+        confidence = self.confidences[idx] if idx < len(self.confidences) else 1.0
         data = np.load(self.files[idx], allow_pickle=True)
         sar_maps = data['sar_maps'].astype(np.float32)
         if sar_maps.ndim == 2:
             # Single map: (H, W) → (1, H, W)
             sar_maps = sar_maps[np.newaxis]
         if sar_maps.ndim == 3:
-            # Legacy format: (N, H, W) — no ANF channel
-            # Apply log1p compression and add a dummy ANF channel (all ones)
+            # Legacy format: (N, H, W) — no ANF/anomaly/edge channels
+            # Apply log1p compression and pad to 4 channels
             sar_maps = np.sign(sar_maps) * np.log1p(np.abs(sar_maps))
             ones = np.ones_like(sar_maps)
-            # Interleave: (N, 2, H, W)
-            sar_maps = np.stack([sar_maps, ones], axis=1)
-        # sar_maps is now (N, 2, H, W)
-        # New-format patches already have log1p + ANF from build_v2_patch
+            zeros = np.zeros_like(sar_maps)
+            # (N, 4, H, W): [change, ANF=1, anomaly=0, edges=0]
+            sar_maps = np.stack([sar_maps, ones, zeros, zeros], axis=1)
+        # sar_maps is now (N, C, H, W) where C is 2 or 4
+        # 4-channel patches already have all channels from build_v2_patch
         static = data['static'].astype(np.float32)       # (N_STATIC, 128, 128)
         label = int(data['label'])
 
@@ -122,6 +129,7 @@ class V2PatchDataset(Dataset):
             'sar_maps': sar_list,
             'static': torch.from_numpy(np.ascontiguousarray(static)),
             'label': label_tensor,
+            'confidence': torch.tensor(confidence, dtype=torch.float32),
         }
 
 
@@ -157,9 +165,11 @@ def v2_collate_fn(batch: list[dict]) -> dict:
 
     static = torch.stack([item['static'] for item in batch])
     label = torch.stack([item['label'] for item in batch])
+    confidence = torch.stack([item['confidence'] for item in batch])
 
     return {
         'sar_maps': sar_maps,
         'static': static,
         'label': label,
+        'confidence': confidence,
     }

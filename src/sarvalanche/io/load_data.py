@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 import tempfile
 
+import math
+
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -15,6 +17,7 @@ import pygeohydro as gh
 import rasterio
 from rasterio.warp import reproject, Resampling
 import dask.array as da
+import rioxarray
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm.auto import tqdm
 
@@ -386,255 +389,177 @@ def get_forest_cover(aoi, aoi_crs, ref_grid=None):
         log.info("Using Hansen Global Forest Change tree cover")
         return _get_hansen_tree_cover(aoi, aoi_crs, ref_grid)
 
-def get_water_extent(aoi, aoi_crs, ref_grid=None, year=2021):
+def _esa_worldcover_tile_url(lat, lon):
+    """Build ESA WorldCover 2021 v200 tile URL for a given lat/lon.
+
+    Tiles are 3x3 degree, named by their SW corner.
     """
-    Get water extent from NLCD land cover classification.
+    lat_tile = int(math.floor(lat / 3) * 3)
+    lon_tile = int(math.floor(lon / 3) * 3)
+    lat_str = f"N{abs(lat_tile):02d}" if lat_tile >= 0 else f"S{abs(lat_tile):02d}"
+    lon_str = f"E{abs(lon_tile):03d}" if lon_tile >= 0 else f"W{abs(lon_tile):03d}"
+    return (
+        f"https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/"
+        f"ESA_WorldCover_10m_2021_v200_{lat_str}{lon_str}_Map.tif"
+    )
 
-    This identifies permanent water bodies (lakes, rivers, reservoirs)
-    from the NLCD land cover product.
 
-    Parameters
-    ----------
-    aoi : shapely.geometry.Polygon
-        Area of interest polygon.
-    aoi_crs : str or int
-        Coordinate reference system of the AOI (e.g., 'EPSG:4326').
-    ref_grid : xr.DataArray, optional
-        Reference grid to match. If provided, result will be reprojected
-        to match this grid's CRS, resolution, and extent.
-    year : int, optional
-        NLCD year to use. Options: 2001, 2004, 2006, 2008, 2011, 2013,
-        2016, 2019, 2021. Default is 2021.
+def _get_esa_water(aoi, aoi_crs, ref_grid=None):
+    """Get water extent from ESA WorldCover 2021 (class 80 = permanent water).
 
-    Returns
-    -------
-    xr.DataArray
-        Binary mask where 1 = water, 0 = not water.
-
-    Notes
-    -----
-    NLCD water classes:
-    - 11: Open Water
-    - 12: Perennial Ice/Snow (also masked as water for avalanche context)
-
-    For avalanche detection, we typically want to mask out:
-    - Lakes and reservoirs (not avalanche terrain)
-    - Large rivers (not avalanche terrain)
+    Global coverage including Alaska. Used as fallback when NLCD is unavailable.
     """
-    g = gpd.GeoSeries([aoi], crs=aoi_crs)
+    bounds = gpd.GeoSeries([aoi], crs=aoi_crs).to_crs("EPSG:4326").total_bounds
+    minx, miny, maxx, maxy = bounds
 
-    # Get land cover classification
-    lc = gh.nlcd_bygeom(geometry=g, years=year)[0][f"cover_{year}"]
+    urls = set()
+    for lat in [miny, maxy]:
+        for lon in [minx, maxx]:
+            urls.add(_esa_worldcover_tile_url(lat, lon))
 
-    # Drop extra band dimension if present
-    if "band" in lc.dims:
-        lc = lc.isel(band=0, drop=True)
+    log.info("ESA WorldCover water: fetching %d tile(s)", len(urls))
 
-    # Create water mask
-    # NLCD class 11 = Open Water
-    # NLCD class 12 = Perennial Ice/Snow (optional - uncomment if needed)
-    water_mask = (lc == 11)  # | (lc == 12)
+    pieces = []
+    for url in urls:
+        try:
+            da = rioxarray.open_rasterio(url)
+            clipped = da.rio.clip_box(minx=minx, miny=miny, maxx=maxx, maxy=maxy)
+            if "band" in clipped.dims:
+                clipped = clipped.isel(band=0, drop=True)
+            pieces.append(clipped)
+        except Exception as e:
+            log.warning("ESA WorldCover tile %s failed: %s", url, e)
 
-    # Convert boolean to int (0 or 1)
-    water_extent = water_mask.astype(int)
+    if not pieces:
+        log.warning("No ESA WorldCover data found, returning zeros")
+        if ref_grid is not None:
+            return xr.zeros_like(ref_grid, dtype=np.int32).assign_attrs(
+                units="binary", source="esa_worldcover", product="water_extent",
+                description="1=water, 0=land",
+            )
+        raise ValueError("No ESA WorldCover data and no ref_grid to create zeros")
+
+    if len(pieces) == 1:
+        lc = pieces[0]
+    else:
+        from rioxarray.merge import merge_arrays
+        lc = merge_arrays(pieces)
+
+    water_extent = (lc == 80).astype(int)
 
     if ref_grid is not None:
         water_extent = water_extent.rio.reproject_match(ref_grid)
 
     return water_extent.assign_attrs(
         units="binary",
-        source="nlcd",
+        source="esa_worldcover",
         product="water_extent",
         description="1=water, 0=land",
-        nlcd_classes="11 (Open Water)"
-    )
-
-
-def get_urban_extent(aoi, aoi_crs, ref_grid=None, year=2021):
-    """
-    Get urban/developed extent from NLCD land cover classification.
-
-    This identifies developed areas (cities, towns, roads) which are
-    unlikely to have avalanches.
-
-    Parameters
-    ----------
-    aoi : shapely.geometry.Polygon
-        Area of interest polygon.
-    aoi_crs : str or int
-        Coordinate reference system of the AOI (e.g., 'EPSG:4326').
-    ref_grid : xr.DataArray, optional
-        Reference grid to match. If provided, result will be reprojected
-        to match this grid's CRS, resolution, and extent.
-    year : int, optional
-        NLCD year to use. Options: 2001, 2004, 2006, 2008, 2011, 2013,
-        2016, 2019, 2021. Default is 2021.
-
-    Returns
-    -------
-    xr.DataArray
-        Binary mask where 1 = urban/developed, 0 = not developed.
-
-    Notes
-    -----
-    NLCD developed classes:
-    - 21: Developed, Open Space (< 20% impervious)
-    - 22: Developed, Low Intensity (20-49% impervious)
-    - 23: Developed, Medium Intensity (50-79% impervious)
-    - 24: Developed, High Intensity (80-100% impervious)
-
-    For avalanche detection, developed areas should be masked out as they
-    are not natural avalanche terrain.
-
-    Alternative: You can also use NLCD impervious surface product for a
-    continuous measure of development (0-100% impervious).
-    """
-    g = gpd.GeoSeries([aoi], crs=aoi_crs)
-
-    # Get land cover classification
-    lc = gh.nlcd_bygeom(geometry=g, years=year)[0][f"cover_{year}"]
-
-    # Create urban mask
-    # NLCD classes 21-24 = Developed areas
-    urban_mask = (lc >= 21) & (lc <= 24)
-
-    # Convert boolean to int (0 or 1)
-    urban_extent = urban_mask.astype(int)
-
-    if ref_grid is not None:
-        urban_extent = urban_extent.rio.reproject_match(ref_grid)
-
-    return urban_extent.assign_attrs(
-        units="binary",
-        source="nlcd",
-        product="urban_extent",
-        description="1=developed, 0=undeveloped",
-        nlcd_classes="21-24 (Developed)"
     )
 
 
 def get_water_extent(aoi, aoi_crs, ref_grid=None, year=2021):
-    """
-    Get water extent from NLCD land cover classification.
+    """Get water extent mask (1=water, 0=land).
 
-    This identifies permanent water bodies (lakes, rivers, reservoirs)
-    from the NLCD land cover product.
-
-    Parameters
-    ----------
-    aoi : shapely.geometry.Polygon
-        Area of interest polygon.
-    aoi_crs : str or int
-        Coordinate reference system of the AOI (e.g., 'EPSG:4326').
-    ref_grid : xr.DataArray, optional
-        Reference grid to match. If provided, result will be reprojected
-        to match this grid's CRS, resolution, and extent.
-    year : int, optional
-        NLCD year to use. Options: 2001, 2004, 2006, 2008, 2011, 2013,
-        2016, 2019, 2021. Default is 2021.
-
-    Returns
-    -------
-    xr.DataArray
-        Binary mask where 1 = water, 0 = not water.
-
-    Notes
-    -----
-    NLCD water classes:
-    - 11: Open Water
-    - 12: Perennial Ice/Snow (also masked as water for avalanche context)
-
-    For avalanche detection, we typically want to mask out:
-    - Lakes and reservoirs (not avalanche terrain)
-    - Large rivers (not avalanche terrain)
+    Tries NLCD first (CONUS). If the result is all-NaN (e.g. Alaska),
+    falls back to ESA WorldCover 2021 (global coverage).
     """
     g = gpd.GeoSeries([aoi], crs=aoi_crs)
-
-    # Get land cover classification
-    years = {'impervious': [year], 'cover': [year], 'canopy': [year], 'descriptor': [year]}
-    lc = gh.nlcd_bygeom(geometry=g, years=years)[0][f"cover_{year}"]
-
-    # Create water mask
-    # NLCD class 11 = Open Water
-    # NLCD class 12 = Perennial Ice/Snow (optional - uncomment if needed)
-    water_mask = (lc == 11)  # | (lc == 12)
-
-    # Convert boolean to int (0 or 1)
-    water_extent = water_mask.astype(int)
-
-    if ref_grid is not None:
-        water_extent = water_extent.rio.reproject_match(ref_grid)
-
-    return water_extent.assign_attrs(
-        units="binary",
-        source="nlcd",
-        product="water_extent",
-        description="1=water, 0=land",
-        nlcd_classes="11 (Open Water)"
-    )
+    try:
+        years = {'impervious': [year], 'cover': [year], 'canopy': [year], 'descriptor': [year]}
+        lc = gh.nlcd_bygeom(geometry=g, years=years)[0][f"cover_{year}"]
+        if "band" in lc.dims:
+            lc = lc.isel(band=0, drop=True)
+        if np.all(np.isnan(lc.values)):
+            log.info("NLCD cover is all-NaN (outside CONUS?), falling back to ESA WorldCover")
+            raise ValueError("NLCD no data")
+        water_extent = (lc == 11).astype(int)
+        if ref_grid is not None:
+            water_extent = water_extent.rio.reproject_match(ref_grid)
+        return water_extent.assign_attrs(
+            units="binary", source="nlcd", product="water_extent",
+            description="1=water, 0=land",
+        )
+    except Exception:
+        log.info("Using ESA WorldCover for water extent")
+        return _get_esa_water(aoi, aoi_crs, ref_grid)
 
 
 def get_urban_extent(aoi, aoi_crs, ref_grid=None, year=2021):
-    """
-    Get urban/developed extent from NLCD land cover classification.
+    """Get urban/developed extent mask (1=developed, 0=undeveloped).
 
-    This identifies developed areas (cities, towns, roads) which are
-    unlikely to have avalanches.
-
-    Parameters
-    ----------
-    aoi : shapely.geometry.Polygon
-        Area of interest polygon.
-    aoi_crs : str or int
-        Coordinate reference system of the AOI (e.g., 'EPSG:4326').
-    ref_grid : xr.DataArray, optional
-        Reference grid to match. If provided, result will be reprojected
-        to match this grid's CRS, resolution, and extent.
-    year : int, optional
-        NLCD year to use. Options: 2001, 2004, 2006, 2008, 2011, 2013,
-        2016, 2019, 2021. Default is 2021.
-
-    Returns
-    -------
-    xr.DataArray
-        Binary mask where 1 = urban/developed, 0 = not developed.
-
-    Notes
-    -----
-    NLCD developed classes:
-    - 21: Developed, Open Space (< 20% impervious)
-    - 22: Developed, Low Intensity (20-49% impervious)
-    - 23: Developed, Medium Intensity (50-79% impervious)
-    - 24: Developed, High Intensity (80-100% impervious)
-
-    For avalanche detection, developed areas should be masked out as they
-    are not natural avalanche terrain.
-
-    Alternative: You can also use NLCD impervious surface product for a
-    continuous measure of development (0-100% impervious).
+    Tries NLCD first (CONUS). If the result is all-NaN (e.g. Alaska),
+    falls back to ESA WorldCover 2021 (class 50 = built-up).
     """
     g = gpd.GeoSeries([aoi], crs=aoi_crs)
+    try:
+        years = {'impervious': [year], 'cover': [year], 'canopy': [year], 'descriptor': [year]}
+        lc = gh.nlcd_bygeom(geometry=g, years=years)[0][f"cover_{year}"]
+        if "band" in lc.dims:
+            lc = lc.isel(band=0, drop=True)
+        if np.all(np.isnan(lc.values)):
+            log.info("NLCD cover is all-NaN (outside CONUS?), falling back to ESA WorldCover")
+            raise ValueError("NLCD no data")
+        urban_extent = ((lc >= 21) & (lc <= 24)).astype(int)
+        if ref_grid is not None:
+            urban_extent = urban_extent.rio.reproject_match(ref_grid)
+        return urban_extent.assign_attrs(
+            units="binary", source="nlcd", product="urban_extent",
+            description="1=developed, 0=undeveloped",
+        )
+    except Exception:
+        log.info("Using ESA WorldCover for urban extent")
+        return _get_esa_urban(aoi, aoi_crs, ref_grid)
 
-    # Get land cover classification
-    years = {'impervious': [year], 'cover': [year], 'canopy': [year], 'descriptor': [year]}
-    lc = gh.nlcd_bygeom(geometry=g, years=years)[0][f"cover_{year}"]
 
-    # Create urban mask
-    # NLCD classes 21-24 = Developed areas
-    urban_mask = (lc >= 21) & (lc <= 24)
+def _get_esa_urban(aoi, aoi_crs, ref_grid=None):
+    """Get urban extent from ESA WorldCover 2021 (class 50 = built-up)."""
+    bounds = gpd.GeoSeries([aoi], crs=aoi_crs).to_crs("EPSG:4326").total_bounds
+    minx, miny, maxx, maxy = bounds
 
-    # Convert boolean to int (0 or 1)
-    urban_extent = urban_mask.astype(int)
+    urls = set()
+    for lat in [miny, maxy]:
+        for lon in [minx, maxx]:
+            urls.add(_esa_worldcover_tile_url(lat, lon))
+
+    log.info("ESA WorldCover urban: fetching %d tile(s)", len(urls))
+
+    pieces = []
+    for url in urls:
+        try:
+            da = rioxarray.open_rasterio(url)
+            clipped = da.rio.clip_box(minx=minx, miny=miny, maxx=maxx, maxy=maxy)
+            if "band" in clipped.dims:
+                clipped = clipped.isel(band=0, drop=True)
+            pieces.append(clipped)
+        except Exception as e:
+            log.warning("ESA WorldCover tile %s failed: %s", url, e)
+
+    if not pieces:
+        log.warning("No ESA WorldCover data found, returning zeros")
+        if ref_grid is not None:
+            return xr.zeros_like(ref_grid, dtype=np.int32).assign_attrs(
+                units="binary", source="esa_worldcover", product="urban_extent",
+                description="1=developed, 0=undeveloped",
+            )
+        raise ValueError("No ESA WorldCover data and no ref_grid to create zeros")
+
+    if len(pieces) == 1:
+        lc = pieces[0]
+    else:
+        from rioxarray.merge import merge_arrays
+        lc = merge_arrays(pieces)
+
+    urban_extent = (lc == 50).astype(int)
 
     if ref_grid is not None:
         urban_extent = urban_extent.rio.reproject_match(ref_grid)
 
     return urban_extent.assign_attrs(
         units="binary",
-        source="nlcd",
+        source="esa_worldcover",
         product="urban_extent",
         description="1=developed, 0=undeveloped",
-        nlcd_classes="21-24 (Developed)"
     )
 
 

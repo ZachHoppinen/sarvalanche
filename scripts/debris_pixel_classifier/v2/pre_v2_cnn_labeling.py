@@ -15,7 +15,7 @@ Usage:
     conda run -n sarvalanche python scripts/debris_pixel_classifier/v2/pre_v2_cnn_labeling.py \
         --nc local/issw/dual_tau_output/Sawtooth_&_Western_Smoky_Mtns/season_dataset.nc \
         --dates 2024-12-29 2025-02-04 2025-02-19 \
-        --out-dir local/issw/debris_shapes
+        --out-dir local/debris_shapes/SNFAC
 
     # Build season_dataset.nc first, then export:
     conda run -n sarvalanche python scripts/debris_pixel_classifier/v2/pre_v2_cnn_labeling.py \
@@ -23,7 +23,7 @@ Usage:
         --season 2024-2025 \
         --nc-dir local/issw/dual_tau_output/ \
         --dates 2024-12-29 2025-02-04 2025-02-19 \
-        --out-dir local/issw/debris_shapes
+        --out-dir local/debris_shapes/SNFAC
 """
 
 import argparse
@@ -263,7 +263,7 @@ def main():
         help="Reference dates to export (YYYY-MM-DD)",
     )
     parser.add_argument(
-        "--out-dir", type=Path, default=Path("local/issw/debris_shapes"),
+        "--out-dir", type=Path, default=Path("local/debris_shapes/SNFAC"),
         help="Output directory for GeoTIFFs and label gpkgs",
     )
     parser.add_argument(

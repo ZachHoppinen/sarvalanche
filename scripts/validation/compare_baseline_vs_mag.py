@@ -1,4 +1,4 @@
-"""Compare baseline (2-ch) vs magnitude (3-ch) CNN models on 2024-2025 Sawtooth."""
+"""Compare old baseline (2-ch, 6 dates) vs pw100 2-ch (14 dates) CNN models on 2024-2025 Sawtooth."""
 import sys
 import pandas as pd
 import geopandas as gpd
@@ -18,9 +18,9 @@ paths = gpd.read_file('local/issw/observations/all_flowpy_paths.gpkg')
 paths['date'] = pd.to_datetime(paths['date'])
 
 onset_old = xr.open_dataset('local/issw/netcdfs/Sawtooth_&_Western_Smoky_Mtns/v2_season_inference_2024-2025/temporal_onset.nc')
-onset_new = xr.open_dataset('local/issw/netcdfs/Sawtooth_&_Western_Smoky_Mtns/v2_season_inference_2024-2025_mag_v2/temporal_onset.nc')
+onset_new = xr.open_dataset('local/issw/netcdfs/Sawtooth_&_Western_Smoky_Mtns/v2_season_inference_2024-2025_pw100/temporal_onset.nc')
 prob_old = xr.open_dataset('local/issw/netcdfs/Sawtooth_&_Western_Smoky_Mtns/v2_season_inference_2024-2025/season_v2_debris_probabilities.nc')
-prob_new = xr.open_dataset('local/issw/netcdfs/Sawtooth_&_Western_Smoky_Mtns/v2_season_inference_2024-2025_mag_v2/season_v2_debris_probabilities.nc')
+prob_new = xr.open_dataset('local/issw/netcdfs/Sawtooth_&_Western_Smoky_Mtns/v2_season_inference_2024-2025_pw100/season_v2_debris_probabilities.nc')
 crs = prob_old.rio.crs or "EPSG:4326"
 
 x = prob_old.x.values
@@ -104,7 +104,7 @@ s_new = sum(r['spatial'] for r in res_new)
 d_old = sum(r['detected'] for r in res_old)
 d_new = sum(r['detected'] for r in res_new)
 
-print(f'\n{"Metric":<20} {"BASELINE (2-ch)":>18} {"MAGNITUDE (3-ch)":>18}')
+print(f'\n{"Metric":<20} {"OLD (6-date)":>18} {"NEW (14-date)":>18}')
 print(f'{"Spatial detected":<20} {s_old}/{n} ({s_old/n*100:5.1f}%)     {s_new}/{n} ({s_new/n*100:5.1f}%)')
 print(f'{"Full detected":<20} {d_old}/{n} ({d_old/n*100:5.1f}%)     {d_new}/{n} ({d_new/n*100:5.1f}%)')
 

@@ -41,11 +41,11 @@ class ConvBlock(nn.Module):
 class SetEncoder(nn.Module):
     """Shared-weight CNN encoding each track/pol map independently.
 
-    Input: (B, 2, 128, 128) per track/pol (change + ANF)
+    Input: (B, 4, 128, 128) per track/pol (change + ANF + anomaly + edges)
     Output: (B, feat_dim, 8, 8)
     """
 
-    def __init__(self, in_ch: int = 2, feat_dim: int = 64):
+    def __init__(self, in_ch: int = 4, feat_dim: int = 64):
         super().__init__()
         self.encoder = nn.Sequential(
             ConvBlock(in_ch, 16, stride=2),    # → (16, 64, 64)
@@ -189,8 +189,8 @@ class DebrisDetector(nn.Module):
     ) -> torch.Tensor:
         """Parameters
         ----------
-        sar_maps : list of (B, 2, 128, 128) tensors
-            Per-track/pol backscatter change + ANF maps.
+        sar_maps : list of (B, 4, 128, 128) tensors
+            Per-track/pol [change, ANF, anomaly, edges] maps.
         static : (B, N_STATIC, 128, 128)
             Static terrain channels.
 
@@ -214,7 +214,7 @@ class DebrisDetector(nn.Module):
 class SetEncoderWithSkips(nn.Module):
     """SetEncoder that returns intermediate feature maps for skip connections."""
 
-    def __init__(self, in_ch: int = 2, feat_dim: int = 64):
+    def __init__(self, in_ch: int = 4, feat_dim: int = 64):
         super().__init__()
         self.block1 = ConvBlock(in_ch, 16, stride=2)    # → (16, 64, 64)
         self.block2 = ConvBlock(16, 32, stride=2)        # → (32, 32, 32)

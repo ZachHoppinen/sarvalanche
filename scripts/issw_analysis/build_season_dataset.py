@@ -124,8 +124,9 @@ def build_season_dataset(
     fetch_start = (
         pd.Timestamp(season_start) - pd.Timedelta(days=baseline_days)
     ).strftime("%Y-%m-%d")
-    fetch_end = (
-        pd.Timestamp(season_end) + pd.Timedelta(days=baseline_days)
+    fetch_end = min(
+        pd.Timestamp(season_end) + pd.Timedelta(days=baseline_days),
+        pd.Timestamp.now(),
     ).strftime("%Y-%m-%d")
 
     # ── 1. Assemble or load dataset ──────────────────────────────────────

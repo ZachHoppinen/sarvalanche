@@ -63,16 +63,35 @@ def _format_grad_norms(norms):
     return '  '.join(parts) if parts else 'no grads'
 
 
-def _weighted_bce(logits, targets, pos_weight):
-    """BCE with pos_weight tensor for class imbalance."""
+def _weighted_bce(logits, targets, pos_weight, sample_weights=None):
+    """BCE with pos_weight tensor for class imbalance and per-sample confidence."""
+    if sample_weights is not None:
+        # Per-pixel loss, then weight by per-sample confidence
+        per_pixel = nn.functional.binary_cross_entropy_with_logits(
+            logits, targets, pos_weight=pos_weight, reduction='none',
+        )
+        # sample_weights is (B,) → (B, 1, 1, 1) for broadcasting
+        w = sample_weights.view(-1, 1, 1, 1)
+        return (per_pixel * w).mean()
     return nn.functional.binary_cross_entropy_with_logits(
         logits, targets, pos_weight=pos_weight,
     )
 
 
-def _dice_loss(logits, targets, smooth=1.0):
-    """Soft Dice loss — directly optimizes overlap."""
+def _dice_loss(logits, targets, sample_weights=None, smooth=1.0):
+    """Soft Dice loss — directly optimizes overlap, with per-sample weighting."""
     probs = torch.sigmoid(logits)
+    if sample_weights is not None:
+        # Weighted per-sample Dice: compute per sample, then weighted average
+        B = logits.shape[0]
+        losses = []
+        for i in range(B):
+            p_i = probs[i].flatten()
+            t_i = targets[i].flatten()
+            inter = (p_i * t_i).sum()
+            dice_i = 1.0 - (2.0 * inter + smooth) / (p_i.sum() + t_i.sum() + smooth)
+            losses.append(dice_i * sample_weights[i])
+        return sum(losses) / max(sample_weights.sum(), 1e-6)
     intersection = (probs * targets).sum()
     return 1.0 - (2.0 * intersection + smooth) / (probs.sum() + targets.sum() + smooth)
 
@@ -87,11 +106,13 @@ def train_epoch(model, loader, optimizer, device, pos_weight=None):
         sar_maps = [m.to(device) for m in batch['sar_maps']]
         static = batch['static'].to(device)
         targets = batch['label'].to(device)
+        sample_weights = batch['confidence'].to(device)
 
         optimizer.zero_grad()
 
         logits = model(sar_maps, static)
-        loss = _weighted_bce(logits, targets, pos_weight) + _dice_loss(logits, targets)
+        loss = (_weighted_bce(logits, targets, pos_weight, sample_weights)
+                + _dice_loss(logits, targets, sample_weights))
 
         loss.backward()
 

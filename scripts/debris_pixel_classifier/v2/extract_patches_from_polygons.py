@@ -40,6 +40,9 @@ from sarvalanche.io.dataset import load_netcdf_to_dataset
 from sarvalanche.ml.v2.patch_extraction import (
     V2_PATCH_SIZE,
     build_v2_patch,
+    normalize_dem_patch,
+    precompute_scene_arrays,
+    slice_v2_patch,
 )
 
 logging.basicConfig(
@@ -203,13 +206,19 @@ def extract_patches(
         neg_patches = [neg_patches[i] for i in sorted(indices)]
         log.info("Subsampled to %d negatives (%.1f:1 ratio)", len(neg_patches), neg_ratio)
 
+    # Precompute scene-level arrays once (major speedup)
+    from sarvalanche.ml.v2.channels import N_STATIC as _N_STATIC
+    log.info("Precomputing scene arrays (2-channel SAR + %d static)...", _N_STATIC)
+    sar_scene, static_scene = precompute_scene_arrays(ds, n_channels=2)
+    log.info("  SAR scene: %s, Static scene: %s", sar_scene.shape, static_scene.shape)
+
     # Save all patches
     metadata = {}
     n_saved = 0
 
     for label, patches in [(1, pos_patches), (0, neg_patches)]:
         for y0, x0, debris_frac in patches:
-            sar_maps, static = build_v2_patch(ds, y0, x0, patch_size)
+            sar_maps, static = slice_v2_patch(sar_scene, static_scene, y0, x0, patch_size)
 
             # Skip patches with no SAR signal
             if np.abs(sar_maps).max() < 1e-6:

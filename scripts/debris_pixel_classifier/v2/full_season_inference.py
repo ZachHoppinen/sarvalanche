@@ -142,12 +142,20 @@ def update_empirical_channel(static_stack, ds, d_emp_idx):
 # ---------------------------------------------------------------------------
 
 def get_sar_change_maps(ds):
-    """Extract per-track/pol change maps with ANF from current empirical variables.
+    """Extract per-track/pol change maps from current empirical variables.
 
-    Returns list of (2, H, W) arrays: channel 0 = log1p-compressed change,
-    channel 1 = normalized ANF for matching track.
+    Returns list of (4, H, W) arrays:
+        ch 0: log1p-compressed backscatter change
+        ch 1: normalized ANF
+        ch 2: high-pass anomaly (change minus 2 km Gaussian background)
+        ch 3: Sobel edge magnitude
     """
-    from sarvalanche.ml.v2.patch_extraction import normalize_anf
+    from sarvalanche.ml.v2.patch_extraction import (
+        normalize_anf,
+        _normalized_gaussian_blur,
+        _edge_magnitude,
+        _BG_SIGMA_PX,
+    )
 
     pattern = re.compile(r"^d_(\d+)_(V[VH])_empirical$")
     has_anf = "anf" in ds.data_vars
@@ -168,7 +176,11 @@ def get_sar_change_maps(ds):
             else:
                 anf_norm = np.ones_like(arr)
 
-            results.append(np.stack([arr, anf_norm], axis=0))
+            background = _normalized_gaussian_blur(arr, sigma=_BG_SIGMA_PX)
+            anomaly = arr - background
+            edges = _edge_magnitude(arr)
+
+            results.append(np.stack([arr, anf_norm, anomaly, edges], axis=0))
     return results
 
 

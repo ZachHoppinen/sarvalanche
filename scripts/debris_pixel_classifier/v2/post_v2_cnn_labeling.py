@@ -12,15 +12,15 @@ Then for each date:
 Usage:
     conda run -n sarvalanche python scripts/debris_pixel_classifier/v2/post_v2_cnn_labeling.py \
         --nc local/issw/dual_tau_output/Sawtooth_&_Western_Smoky_Mtns/season_dataset.nc \
-        --labels-dir local/issw/debris_shapes \
-        --patches-dir local/issw/v2_patches \
+        --labels-dir local/debris_shapes/SNFAC \
+        --patches-dir local/v2_patches/SNFAC \
         --epochs 50 --pos-weight 10 --batch-size 4
 
     # Skip training (use existing weights) and just run inference:
     conda run -n sarvalanche python scripts/debris_pixel_classifier/v2/post_v2_cnn_labeling.py \
         --nc local/issw/dual_tau_output/Sawtooth_&_Western_Smoky_Mtns/season_dataset.nc \
-        --labels-dir local/issw/debris_shapes \
-        --patches-dir local/issw/v2_patches \
+        --labels-dir local/debris_shapes/SNFAC \
+        --patches-dir local/v2_patches/SNFAC \
         --skip-extract --skip-train \
         --weights local/issw/v2_patches/v2_detector_best.pt
 """
@@ -95,12 +95,12 @@ def main():
         help="Path to season_dataset.nc",
     )
     parser.add_argument(
-        "--labels-dir", type=Path, default=Path("local/issw/debris_shapes"),
-        help="Directory with avalanche_labels_<date>.gpkg and geotiffs/ (default: local/issw/debris_shapes)",
+        "--labels-dir", type=Path, default=Path("local/debris_shapes/SNFAC"),
+        help="Directory with avalanche_labels_<date>.gpkg and geotiffs/ (default: local/debris_shapes/SNFAC)",
     )
     parser.add_argument(
-        "--patches-dir", type=Path, default=Path("local/issw/v2_patches"),
-        help="Directory for extracted patches (default: local/issw/v2_patches)",
+        "--patches-dir", type=Path, default=Path("local/v2_patches/SNFAC"),
+        help="Directory for extracted patches (default: local/v2_patches/SNFAC)",
     )
     parser.add_argument(
         "--season", type=str, default="2024-2025",

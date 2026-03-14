@@ -11,6 +11,7 @@ STATIC_CHANNELS: list[str] = [
     'runout_angle',
     'water_mask',
     'd_empirical',
+    'd_cr',  # cross-ratio change: (VH-VV)_after - (VH-VV)_before, in dB
     'aspect_northing',
     'aspect_easting',
     'dem',  # per-patch min-max normalized in patch_extraction
@@ -23,7 +24,8 @@ STATIC_NORM: dict[str, dict] = {
     'slope': {'scale': 0.6},
     'cell_counts': {'log1p': True, 'scale': 5.0},
     'runout_angle': {'scale': np.pi},
-    'd_empirical': {'scale': 5.0},
+    'd_empirical': {'log1p': True, 'scale': 5.0},
+    'd_cr': {'log1p': True, 'scale': 3.0},
 }
 
 
