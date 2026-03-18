@@ -173,9 +173,9 @@ class DebrisDetector(nn.Module):
         Number of static terrain channels.
     """
 
-    def __init__(self, feat_dim: int = 64, n_static: int = N_STATIC):
+    def __init__(self, sar_in_ch: int = 2, feat_dim: int = 64, n_static: int = N_STATIC):
         super().__init__()
-        self.set_encoder = SetEncoder(in_ch=2, feat_dim=feat_dim)
+        self.set_encoder = SetEncoder(in_ch=sar_in_ch, feat_dim=feat_dim)
         self.attention = SpatialSetAttention(feat_dim=feat_dim)
         self.static_encoder = StaticEncoder(in_ch=n_static)
         # 64 (SAR) + 32 (static) = 96 → 64
@@ -189,8 +189,8 @@ class DebrisDetector(nn.Module):
     ) -> torch.Tensor:
         """Parameters
         ----------
-        sar_maps : list of (B, 4, 128, 128) tensors
-            Per-track/pol [change, ANF, anomaly, edges] maps.
+        sar_maps : list of (B, C, 128, 128) tensors
+            Per-pair or per-track/pol SAR maps.
         static : (B, N_STATIC, 128, 128)
             Static terrain channels.
 
@@ -304,9 +304,9 @@ class DebrisDetectorSkip(nn.Module):
     through to the decoder for sharper spatial boundaries.
     """
 
-    def __init__(self, feat_dim: int = 64, n_static: int = N_STATIC):
+    def __init__(self, sar_in_ch: int = 2, feat_dim: int = 64, n_static: int = N_STATIC):
         super().__init__()
-        self.set_encoder = SetEncoderWithSkips(in_ch=2, feat_dim=feat_dim)
+        self.set_encoder = SetEncoderWithSkips(in_ch=sar_in_ch, feat_dim=feat_dim)
         self.attention = SpatialSetAttention(feat_dim=feat_dim)
         self.static_encoder = StaticEncoderWithSkips(in_ch=n_static)
         self.fusion = nn.Conv2d(feat_dim + 32, feat_dim, 1)

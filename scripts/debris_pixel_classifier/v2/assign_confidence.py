@@ -34,6 +34,9 @@ from sarvalanche.ml.v2.channels import STATIC_CHANNELS
 D_EMPIRICAL_IDX = STATIC_CHANNELS.index('d_empirical')
 D_CR_IDX = STATIC_CHANNELS.index('d_cr') if 'd_cr' in STATIC_CHANNELS else None
 SLOPE_IDX = STATIC_CHANNELS.index('slope')
+CELL_COUNTS_IDX = STATIC_CHANNELS.index('cell_counts')
+RELEASE_ZONES_IDX = STATIC_CHANNELS.index('release_zones')
+DEM_IDX = STATIC_CHANNELS.index('dem')
 
 # Dates in spring melt window get penalized
 SPRING_MONTHS = {3, 4, 5}  # March gets mild penalty, April+ gets heavy
@@ -45,6 +48,120 @@ def _parse_date_from_path(date_dir: Path) -> str | None:
         if re.match(r"\d{4}-\d{2}-\d{2}", part):
             return part
     return None
+
+
+def _morphology_confidence(static, label_mask) -> float:
+    """Score debris morphology: localized runout-zone deposits are good,
+    whole-slope blanket changes are suspicious (likely melt).
+
+    Returns a confidence factor (0.1 to 1.0).
+    """
+    debris_px = label_mask > 0.5
+    n_debris = int(debris_px.sum())
+    if n_debris < 3:
+        return 1.0  # too few pixels to judge morphology
+
+    slope = static[SLOPE_IDX]
+    d_emp = static[D_EMPIRICAL_IDX]
+    cell_counts = static[CELL_COUNTS_IDX]
+    dem = static[DEM_IDX]
+
+    # Valid terrain: finite slope, not water
+    valid = np.isfinite(slope) & (slope > 0.01)
+    n_valid = int(valid.sum())
+    if n_valid < 10:
+        return 1.0
+
+    # ── 1. Spatial coverage: debris fraction of valid terrain ────────
+    # Real debris is localized (<15% of patch terrain). Melt blankets slopes.
+    coverage = n_debris / max(n_valid, 1)
+    if coverage > 0.40:
+        coverage_conf = 0.1   # >40% of terrain = almost certainly melt
+    elif coverage > 0.25:
+        coverage_conf = 0.3   # 25-40% = very suspicious
+    elif coverage > 0.15:
+        coverage_conf = 0.6   # 15-25% = somewhat suspicious
+    else:
+        coverage_conf = 1.0   # <15% = localized, good
+
+    # ── 2. Elevation concentration: debris should be at lower elevations ─
+    # DEM is per-patch min-max normalized (0=low, 1=high within patch).
+    # Debris deposits from avalanches concentrate in runout (lower elevation).
+    # Melt affects all elevations uniformly or preferentially at low elev too,
+    # but combined with coverage this helps.
+    dem_debris = dem[debris_px]
+    dem_valid = dem[valid]
+    if np.isfinite(dem_debris).sum() > 2 and np.isfinite(dem_valid).sum() > 10:
+        mean_dem_debris = float(np.nanmean(dem_debris))
+        mean_dem_valid = float(np.nanmean(dem_valid))
+        # If debris is concentrated at top of patch = suspicious
+        # (release zone detection, not runout deposit)
+        # Neutral if debris is at same elevation as terrain mean
+        dem_offset = mean_dem_debris - mean_dem_valid  # negative = lower = good
+        if dem_offset > 0.15:
+            elev_conf = 0.5   # debris concentrated high = less likely deposit
+        elif dem_offset > 0.05:
+            elev_conf = 0.7
+        else:
+            elev_conf = 1.0   # debris at or below terrain mean = good
+    else:
+        elev_conf = 1.0
+
+    # ── 3. FlowPy runout overlap: debris in modeled runout zones ─────
+    # cell_counts > 0 means FlowPy predicts avalanche material reaches here
+    cc_debris = cell_counts[debris_px]
+    if np.isfinite(cc_debris).sum() > 0:
+        runout_frac = float((cc_debris > 0).sum()) / max(n_debris, 1)
+        if runout_frac > 0.3:
+            runout_conf = 1.0   # >30% in runout zone = terrain-plausible
+        elif runout_frac > 0.1:
+            runout_conf = 0.8
+        else:
+            runout_conf = 0.6   # no runout overlap = less plausible
+    else:
+        runout_conf = 0.8  # no cell_counts data → neutral
+
+    # ── 4. Slope uniformity within debris: melt = uniform, debris = gradient ─
+    # Real debris often spans a slope transition (steep start zone → gentle runout).
+    # Melt signal on a uniform steep slope is suspicious.
+    slope_debris = slope[debris_px]
+    if len(slope_debris) >= 5:
+        slope_std = float(np.nanstd(slope_debris))
+        slope_mean = float(np.nanmean(slope_debris))
+        # Coefficient of variation: low = uniform slope = suspicious
+        slope_cv = slope_std / max(slope_mean, 0.01)
+        if slope_cv < 0.15 and slope_mean > 0.3:
+            # Very uniform steep slope (>18°) with no gradient → likely melt
+            uniformity_conf = 0.4
+        elif slope_cv < 0.15 and coverage > 0.15:
+            # Uniform slope + high coverage → suspicious
+            uniformity_conf = 0.5
+        else:
+            uniformity_conf = 1.0
+    else:
+        uniformity_conf = 1.0
+
+    # ── 5. Spatial coherence: patch-wide bright signal = melt event ──
+    # If a large fraction of ALL valid terrain (not just labeled debris)
+    # has elevated d_empirical, it's a widespread change — likely melt,
+    # not a localized avalanche deposit.
+    # d_empirical is log1p-normalized and /5, so 0.15 ≈ 2 dB change
+    d_emp_valid = d_emp[valid]
+    bright_frac = float((d_emp_valid > 0.15).sum()) / max(n_valid, 1)
+    if bright_frac > 0.40:
+        coherence_conf = 0.1   # >40% of terrain is bright = scene-wide melt
+    elif bright_frac > 0.30:
+        coherence_conf = 0.2
+    elif bright_frac > 0.20:
+        coherence_conf = 0.4
+    elif bright_frac > 0.10:
+        coherence_conf = 0.7
+    else:
+        coherence_conf = 1.0   # <10% bright = localized signal, good
+
+    # ── Combine morphology factors ───────────────────────────────────
+    morph_conf = (coverage_conf * elev_conf * runout_conf * uniformity_conf * coherence_conf) ** (1 / 5)
+    return float(np.clip(morph_conf, 0.1, 1.0))
 
 
 def score_positive(static, label_mask, date_str: str | None) -> float:
@@ -67,13 +184,9 @@ def score_positive(static, label_mask, date_str: str | None) -> float:
         mean_d_cr = float(np.nanmean(d_cr[debris_px]))
 
     # --- d_empirical signal confidence (0.2 to 1.0) ---
-    # Higher mean d_empirical in debris region = more confident
-    # Typical good values: 0.2-0.5 (after log1p normalization)
     d_conf = np.clip((mean_d - 0.05) / 0.4, 0.2, 1.0)
 
     # --- Slope confidence (0.1 to 1.0) ---
-    # Slope is normalized by /0.6, so 0.15 ≈ 9°, 0.25 ≈ 15°, 0.5 ≈ 30°
-    # Avalanche debris should be on some slope (even runout zones are typically >5°)
     if mean_slope < 0.08:  # < ~5° very flat
         slope_conf = 0.1
     elif mean_slope < 0.15:  # < ~9° quite flat
@@ -96,23 +209,17 @@ def score_positive(static, label_mask, date_str: str | None) -> float:
         elif month == 11 and int(date_str.split("-")[2]) < 20:
             season_conf = 0.8  # Early November: mild early-season penalty
 
-    # --- Combine: geometric mean, with floor ---
-    # Flat ground + spring = extremely low confidence (wet snow)
-    conf = (d_conf * slope_conf * season_conf) ** (1 / 3)
-
-    # --- Cross-ratio penalty (wet snow indicator) ---
-    # Negative d_cr in debris region suggests wet snow (VH drops more than VV)
-    # Avalanche debris tends to have neutral or positive d_cr
+    # --- Cross-ratio penalty: smooth ramp instead of step function ---
+    # d_cr = 0 → 1.0, d_cr = -0.15 → 0.7, d_cr = -0.3 → 0.4, d_cr = -0.5 → 0.1
     cr_conf = 1.0
     if mean_d_cr is not None:
-        if mean_d_cr < -0.3:
-            cr_conf = 0.3  # strongly negative = likely wet snow
-        elif mean_d_cr < -0.1:
-            cr_conf = 0.6  # mildly negative = suspicious
+        cr_conf = float(np.clip(1.0 + mean_d_cr * 2.0, 0.1, 1.0))
 
-    # --- Combine: geometric mean, with floor ---
-    # Flat ground + spring = extremely low confidence (wet snow)
-    conf = (d_conf * slope_conf * season_conf * cr_conf) ** (1 / 4)
+    # --- Morphology confidence (spatial pattern of debris) ---
+    morph_conf = _morphology_confidence(static, label_mask)
+
+    # --- Combine: geometric mean of 5 factors ---
+    conf = (d_conf * slope_conf * season_conf * cr_conf * morph_conf) ** (1 / 5)
 
     # Extra penalty: flat + spring = almost certainly wet snow
     if mean_slope < 0.15 and date_str:
@@ -127,6 +234,12 @@ def score_positive(static, label_mask, date_str: str | None) -> float:
         month = int(date_str.split("-")[1])
         if month >= 3:
             conf = min(conf, 0.15)
+
+    # Extra penalty: whole-slope melt pattern (high coverage + uniform slope + spring)
+    if morph_conf < 0.5 and date_str:
+        month = int(date_str.split("-")[1])
+        if month >= 3:
+            conf = min(conf, 0.1)
 
     return float(np.clip(conf, 0.05, 1.0))
 

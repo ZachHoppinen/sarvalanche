@@ -41,6 +41,8 @@ from sarvalanche.ml.v2.patch_extraction import (
     V2_PATCH_SIZE,
     build_v2_patch,
     normalize_dem_patch,
+    precompute_combo_scene_arrays,
+    precompute_pair_scene_arrays,
     precompute_scene_arrays,
     slice_v2_patch,
 )
@@ -165,6 +167,11 @@ def extract_patches(
     stride=64,
     neg_ratio=3.0,
     min_debris_frac=0.005,
+    pair_mode=False,
+    combo_mode=False,
+    reference_date=None,
+    max_pairs=4,
+    hrrr_ds=None,
 ):
     """Extract positive and negative v2 patches within footprint windows.
 
@@ -180,6 +187,12 @@ def extract_patches(
         Max ratio of negative to positive patches.
     min_debris_frac : float
         Min fraction of debris pixels for a patch to count as positive.
+    pair_mode : bool
+        If True, use per-pair v2.1 extraction (3-ch SAR per crossing pair).
+    reference_date : str or Timestamp
+        Required if pair_mode=True.
+    max_pairs : int
+        Max crossing pairs per track/pol in pair mode.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -208,8 +221,20 @@ def extract_patches(
 
     # Precompute scene-level arrays once (major speedup)
     from sarvalanche.ml.v2.channels import N_STATIC as _N_STATIC
-    log.info("Precomputing scene arrays (2-channel SAR + %d static)...", _N_STATIC)
-    sar_scene, static_scene = precompute_scene_arrays(ds, n_channels=2)
+    if combo_mode:
+        log.info("Precomputing combo scene arrays (pooled+pairs, 3-ch SAR + %d static)...", _N_STATIC)
+        sar_scene, static_scene = precompute_combo_scene_arrays(
+            ds, reference_date, max_pairs=max_pairs,
+        )
+    elif pair_mode:
+        n_sar_ch = 4 if hrrr_ds is not None else 3
+        log.info("Precomputing per-pair scene arrays (%d-ch SAR + %d static)...", n_sar_ch, _N_STATIC)
+        sar_scene, static_scene = precompute_pair_scene_arrays(
+            ds, reference_date, max_pairs=max_pairs, hrrr_ds=hrrr_ds,
+        )
+    else:
+        log.info("Precomputing scene arrays (2-channel SAR + %d static)...", _N_STATIC)
+        sar_scene, static_scene = precompute_scene_arrays(ds, n_channels=2)
     log.info("  SAR scene: %s, Static scene: %s", sar_scene.shape, static_scene.shape)
 
     # Save all patches
@@ -278,6 +303,14 @@ def main():
                         help="Max negative:positive patch ratio (default: 3.0)")
     parser.add_argument("--min-debris-frac", type=float, default=0.005,
                         help="Min debris fraction for positive (default: 0.005)")
+    parser.add_argument("--pairs", action="store_true",
+                        help="Use per-pair mode (v2.1): individual crossing pairs instead of pooled change")
+    parser.add_argument("--combo", action="store_true",
+                        help="Use combo mode: both pooled + per-pair maps (3-ch each)")
+    parser.add_argument("--max-pairs", type=int, default=4,
+                        help="Max crossing pairs per track/pol in --pairs/--combo mode (default: 4)")
+    parser.add_argument("--hrrr", type=Path, default=None,
+                        help="HRRR temperature NetCDF for melt filtering (adds 4th SAR channel + filtered d_empirical)")
     args = parser.parse_args()
 
     # Load dataset
@@ -344,6 +377,13 @@ def main():
         footprint_windows = [(0, H, 0, W)]
         log.info("No footprints provided — using full scene")
 
+    # Load HRRR if provided
+    hrrr_ds = None
+    if args.hrrr and args.hrrr.exists():
+        import xarray as _xr
+        log.info("Loading HRRR temperature from %s", args.hrrr)
+        hrrr_ds = _xr.open_dataset(args.hrrr)
+
     # Extract patches
     extract_patches(
         ds,
@@ -353,7 +393,15 @@ def main():
         stride=args.stride,
         neg_ratio=args.neg_ratio,
         min_debris_frac=args.min_debris_frac,
+        pair_mode=args.pairs,
+        combo_mode=getattr(args, 'combo', False),
+        reference_date=args.date,
+        max_pairs=getattr(args, 'max_pairs', 4),
+        hrrr_ds=hrrr_ds,
     )
+
+    if hrrr_ds is not None:
+        hrrr_ds.close()
 
 
 if __name__ == "__main__":

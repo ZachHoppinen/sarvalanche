@@ -15,6 +15,8 @@ STATIC_CHANNELS: list[str] = [
     'aspect_northing',
     'aspect_easting',
     'dem',  # per-patch min-max normalized in patch_extraction
+    'd_empirical_melt_filtered',  # melt-filtered d_empirical (cold pairs only, HRRR)
+    'd_empirical_melt_residual',  # standard - filtered: isolates melt signal
 ]
 
 N_STATIC: int = len(STATIC_CHANNELS)
@@ -26,6 +28,8 @@ STATIC_NORM: dict[str, dict] = {
     'runout_angle': {'scale': np.pi},
     'd_empirical': {'log1p': True, 'scale': 5.0},
     'd_cr': {'log1p': True, 'scale': 3.0},
+    'd_empirical_melt_filtered': {'log1p': True, 'scale': 5.0},
+    'd_empirical_melt_residual': {'log1p': True, 'scale': 5.0},
 }
 
 

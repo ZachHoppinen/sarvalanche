@@ -100,9 +100,9 @@ def compute_empirical(ds, reference_date, tau_days):
 # ---------------------------------------------------------------------------
 
 def build_static_stack_base(ds):
-    """Build static stack with all channels except d_empirical.
+    """Build static stack with all channels except date-dependent ones.
 
-    Returns (stack, d_empirical_channel_index).
+    Returns (stack, d_empirical_channel_index, d_cr_channel_index_or_None).
     """
     H, W = ds.sizes["y"], ds.sizes["x"]
     stack = np.zeros((N_STATIC, H, W), dtype=np.float32)
@@ -116,9 +116,12 @@ def build_static_stack_base(ds):
         aspect_derived["aspect_easting"] = np.sin(aspect)
 
     d_emp_idx = STATIC_CHANNELS.index("d_empirical")
+    d_cr_idx = STATIC_CHANNELS.index("d_cr") if "d_cr" in STATIC_CHANNELS else None
+    # Skip date-dependent channels (filled per-date)
+    skip_vars = {"d_empirical", "d_cr", "d_empirical_melt_filtered", "d_empirical_melt_residual"}
 
     for ch, var in enumerate(STATIC_CHANNELS):
-        if var == "d_empirical":
+        if var in skip_vars:
             continue
         if var in aspect_derived:
             stack[ch] = aspect_derived[var]
@@ -128,13 +131,41 @@ def build_static_stack_base(ds):
                 arr = normalize_static_channel(arr, var)
             stack[ch] = arr
 
-    return stack, d_emp_idx
+    return stack, d_emp_idx, d_cr_idx
 
 
-def update_empirical_channel(static_stack, ds, d_emp_idx):
-    """Update the d_empirical channel in-place."""
+def update_empirical_channel(static_stack, ds, d_emp_idx, hrrr_ds=None):
+    """Update d_empirical and melt channels in-place."""
+    # Standard d_empirical always stays as-is
     arr = np.nan_to_num(ds["d_empirical"].values.astype(np.float32), nan=0.0)
     static_stack[d_emp_idx] = normalize_static_channel(arr, "d_empirical")
+
+    # Melt-filtered + residual channels if HRRR available
+    if hrrr_ds is not None:
+        from sarvalanche.ml.v2.channels import STATIC_CHANNELS
+        if 'd_empirical_melt_filtered' in STATIC_CHANNELS:
+            from sarvalanche.ml.v2.patch_extraction import _compute_melt_filtered_d_empirical
+            H, W = ds.sizes["y"], ds.sizes["x"]
+            d_filtered = _compute_melt_filtered_d_empirical(ds, hrrr_ds, H, W)
+            if d_filtered is not None:
+                filt_idx = STATIC_CHANNELS.index('d_empirical_melt_filtered')
+                resid_idx = STATIC_CHANNELS.index('d_empirical_melt_residual')
+                static_stack[filt_idx] = normalize_static_channel(d_filtered, "d_empirical_melt_filtered")
+                residual = arr - d_filtered
+                static_stack[resid_idx] = normalize_static_channel(residual, "d_empirical_melt_residual")
+
+
+def update_d_cr_channel(static_stack, ds, d_cr_idx):
+    """Update the cross-ratio change channel in-place."""
+    if d_cr_idx is None:
+        return
+    from sarvalanche.ml.v2.patch_extraction import _compute_d_cr
+    H, W = ds.sizes["y"], ds.sizes["x"]
+    d_cr = _compute_d_cr(ds, H, W)
+    if d_cr is not None:
+        static_stack[d_cr_idx] = normalize_static_channel(d_cr, "d_cr")
+    else:
+        static_stack[d_cr_idx] = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -144,18 +175,11 @@ def update_empirical_channel(static_stack, ds, d_emp_idx):
 def get_sar_change_maps(ds):
     """Extract per-track/pol change maps from current empirical variables.
 
-    Returns list of (4, H, W) arrays:
+    Returns list of (2, H, W) arrays:
         ch 0: log1p-compressed backscatter change
         ch 1: normalized ANF
-        ch 2: high-pass anomaly (change minus 2 km Gaussian background)
-        ch 3: Sobel edge magnitude
     """
-    from sarvalanche.ml.v2.patch_extraction import (
-        normalize_anf,
-        _normalized_gaussian_blur,
-        _edge_magnitude,
-        _BG_SIGMA_PX,
-    )
+    from sarvalanche.ml.v2.patch_extraction import normalize_anf
 
     pattern = re.compile(r"^d_(\d+)_(V[VH])_empirical$")
     has_anf = "anf" in ds.data_vars
@@ -176,11 +200,7 @@ def get_sar_change_maps(ds):
             else:
                 anf_norm = np.ones_like(arr)
 
-            background = _normalized_gaussian_blur(arr, sigma=_BG_SIGMA_PX)
-            anomaly = arr - background
-            edges = _edge_magnitude(arr)
-
-            results.append(np.stack([arr, anf_norm, anomaly, edges], axis=0))
+            results.append(np.stack([arr, anf_norm], axis=0))
     return results
 
 
@@ -263,7 +283,33 @@ def main():
     parser.add_argument("--device", type=str, default=None, help="Device override")
     parser.add_argument("--no-tiffs", action="store_true", help="Skip per-date GeoTIFFs, only save NetCDF")
     parser.add_argument("--skip", action="store_true", help="Use DebrisDetectorSkip (skip connections)")
+    parser.add_argument("--pairs", action="store_true",
+                        help="Use per-pair mode (v2.1): individual crossing pairs instead of pooled change")
+    parser.add_argument("--combo", action="store_true",
+                        help="Use combo mode: both pooled + per-pair maps (3-ch each)")
+    parser.add_argument("--max-pairs", type=int, default=4,
+                        help="Max crossing pairs per track/pol in --pairs/--combo mode (default: 4)")
+    parser.add_argument("--sar-channels", type=int, default=None,
+                        help="SAR input channels (auto-detect: 2 for pooled, 3 for pairs, 4 for pairs+hrrr)")
+    parser.add_argument("--hrrr", type=Path, default=None,
+                        help="HRRR temperature NetCDF for melt filtering (adds 4th SAR channel)")
     args = parser.parse_args()
+
+    # Load HRRR if provided
+    hrrr_ds = None
+    if args.hrrr and args.hrrr.exists():
+        import xarray as _xr
+        hrrr_ds = _xr.open_dataset(args.hrrr)
+        log.info("Loaded HRRR temperature from %s", args.hrrr)
+
+    # Auto-detect SAR channels
+    if args.sar_channels is None:
+        if hrrr_ds is not None and (args.pairs or args.combo):
+            args.sar_channels = 4
+        elif args.pairs or args.combo:
+            args.sar_channels = 3
+        else:
+            args.sar_channels = 2
 
     # Parse season
     try:
@@ -321,14 +367,14 @@ def main():
     # ── Load model (once) ────────────────────────────────────────────────
     log.info("Loading model from %s", args.weights)
     model_cls = DebrisDetectorSkip if args.skip else DebrisDetector
-    model = model_cls()
+    model = model_cls(sar_in_ch=args.sar_channels)
     model.load_state_dict(torch.load(args.weights, map_location=device, weights_only=True))
     model.to(device)
     model.eval()
 
     # ── Build static stack base (once) ───────────────────────────────────
     log.info("Building static terrain stack (d_empirical updated per step)...")
-    static_stack, d_emp_idx = build_static_stack_base(ds)
+    static_stack, d_emp_idx, d_cr_idx = build_static_stack_base(ds)
 
     # ── Pre-compute patch coordinates (once) ─────────────────────────────
     coords = build_patch_coords(H, W, V2_PATCH_SIZE, args.stride)
@@ -353,9 +399,33 @@ def main():
             continue
         ds = ds_result
 
-        update_empirical_channel(static_stack, ds, d_emp_idx)
+        update_empirical_channel(static_stack, ds, d_emp_idx, hrrr_ds=hrrr_ds)
+        update_d_cr_channel(static_stack, ds, d_cr_idx)
 
-        sar_maps = get_sar_change_maps(ds)
+        if args.combo:
+            from sarvalanche.ml.v2.patch_extraction import (
+                get_per_pair_changes,
+                get_per_track_pol_changes,
+            )
+            # Pooled maps padded to 3-ch
+            pooled = get_per_track_pol_changes(ds, n_channels=2)
+            pooled_3ch = []
+            for _t, _p, arr_2ch in pooled:
+                prox = np.ones((1, H, W), dtype=np.float32)
+                pooled_3ch.append(np.concatenate([arr_2ch, prox], axis=0))
+            pair_arrays = get_per_pair_changes(
+                ds, pd.Timestamp(date), max_pairs=args.max_pairs,
+            )
+            sar_maps = pooled_3ch + pair_arrays
+        elif args.pairs:
+            from sarvalanche.ml.v2.patch_extraction import get_per_pair_changes
+            pair_arrays = get_per_pair_changes(
+                ds, pd.Timestamp(date), max_pairs=args.max_pairs,
+                hrrr_ds=hrrr_ds,
+            )
+            sar_maps = pair_arrays  # list of (C, H, W), C=3 or 4
+        else:
+            sar_maps = get_sar_change_maps(ds)
         if not sar_maps:
             log.warning("  Skipping %s — no SAR change maps", date_str)
             continue

@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import ConcatDataset, DataLoader, random_split
 
 from sarvalanche.ml.v2.dataset import V2PatchDataset, v2_collate_fn
 from sarvalanche.ml.v2.model import DebrisDetector, DebrisDetectorSkip
@@ -163,7 +163,8 @@ def validate(model, loader, device, threshold=0.5):
 
 def main():
     parser = argparse.ArgumentParser(description='Train v2 single-pass debris detector')
-    parser.add_argument('--data-dir', type=Path, required=True, help='Directory with v2 .npz patches')
+    parser.add_argument('--data-dir', type=Path, required=True, nargs='+',
+                        help='Directory(ies) with v2 .npz patches (multiple allowed)')
     parser.add_argument('--epochs', type=int, default=50, help='Training epochs')
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--batch-size', type=int, default=8, help='Batch size')
@@ -173,21 +174,27 @@ def main():
                         help='Positive class weight (0 = auto-compute from data)')
     parser.add_argument('--out', type=Path, default=None, help='Output weights path')
     parser.add_argument('--skip', action='store_true', help='Use DebrisDetectorSkip (skip connections)')
+    parser.add_argument('--sar-channels', type=int, default=2,
+                        help='SAR input channels per map (2=change+ANF, 3=change+ANF+proximity)')
+    parser.add_argument('--resume', type=Path, default=None,
+                        help='Path to pretrained weights to initialize from')
     args = parser.parse_args()
 
     device = _resolve_device(args.device)
     log.info('Using device: %s', device)
 
-    # Dataset
-    dataset = V2PatchDataset(args.data_dir, augment=True)
-    if len(dataset) == 0:
-        log.error('No patches found in %s', args.data_dir)
+    # Dataset — support multiple data directories
+    data_dirs = args.data_dir if isinstance(args.data_dir, list) else [args.data_dir]
+    datasets = [V2PatchDataset(d, augment=True) for d in data_dirs]
+    datasets = [ds for ds in datasets if len(ds) > 0]
+    if not datasets:
+        log.error('No patches found in %s', data_dirs)
         return
+    dataset = ConcatDataset(datasets) if len(datasets) > 1 else datasets[0]
 
     n_val = max(1, int(len(dataset) * args.val_frac))
     n_train = len(dataset) - n_val
     train_ds, val_ds = random_split(dataset, [n_train, n_val])
-    val_ds.dataset.augment = False  # type: ignore[attr-defined]
 
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True,
@@ -207,8 +214,11 @@ def main():
         # Auto-compute: count positive vs negative pixels across dataset
         n_pos_px = 0
         n_total_px = 0
-        for i in range(len(dataset)):
-            data = np.load(dataset.files[i], allow_pickle=True)
+        all_files = []
+        for ds in datasets:
+            all_files.extend(ds.files)
+        for fpath in all_files:
+            data = np.load(fpath, allow_pickle=True)
             if 'label_mask' in data:
                 mask = data['label_mask']
                 n_pos_px += mask.sum()
@@ -225,7 +235,10 @@ def main():
 
     # Model
     model_cls = DebrisDetectorSkip if args.skip else DebrisDetector
-    model = model_cls().to(device)
+    model = model_cls(sar_in_ch=args.sar_channels).to(device)
+    if args.resume and args.resume.exists():
+        model.load_state_dict(torch.load(args.resume, map_location=device, weights_only=True))
+        log.info('Resumed from pretrained weights: %s', args.resume)
     n_params = sum(p.numel() for p in model.parameters())
     log.info('Model parameters: %d', n_params)
 
@@ -233,7 +246,7 @@ def main():
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     best_val_loss = float('inf')
-    out_path = args.out or (args.data_dir / 'v2_detector_best.pt')
+    out_path = args.out or (data_dirs[0] / 'v2_detector_best.pt')
 
     for epoch in range(args.epochs):
         train_loss, grad_norms = train_epoch(model, train_loader, optimizer, device, pos_weight)
