@@ -26,7 +26,6 @@ from sarvalanche.ml.v3.channels import (
     N_STATIC,
     SAR_CHANNELS,
     STATIC_CHANNELS,
-    normalize_sar_channel,
     normalize_static_channel,
 )
 
@@ -66,71 +65,30 @@ def _hrrr_pdd_melt_weight(hrrr_ds, sar_date, hrrr_times, pdd_threshold=0.1):
 
 def extract_single_pair(
     da_vv, da_vh, i, j, times,
-    anf_norm, hrrr_cache, tau_proximity=12.0,
+    anf_norm, hrrr_cache=None, tau_proximity=12.0,
 ):
-    """Extract 7-channel SAR array for one crossing pair.
+    """Extract 3-channel SAR array for one crossing pair.
 
-    Parameters
-    ----------
-    da_vv, da_vh : (time, y, x) dB arrays for one track
-    i, j : time indices (before, after)
-    times : DatetimeIndex
-    anf_norm : (y, x) normalized ANF for this track
-    hrrr_cache : dict mapping Timestamp → melt_weight array or None
-    tau_proximity : float
+    Channels: change (log1p dB diff), ANF, proximity.
+    VH data is not used at the pair level (d_cr is pooled in static stack).
 
-    Returns
-    -------
-    (N_SAR, H, W) float32 array, or None if data is missing
+    Returns (N_SAR, H, W) float32 array, or None if data is missing.
     """
     H, W = da_vv.shape[1], da_vv.shape[2]
     span_days = (times[j] - times[i]).days
 
-    # VV change
     vv_before = da_vv[i]
     vv_after = da_vv[j]
     vv_diff = (vv_after - vv_before).astype(np.float32)
     vv_diff = np.nan_to_num(vv_diff, nan=0.0)
 
-    # Skip if mostly NaN (no SAR coverage)
     if np.isfinite(vv_after).sum() < 100:
         return None
 
-    # log1p compression
     change = np.sign(vv_diff) * np.log1p(np.abs(vv_diff))
-
-    # Temporal proximity
     proximity = np.full((H, W), 1.0 / (1.0 + span_days / tau_proximity), dtype=np.float32)
 
-    # Melt weight: min of both endpoints
-    melt_w = np.ones((H, W), dtype=np.float32)
-    mw_i = hrrr_cache.get(times[i])
-    mw_j = hrrr_cache.get(times[j])
-    if mw_i is not None:
-        melt_w = np.minimum(melt_w, mw_i)
-    if mw_j is not None:
-        melt_w = np.minimum(melt_w, mw_j)
-
-    # VV and VH magnitudes (mean of before and after, in dB)
-    vv_mag = np.nan_to_num((vv_before + vv_after) / 2.0, nan=-25.0).astype(np.float32)
-    vv_mag_norm = normalize_sar_channel(vv_mag, 'vv_magnitude')
-
-    if da_vh is not None:
-        vh_before = da_vh[i]
-        vh_after = da_vh[j]
-        vh_mag = np.nan_to_num((vh_before + vh_after) / 2.0, nan=-25.0).astype(np.float32)
-        vh_mag_norm = normalize_sar_channel(vh_mag, 'vh_magnitude')
-        cr = np.nan_to_num(vh_mag - vv_mag, nan=0.0).astype(np.float32)
-        cr_norm = normalize_sar_channel(cr, 'cross_ratio')
-    else:
-        vh_mag_norm = np.zeros((H, W), dtype=np.float32)
-        cr_norm = np.zeros((H, W), dtype=np.float32)
-
-    stacked = np.stack([
-        change, anf_norm, proximity, melt_w,
-        vv_mag_norm, vh_mag_norm, cr_norm,
-    ], axis=0)
-
+    stacked = np.stack([change, anf_norm, proximity], axis=0)
     return stacked.astype(np.float32)
 
 
@@ -321,24 +279,26 @@ def build_static_stack(
         aspect_derived['aspect_northing'] = np.cos(aspect)
         aspect_derived['aspect_easting'] = np.sin(aspect)
 
-    # Compute curvature and TPI from DEM
+    # Compute TPI from DEM
     derived = {}
     if 'dem' in ds.data_vars:
-        dem = np.nan_to_num(ds['dem'].values.astype(np.float32), nan=0.0)
         try:
-            from sarvalanche.utils.terrain import compute_curvature, compute_tpi
+            from sarvalanche.utils.terrain import compute_tpi
+            # compute_tpi expects xr.DataArray with projected CRS
+            dem_da = ds['dem']
             if ds.rio.crs and ds.rio.crs.is_geographic:
-                mid_lat = float(ds.y.values.mean())
-                dx_m = abs(float(ds.x.values[1] - ds.x.values[0])) * 111320 * np.cos(np.radians(mid_lat))
+                # Reproject to UTM for terrain computation
+                dem_da = dem_da.rio.reproject('EPSG:32606')
+                tpi_da = compute_tpi(dem_da, radius_m=300.0)
+                # Reproject back
+                tpi_da = tpi_da.rio.reproject_match(ds['dem'])
+                derived['tpi'] = np.nan_to_num(tpi_da.values.astype(np.float32), nan=0.0)
             else:
-                dx_m = abs(float(ds.x.values[1] - ds.x.values[0]))
-
-            derived['curvature'] = compute_curvature(dem, dx_m)
-            derived['tpi'] = compute_tpi(dem, radius_px=5)
-            log.info('  Computed curvature and TPI from DEM')
+                tpi_da = compute_tpi(dem_da, radius_m=300.0)
+                derived['tpi'] = np.nan_to_num(tpi_da.values.astype(np.float32), nan=0.0)
+            log.info('  Computed TPI from DEM')
         except Exception as e:
-            log.warning('  Could not compute curvature/TPI: %s', e)
-            derived['curvature'] = np.zeros((H, W), dtype=np.float32)
+            log.warning('  Could not compute TPI: %s', e)
             derived['tpi'] = np.zeros((H, W), dtype=np.float32)
 
     # Cross-ratio change (pooled across tracks)
