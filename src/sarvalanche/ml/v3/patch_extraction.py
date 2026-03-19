@@ -8,8 +8,9 @@ v3 differences from v2:
   - 7 SAR channels per pair (change, ANF, proximity, melt_weight,
     VV mag, VH mag, cross-ratio)
   - 13 static channels (adds curvature, TPI; drops raw d_empirical)
-  - Validation path masking: patches overlapping AKDOT/AKRR paths are
-    held out for validation
+  - All pairs with span <= max_span_days (no pair count limit)
+  - get_all_season_pairs: compute all unique pairs once, reuse for any date
+  - Validation path masking for held-out evaluation
 """
 
 import logging
@@ -119,14 +120,12 @@ def extract_single_pair(
         vh_after = da_vh[j]
         vh_mag = np.nan_to_num((vh_before + vh_after) / 2.0, nan=-25.0).astype(np.float32)
         vh_mag_norm = normalize_sar_channel(vh_mag, 'vh_magnitude')
-        # Per-pair cross-ratio: VH - VV in dB
         cr = np.nan_to_num(vh_mag - vv_mag, nan=0.0).astype(np.float32)
         cr_norm = normalize_sar_channel(cr, 'cross_ratio')
     else:
         vh_mag_norm = np.zeros((H, W), dtype=np.float32)
         cr_norm = np.zeros((H, W), dtype=np.float32)
 
-    # Stack: change, anf, proximity, melt_weight, vv_mag, vh_mag, cross_ratio
     stacked = np.stack([
         change, anf_norm, proximity, melt_w,
         vv_mag_norm, vh_mag_norm, cr_norm,
@@ -135,56 +134,27 @@ def extract_single_pair(
     return stacked.astype(np.float32)
 
 
-def get_all_pairs(
-    ds: xr.Dataset,
-    reference_date,
-    max_pairs_per_track: int = 4,
-    tau_proximity: float = 12.0,
-    hrrr_ds: xr.Dataset | None = None,
-) -> list[dict]:
-    """Extract all crossing pairs as independent samples.
+# ── Track data helper ────────────────────────────────────────────────
 
-    Returns list of dicts with:
-      'sar': (N_SAR, H, W) float32
-      'track': str
-      'pol': str (always 'VV' — VH is folded into magnitude/CR channels)
-      't_start': Timestamp
-      't_end': Timestamp
-      'span_days': int
-      'melt_weight_mean': float (scene-average melt trust for this pair)
-    """
+def _get_track_data(ds):
+    """Get VV/VH arrays, ANF, and times per track."""
     from sarvalanche.utils.generators import iter_track_pol_combinations
     from sarvalanche.preprocessing.radiometric import linear_to_dB
     from sarvalanche.utils.validation import check_db_linear
 
-    ref = pd.Timestamp(reference_date)
     has_anf = 'anf' in ds.data_vars
-
-    # Precompute HRRR melt weights
-    hrrr_cache = {}
-    if hrrr_ds is not None:
-        hrrr_times = pd.DatetimeIndex(hrrr_ds.time.values)
-        for t in pd.DatetimeIndex(ds.time.values):
-            hrrr_cache[t] = _hrrr_pdd_melt_weight(hrrr_ds, t, hrrr_times)
-
-    # Group track/pol: we want VV as primary, VH for magnitude/CR
-    # Iterate by track, grab both VV and VH
-    tracks_seen = set()
-    results = []
+    tracks = {}
 
     for track, pol, da in iter_track_pol_combinations(ds):
         if pol != 'VV':
-            continue  # we handle VH inside when we have VV
-        if track in tracks_seen:
             continue
-        tracks_seen.add(track)
+        if str(track) in tracks:
+            continue
 
-        # Get VV in dB
         if check_db_linear(da) != 'dB':
             da = linear_to_dB(da)
-        vv_vals = da.values  # (time, y, x) dB
+        vv_vals = da.values
 
-        # Get VH if available
         vh_vals = None
         for t2, p2, da2 in iter_track_pol_combinations(ds):
             if t2 == track and p2 == 'VH':
@@ -195,7 +165,6 @@ def get_all_pairs(
 
         times = pd.DatetimeIndex(da.time.values)
 
-        # ANF for this track
         if has_anf:
             track_int = int(track)
             if track_int in ds['anf'].static_track.values:
@@ -209,38 +178,122 @@ def get_all_pairs(
         else:
             anf_norm = np.ones((ds.sizes['y'], ds.sizes['x']), dtype=np.float32)
 
-        # Find crossing pairs
-        pairs = []
+        tracks[str(track)] = {
+            'vv': vv_vals, 'vh': vh_vals, 'times': times, 'anf': anf_norm,
+        }
+
+    return tracks
+
+
+# ── Pair extraction (date-specific and full-season) ──────────────────
+
+def get_all_pairs(
+    ds: xr.Dataset,
+    reference_date,
+    max_span_days: int = 60,
+    tau_proximity: float = 12.0,
+    hrrr_ds: xr.Dataset | None = None,
+) -> list[dict]:
+    """Extract all crossing pairs for a reference date (span <= max_span_days).
+
+    No limit on pair count — returns every pair within the span cap.
+    """
+    ref = pd.Timestamp(reference_date)
+
+    hrrr_cache = {}
+    if hrrr_ds is not None:
+        hrrr_times = pd.DatetimeIndex(hrrr_ds.time.values)
+        for t in pd.DatetimeIndex(ds.time.values):
+            hrrr_cache[t] = _hrrr_pdd_melt_weight(hrrr_ds, t, hrrr_times)
+
+    tracks = _get_track_data(ds)
+    results = []
+
+    for track_id, td in tracks.items():
+        times = td['times']
         for i in range(len(times)):
             for j in range(i + 1, len(times)):
-                if times[i] <= ref < times[j]:
-                    pairs.append((i, j, (times[j] - times[i]).days))
-        if not pairs:
-            continue
+                span = (times[j] - times[i]).days
+                if not (times[i] <= ref < times[j]):
+                    continue
+                if span > max_span_days:
+                    continue
 
-        # Sort by tightest span, take top K
-        pairs.sort(key=lambda x: x[2])
-        pairs = pairs[:max_pairs_per_track]
+                sar = extract_single_pair(
+                    td['vv'], td['vh'], i, j, times,
+                    td['anf'], hrrr_cache, tau_proximity,
+                )
+                if sar is None:
+                    continue
 
-        for i, j, span in pairs:
-            sar = extract_single_pair(
-                vv_vals, vh_vals, i, j, times,
-                anf_norm, hrrr_cache, tau_proximity,
-            )
-            if sar is None:
-                continue
+                melt_w_mean = float(sar[SAR_CHANNELS.index('melt_weight')].mean())
+                results.append({
+                    'sar': sar,
+                    'track': track_id,
+                    't_start': times[i],
+                    't_end': times[j],
+                    'span_days': span,
+                    'melt_weight_mean': melt_w_mean,
+                })
 
-            melt_w_mean = float(sar[SAR_CHANNELS.index('melt_weight')].mean())
-            results.append({
-                'sar': sar,
-                'track': str(track),
-                't_start': times[i],
-                't_end': times[j],
-                'span_days': span,
-                'melt_weight_mean': melt_w_mean,
-            })
+    log.info('get_all_pairs: %d pairs for date %s (max span %dd)',
+             len(results), ref.date(), max_span_days)
+    return results
 
-    log.info('get_all_pairs: %d pairs for date %s', len(results), ref.date())
+
+def get_all_season_pairs(
+    ds: xr.Dataset,
+    max_span_days: int = 60,
+    tau_proximity: float = 12.0,
+    hrrr_ds: xr.Dataset | None = None,
+) -> list[dict]:
+    """Extract ALL unique pairs in the season (not tied to a reference date).
+
+    Compute once, reuse for any date: for temporal onset, select pairs
+    where t_start <= ref < t_end.
+    """
+    hrrr_cache = {}
+    if hrrr_ds is not None:
+        hrrr_times = pd.DatetimeIndex(hrrr_ds.time.values)
+        for t in pd.DatetimeIndex(ds.time.values):
+            hrrr_cache[t] = _hrrr_pdd_melt_weight(hrrr_ds, t, hrrr_times)
+
+    tracks = _get_track_data(ds)
+    results = []
+    seen = set()
+
+    for track_id, td in tracks.items():
+        times = td['times']
+        for i in range(len(times)):
+            for j in range(i + 1, len(times)):
+                span = (times[j] - times[i]).days
+                if span > max_span_days:
+                    continue
+
+                key = (track_id, str(times[i]), str(times[j]))
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                sar = extract_single_pair(
+                    td['vv'], td['vh'], i, j, times,
+                    td['anf'], hrrr_cache, tau_proximity,
+                )
+                if sar is None:
+                    continue
+
+                melt_w_mean = float(sar[SAR_CHANNELS.index('melt_weight')].mean())
+                results.append({
+                    'sar': sar,
+                    'track': track_id,
+                    't_start': times[i],
+                    't_end': times[j],
+                    'span_days': span,
+                    'melt_weight_mean': melt_w_mean,
+                })
+
+    log.info('get_all_season_pairs: %d unique pairs (max span %dd)',
+             len(results), max_span_days)
     return results
 
 
@@ -274,9 +327,7 @@ def build_static_stack(
         dem = np.nan_to_num(ds['dem'].values.astype(np.float32), nan=0.0)
         try:
             from sarvalanche.utils.terrain import compute_curvature, compute_tpi
-            # Need projected CRS for terrain metrics
             if ds.rio.crs and ds.rio.crs.is_geographic:
-                # Approximate pixel size in meters
                 mid_lat = float(ds.y.values.mean())
                 dx_m = abs(float(ds.x.values[1] - ds.x.values[0])) * 111320 * np.cos(np.radians(mid_lat))
             else:

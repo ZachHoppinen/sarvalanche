@@ -133,9 +133,12 @@ def main():
     parser.add_argument("--hrrr", type=Path, default=None)
     parser.add_argument("--val-paths", type=Path, nargs="+", default=[],
                         help="GeoPackage(s) with validation path polygons to hold out")
-    parser.add_argument("--stride", type=int, default=64)
-    parser.add_argument("--neg-ratio", type=float, default=3.0)
-    parser.add_argument("--max-pairs", type=int, default=4)
+    parser.add_argument("--stride", type=int, default=128,
+                        help="Patch stride (default 128 = no overlap, pairs provide variety)")
+    parser.add_argument("--neg-ratio", type=float, default=1.0,
+                        help="Neg:pos ratio per position (default 1.0, pairs multiply data)")
+    parser.add_argument("--max-span-days", type=int, default=60,
+                        help="Max pair span in days (default 60, no limit on pair count)")
     parser.add_argument("--min-debris-frac", type=float, default=0.005)
     args = parser.parse_args()
 
@@ -186,7 +189,7 @@ def main():
     # Get all crossing pairs
     log.info("Extracting crossing pairs...")
     pairs = get_all_pairs(
-        ds, args.date, max_pairs_per_track=args.max_pairs,
+        ds, args.date, max_span_days=args.max_span_days,
         hrrr_ds=hrrr_ds,
     )
     log.info("  %d pairs", len(pairs))
