@@ -5,9 +5,9 @@ Each pair is an independent training/inference sample.
 
 v3 differences from v2:
   - No set encoder: each pair is evaluated independently
-  - 7 SAR channels per pair (change, ANF, proximity, melt_weight,
-    VV mag, VH mag, cross-ratio)
-  - 13 static channels (adds curvature, TPI; drops raw d_empirical)
+  - 3 SAR channels per pair (change, ANF, proximity)
+  - 8 static channels (slope, aspect, DEM, cell_counts, TPI,
+    d_empirical_melt_filtered, d_cr)
   - All pairs with span <= max_span_days (no pair count limit)
   - get_all_season_pairs: compute all unique pairs once, reuse for any date
   - Validation path masking for held-out evaluation
@@ -184,14 +184,25 @@ def get_all_pairs(
                 if sar is None:
                     continue
 
-                melt_w_mean = float(sar[SAR_CHANNELS.index('melt_weight')].mean())
+                # Compute melt weight from HRRR (not a SAR channel anymore,
+                # but still needed for temporal aggregation weighting)
+                mw_i = hrrr_cache.get(times[i])
+                mw_j = hrrr_cache.get(times[j])
+                melt_w = 1.0
+                if mw_i is not None and mw_j is not None:
+                    melt_w = float(np.minimum(mw_i, mw_j).mean())
+                elif mw_i is not None:
+                    melt_w = float(mw_i.mean())
+                elif mw_j is not None:
+                    melt_w = float(mw_j.mean())
+
                 results.append({
                     'sar': sar,
                     'track': track_id,
                     't_start': times[i],
                     't_end': times[j],
                     'span_days': span,
-                    'melt_weight_mean': melt_w_mean,
+                    'melt_weight_mean': melt_w,
                 })
 
     log.info('get_all_pairs: %d pairs for date %s (max span %dd)',
@@ -240,14 +251,25 @@ def get_all_season_pairs(
                 if sar is None:
                     continue
 
-                melt_w_mean = float(sar[SAR_CHANNELS.index('melt_weight')].mean())
+                # Compute melt weight from HRRR (not a SAR channel anymore,
+                # but still needed for temporal aggregation weighting)
+                mw_i = hrrr_cache.get(times[i])
+                mw_j = hrrr_cache.get(times[j])
+                melt_w = 1.0
+                if mw_i is not None and mw_j is not None:
+                    melt_w = float(np.minimum(mw_i, mw_j).mean())
+                elif mw_i is not None:
+                    melt_w = float(mw_i.mean())
+                elif mw_j is not None:
+                    melt_w = float(mw_j.mean())
+
                 results.append({
                     'sar': sar,
                     'track': track_id,
                     't_start': times[i],
                     't_end': times[j],
                     'span_days': span,
-                    'melt_weight_mean': melt_w_mean,
+                    'melt_weight_mean': melt_w,
                 })
 
     log.info('get_all_season_pairs: %d unique pairs (max span %dd)',
