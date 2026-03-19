@@ -36,6 +36,34 @@ zones on appropriate slopes are debris.
 Simple thresholding + filtering is a useful baseline but not sufficient for operational
 detection. Proceed with v3 single-pair architecture.
 
+## Observation-guided training labels (TODO)
+
+Prototype showed 56/79 (71%) of AKDOT D1.5+ observations have GOOD melt-filtered
+d_empirical signal (≥10 pixels above manual threshold within the confirmed path).
+These can become training labels automatically — no manual labeling needed.
+
+**Scalable approach:** Pull observation databases from every avalanche center
+(CNFAIC, CAIC, SNFAC, UAC, NWAC, BTAC, etc.), match to SAR dates + path polygons,
+extract debris pixels where d_empirical confirms the observation.
+
+**Key design decisions:**
+- Keep AKDOT/AKRR as validation only — blank entire path tracks during training
+- Use other center observations for training labels
+- Within each patch, set `label_mask` to:
+  - Positive: inside observed path where d_empirical > threshold
+  - NaN/ignore: everywhere outside any path polygon (excluded from loss)
+  - This prevents the "unlabeled neighbor" problem where a nearby path that
+    also avalanched but has no observation becomes a false negative
+- Don't require FlowPy runout overlap — obs confirms the avalanche happened
+  regardless of whether FlowPy models that path
+- Filter observations: D1.5+, precise timing (within 1 SAR revisit), GPS located
+- Use melt-filtered d_empirical and manual thresholds × 0.5 within confirmed paths
+
+**Concern:** Avalanches cluster — when one path goes, neighbors often go too.
+A patch centered on the observed path captures neighboring unobserved paths.
+Without the ignore mask, those become trained negatives. The NaN/ignore approach
+solves this.
+
 ## Cross-site transfer test (TODO)
 
 Train v3 on AK, run on Idaho (SNFAC) without retraining. Critical for understanding
