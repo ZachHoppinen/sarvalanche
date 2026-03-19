@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 from sarvalanche.ml.v3.channels import N_INPUT
 from sarvalanche.ml.v3.dataset import V3PairDataset
@@ -132,15 +132,48 @@ def main():
 
     train_full = ConcatDataset(datasets) if len(datasets) > 1 else datasets[0]
 
-    # Random train/val split from non-path-overlap patches
-    n_val = max(1, int(len(train_full) * args.val_frac))
-    n_train = len(train_full) - n_val
-    train_ds, val_ds = random_split(train_full, [n_train, n_val])
+    # Spatial split: group by patch position, assign positions to train/val
+    # All pairs at a given (y0, x0) go together — prevents spatial leakage
+    from collections import defaultdict
+    pos_to_indices = defaultdict(list)
+    for idx in range(len(train_full)):
+        # Get the file path to extract position from filename
+        if hasattr(train_full, 'datasets'):
+            # ConcatDataset — find which sub-dataset and local index
+            cumulative = 0
+            for sub_ds in train_full.datasets:
+                if idx < cumulative + len(sub_ds):
+                    local_idx = idx - cumulative
+                    fpath = sub_ds.files[local_idx]
+                    break
+                cumulative += len(sub_ds)
+        else:
+            fpath = train_full.files[idx]
+        # Extract position: pos_0768_0128_v3_pair05.npz → pos_0768_0128
+        fname = fpath.stem
+        pos = fname.split('_v3_')[0]  # e.g. "pos_0768_0128" or "neg_0256_0384"
+        pos_to_indices[pos].append(idx)
+
+    # Randomly assign positions to train/val
+    positions = list(pos_to_indices.keys())
+    rng = np.random.default_rng(42)
+    rng.shuffle(positions)
+    n_val_pos = max(1, int(len(positions) * args.val_frac))
+    val_positions = set(positions[:n_val_pos])
+    train_positions = set(positions[n_val_pos:])
+
+    train_indices = [idx for pos in train_positions for idx in pos_to_indices[pos]]
+    val_indices = [idx for pos in val_positions for idx in pos_to_indices[pos]]
+
+    train_ds = Subset(train_full, train_indices)
+    val_ds = Subset(train_full, val_indices)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
-    log.info("Train: %d, Val: %d", n_train, n_val)
+    log.info("Spatial split: %d positions (%d train, %d val)",
+             len(positions), len(train_positions), len(val_positions))
+    log.info("Train: %d samples, Val: %d samples", len(train_indices), len(val_indices))
 
     # Auto-compute pos weight
     all_files = []
