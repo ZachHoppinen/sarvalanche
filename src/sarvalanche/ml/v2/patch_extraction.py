@@ -150,7 +150,27 @@ def _hrrr_pdd_melt_weight(hrrr_ds, sar_date, hrrr_times, pdd_threshold=0.1):
     if time_diffs[ci].days > 2:
         return None
 
-    if 'pdd_24h' in hrrr_ds:
+    if 'pdd_24h' in hrrr_ds and 't2m_max' in hrrr_ds:
+        pdd = hrrr_ds['pdd_24h'].isel(time=ci).values
+        t2m = hrrr_ds['t2m_max'].isel(time=ci).values
+
+        pdd_smooth = _gf(pdd, sigma=15, mode='nearest')
+        t2m_smooth = _gf(t2m, sigma=15, mode='nearest')
+
+        # PDD weight: any positive degree-day energy suppresses
+        pdd_weight = np.clip(1.0 - pdd_smooth / pdd_threshold, 0.0, 1.0)
+
+        # Temperature weight: suppress near-freezing even if PDD=0
+        # Captures solar melt and recent refreeze that HRRR misses
+        # T <= -8°C → 1.0 (fully trusted, well below freezing)
+        # T  = -5°C → 0.5 (partial suppression)
+        # T >= -3°C → 0.0 (recent melt/refreeze likely)
+        t2m_weight = np.clip((-t2m_smooth - 3.0) / 5.0, 0.0, 1.0)
+
+        # Take the minimum — either criterion suppresses
+        melt_weight = np.minimum(pdd_weight, t2m_weight)
+        return melt_weight.astype(np.float32)
+    elif 'pdd_24h' in hrrr_ds:
         pdd = hrrr_ds['pdd_24h'].isel(time=ci).values
         pdd_smooth = _gf(pdd, sigma=15, mode='nearest')
         return np.clip(1.0 - pdd_smooth / pdd_threshold, 0.0, 1.0).astype(np.float32)
