@@ -34,7 +34,6 @@ STATIC_CHANNELS: list[str] = [
     'dem',                          # per-patch min-max normalized
     'cell_counts',
     'tpi',
-    'd_empirical_melt_filtered',    # pooled cold-pair signal
     'd_cr',                         # pooled cross-ratio change
 ]
 
@@ -50,7 +49,6 @@ STATIC_NORM: dict[str, dict] = {
     'slope': {'scale': 0.6},
     'cell_counts': {'log1p': True, 'scale': 5.0},
     'tpi': {'scale': 50.0},
-    'd_empirical_melt_filtered': {'log1p': True, 'scale': 5.0},
     'd_cr': {'log1p': True, 'scale': 3.0},
 }
 

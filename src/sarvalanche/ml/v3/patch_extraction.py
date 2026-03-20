@@ -330,13 +330,6 @@ def build_static_stack(
         if d_cr is not None:
             derived['d_cr'] = d_cr
 
-    # Melt-filtered d_empirical
-    if hrrr_ds is not None and 'd_empirical_melt_filtered' in STATIC_CHANNELS:
-        from sarvalanche.ml.v2.patch_extraction import _compute_melt_filtered_d_empirical
-        d_filt = _compute_melt_filtered_d_empirical(ds, hrrr_ds, H, W)
-        if d_filt is not None:
-            derived['d_empirical_melt_filtered'] = d_filt
-
     # Fill static stack
     for ch, var in enumerate(STATIC_CHANNELS):
         if var in aspect_derived:
