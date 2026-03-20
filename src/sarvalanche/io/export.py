@@ -28,7 +28,21 @@ def _sanitize_attrs(attrs: dict) -> dict:
 
 def export_netcdf(ds, filepath, overwrite=True):
     assert filepath.suffix == '.nc'
-    ds.attrs['crs'] = str(ds.rio.crs)
+
+    # Persist CRS via rioxarray's spatial_ref coordinate (CF grid_mapping)
+    # so every variable retains it on reload.
+    crs = ds.rio.crs
+    if crs is None:
+        # Fall back: check individual data vars for a CRS
+        for var in ds.data_vars:
+            crs = ds[var].rio.crs
+            if crs is not None:
+                break
+    if crs is not None:
+        ds = ds.rio.write_crs(crs)
+        ds.attrs['crs'] = str(crs)
+    else:
+        log.warning("No CRS found on dataset or any variable — saving without CRS")
 
     # Sanitize dataset-level attrs
     ds.attrs = _sanitize_attrs(ds.attrs)

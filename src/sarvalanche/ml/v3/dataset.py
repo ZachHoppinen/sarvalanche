@@ -57,8 +57,8 @@ class V3PairDataset(Dataset):
 
             parent = labels_path.parent
             for patch_id, meta in labels_data.items():
-                label = meta.get('label')
-                if label not in (0, 1):
+                pos_label = meta.get('label')
+                if pos_label not in (0, 1):
                     continue
 
                 # Find all per-pair npz files for this patch
@@ -71,8 +71,17 @@ class V3PairDataset(Dataset):
                 on_val_path = meta.get('on_val_path', False)
 
                 for pf in pair_files:
+                    # Per-pair label from npz (debris positions have per-pair
+                    # labels that depend on whether the pair brackets the event)
+                    if pos_label == 1:
+                        try:
+                            pair_label = int(np.load(pf, allow_pickle=True)['label'])
+                        except Exception:
+                            pair_label = pos_label
+                    else:
+                        pair_label = 0
                     self.files.append(pf)
-                    self.labels.append(label)
+                    self.labels.append(pair_label)
                     self.confidences.append(confidence)
                     self.has_val_path.append(on_val_path)
 
@@ -103,6 +112,10 @@ class V3PairDataset(Dataset):
         data = np.load(self.files[idx], allow_pickle=True)
         sar = data['sar'].astype(np.float32)          # (N_SAR, H, W)
         static = data['static'].astype(np.float32)    # (N_STATIC, H, W)
+
+        # Handle patches extracted with more static channels than current config
+        if static.shape[0] > N_STATIC:
+            static = static[:N_STATIC]
 
         # Label mask
         if 'label_mask' in data:

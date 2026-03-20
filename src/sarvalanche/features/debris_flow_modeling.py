@@ -39,7 +39,10 @@ def generate_runcount_alpha_angle(ds):
     from sarvalanche.utils.terrain import compute_flow_accumulation
 
     # flowpy needs to run in projected coordinate system
-    dem_proj = ds['dem'].rio.reproject(ds['dem'].rio.estimate_utm_crs())
+    if ds['dem'].rio.crs.is_projected:
+        dem_proj = ds['dem']
+    else:
+        dem_proj = ds['dem'].rio.reproject(ds['dem'].rio.estimate_utm_crs())
     log.debug("generate_runcount_alpha_angle: DEM shape=%s", dem_proj.shape)
 
     flow_accum = compute_flow_accumulation(dem_proj)

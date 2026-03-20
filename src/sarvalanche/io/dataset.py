@@ -12,6 +12,9 @@ from sarvalanche.io.find_data import find_asf_urls, find_earthaccess_urls
 from sarvalanche.utils.download import download_urls_parallel
 from sarvalanche.utils.grid import grids_match
 
+from pyproj import CRS, Transformer
+from shapely.ops import transform as shapely_transform
+
 from sarvalanche.utils.constants import RTC_FILETYPES, SENTINEL1
 from asf_search.constants import RTC, RTC_STATIC
 
@@ -32,6 +35,7 @@ def assemble_dataset(
     aoi,
     start_date=None,
     stop_date=None,
+    aoi_crs="EPSG:4326",
     crs=None,
     resolution=None,
     cache_dir=Path("/tmp/sarvalanche_cache"),
@@ -45,9 +49,18 @@ def assemble_dataset(
 
     Parameters
     ----------
+    aoi : shapely geometry, tuple, or dict
+        Area of interest. Coordinates must be in the CRS specified by *aoi_crs*.
+    aoi_crs : str or CRS, optional
+        CRS of the input AOI (default ``"EPSG:4326"``).
+    crs : str or CRS, optional
+        Target output CRS.  If *None*, the appropriate UTM zone is
+        determined automatically from the AOI centroid.
+    resolution : float, optional
+        Ignored (kept for backwards compatibility).  The output grid is
+        always snapped to the OPERA 30 m posting.
     chunks : dict, optional
-        Dask chunking strategy. Default: {'time': 10, 'x': 512, 'y': 512}
-        Adjust based on your dataset size and available memory.
+        Dask chunking strategy. Default: {'time': 1, 'x': 256, 'y': 256}
 
     Returns
     -------
@@ -57,20 +70,25 @@ def assemble_dataset(
     # --- 1. Validate inputs ---
     start_date, stop_date = validate_start_end(start_date, stop_date)
     aoi = validate_aoi(aoi)
-    crs = validate_crs(crs)
-    resolution = validate_resolution(resolution, crs=crs)
+    aoi_crs = validate_crs(aoi_crs)
+    if resolution is not None:
+        log.warning("resolution parameter is ignored; output is always on the OPERA 30 m grid")
     if chunks is None:
         chunks = {'time': 1, 'x': 256, 'y': 256}
     validate_chunks(chunks)
 
-
-    # --- 2. Create reference grid ---
-    # TODO convert to opera grid for less reprojecting...
-    # ref_grid = make_opera_reference_grid(aoi=aoi, crs=crs)  # would remove resolution. Force to 30 meters...
-    ref_grid = make_reference_grid(aoi=aoi, crs=crs, resolution=resolution)
+    # --- 2. Create reference grid (snapped to OPERA 30 m posting) ---
+    ref_grid = make_opera_reference_grid(aoi=aoi, aoi_crs=aoi_crs)
 
     # --- 3. Find and download ASF RTC data ---
-    urls = find_asf_urls(aoi, start_date, stop_date, product_type=RTC)
+    # ASF search expects WGS84 geometries
+    wgs84 = CRS.from_epsg(4326)
+    if aoi_crs != wgs84:
+        t = Transformer.from_crs(aoi_crs, wgs84, always_xy=True)
+        aoi_wgs84 = shapely_transform(t.transform, aoi)
+    else:
+        aoi_wgs84 = aoi
+    urls = find_asf_urls(aoi_wgs84, start_date, stop_date, product_type=RTC)
     fps = download_urls_parallel(urls, cache_dir.joinpath('opera'), description='Downloading S1 RTC')
 
     # --- 4. Load & merge backscatter by file type ---
@@ -87,9 +105,6 @@ def assemble_dataset(
     ds["VH"] = ds["VH"].where(ds["mask"] == 0)
     ds = ds.rename({"mask": "lia_mask"})
     ds['time'] = pd.to_datetime(ds['time']).tz_localize(None)
-
-    if sar_only:
-        return ds
 
     # get snowmodel
     # TODO fix to use different snowmodel after end date
@@ -109,7 +124,7 @@ def assemble_dataset(
         return ds
 
     # --- 6. Load static LIA ---
-    static_urls = find_asf_urls(aoi, start_date = None, stop_date = None, product_type=RTC_STATIC)
+    static_urls = find_asf_urls(aoi_wgs84, start_date = None, stop_date = None, product_type=RTC_STATIC)
     static_fps = download_urls_parallel(static_urls, cache_dir.joinpath('opera'), description='Downloading S1 static RTC files')
     lia_fps, anf_fps = [f for f in static_fps if str(f).endswith('local_incidence_angle.tif')], [f for f in static_fps if str(f).endswith('rtc_anf_gamma0_to_beta0.tif')]
     lia = load_reproject_concat_rtc(lia_fps, ref_grid, "lia", chunks)
@@ -127,19 +142,21 @@ def assemble_dataset(
     ds['lia'].attrs = {'units': 'radians', 'source': SENTINEL1, 'product': RTC_STATIC}
     ds['anf'].attrs = {'units': 'meters', 'source': SENTINEL1, 'product': RTC_STATIC}
 
+    if sar_only:
+        return ds
     # --- 7. Load auxiliary layers ---
     log.info('Getting DEM')
-    ds["dem"] = get_dem(aoi, crs, ref_grid)
+    ds["dem"] = get_dem(aoi, aoi_crs, ref_grid)
     log.info('Getting slope')
-    ds["slope"] = get_slope(aoi, crs, ref_grid, dem=ds["dem"])
+    ds["slope"] = get_slope(aoi, aoi_crs, ref_grid, dem=ds["dem"])
     log.info('Getting aspect')
-    ds["aspect"] = get_aspect(aoi, crs, ref_grid, dem=ds["dem"])
+    ds["aspect"] = get_aspect(aoi, aoi_crs, ref_grid, dem=ds["dem"])
     log.info('Getting fcf')
-    ds["fcf"] = get_forest_cover(aoi, crs, ref_grid)
+    ds["fcf"] = get_forest_cover(aoi, aoi_crs, ref_grid)
     log.info('Getting water cover')
-    ds["water_mask"] = get_water_extent(aoi, crs, ref_grid)
+    ds["water_mask"] = get_water_extent(aoi, aoi_crs, ref_grid)
     log.info('Getting urban')
-    ds["urban_mask"] = get_urban_extent(aoi, crs, ref_grid)
+    ds["urban_mask"] = get_urban_extent(aoi, aoi_crs, ref_grid)
 
     # add chunking
     spatial_chunks = {'x': chunks.get('x', 256), 'y': chunks.get('y', 256)}
@@ -163,8 +180,14 @@ def load_netcdf_to_dataset(filepath, decode_times=True, chunks = 'auto'):
 
     ds = xr.open_dataset(filepath, decode_times=decode_times, chunks = chunks)
 
-    if 'crs' in ds.attrs:
-        ds = ds.rio.write_crs(ds.attrs['crs'], inplace=True)
+    # Restore CRS: prefer spatial_ref coordinate (CF grid_mapping),
+    # fall back to crs dataset attribute for older files.
+    crs = ds.rio.crs
+    if crs is None and 'crs' in ds.attrs:
+        crs = ds.attrs['crs']
+    if crs is not None:
+        ds = ds.rio.write_crs(crs, inplace=True)
+        ds.attrs['crs'] = str(crs)
 
     # Drop stray scalar coords that can cause merge conflicts
     scalar_coords_to_drop = [c for c in ds.coords if ds.coords[c].dims == () and c not in ('spatial_ref',)]

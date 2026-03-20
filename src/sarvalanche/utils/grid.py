@@ -10,6 +10,7 @@ from shapely.geometry import box
 
 from sarvalanche.utils.constants import OPERA_RESOLUTION
 from sarvalanche.utils.validation import validate_crs
+from sarvalanche.utils.projections import find_utm_crs
 
 def make_reference_grid(
     *,

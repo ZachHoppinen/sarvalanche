@@ -6,8 +6,7 @@ Each pair is an independent training/inference sample.
 v3 differences from v2:
   - No set encoder: each pair is evaluated independently
   - 3 SAR channels per pair (change, ANF, proximity)
-  - 8 static channels (slope, aspect, DEM, cell_counts, TPI,
-    d_empirical_melt_filtered, d_cr)
+  - 6 static channels (slope, aspect_N/E, DEM, cell_counts, TPI)
   - All pairs with span <= max_span_days (no pair count limit)
   - get_all_season_pairs: compute all unique pairs once, reuse for any date
   - Validation path masking for held-out evaluation
@@ -322,13 +321,6 @@ def build_static_stack(
         except Exception as e:
             log.warning('  Could not compute TPI: %s', e)
             derived['tpi'] = np.zeros((H, W), dtype=np.float32)
-
-    # Cross-ratio change (pooled across tracks)
-    if 'd_cr' in STATIC_CHANNELS:
-        from sarvalanche.ml.v2.patch_extraction import _compute_d_cr
-        d_cr = _compute_d_cr(ds, H, W)
-        if d_cr is not None:
-            derived['d_cr'] = d_cr
 
     # Fill static stack
     for ch, var in enumerate(STATIC_CHANNELS):

@@ -183,16 +183,24 @@ def measure_bump_1d(
     if peak_idx < 0:
         return 0, 0, 0.0, 0.0, 0.0
 
-    above = np.where(~np.isnan(series), series >= threshold, False)
+    is_nan = np.isnan(series)
+    above = np.where(~is_nan, series >= threshold, False)
 
-    # Contiguous width around peak
+    # Contiguous width around peak (skip over NaN gaps — no data ≠ no detection)
     left = peak_idx
-    while left > 0 and above[left - 1]:
+    while left > 0 and (above[left - 1] or is_nan[left - 1]):
         left -= 1
+        if not is_nan[left] and not above[left]:
+            left += 1  # went past a real below-threshold step, back up
+            break
     right = peak_idx
-    while right < T - 1 and above[right + 1]:
+    while right < T - 1 and (above[right + 1] or is_nan[right + 1]):
         right += 1
-    width = right - left + 1
+        if not is_nan[right] and not above[right]:
+            right -= 1  # went past a real below-threshold step, back up
+            break
+    # Width counts only above-threshold steps (excluding NaN gaps)
+    width = int(above[left:right + 1].sum())
 
     # Total steps above threshold (multi-pass count)
     n_above = int(above.sum())

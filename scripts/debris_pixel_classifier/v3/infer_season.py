@@ -180,6 +180,10 @@ def main():
             stride=args.stride, batch_size=args.batch_size,
         )
 
+        # Mask out areas with no SAR coverage from this track
+        no_coverage = np.abs(pair['sar'][0]) < 1e-6
+        prob_map[no_coverage] = np.nan
+
         n50 = int((prob_map > 0.5).sum())
         n20 = int((prob_map > 0.2).sum())
         log.info("    >0.5: %d px, >0.2: %d px, mean: %.4f", n50, n20, prob_map.mean())

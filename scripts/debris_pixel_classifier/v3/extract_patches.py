@@ -41,7 +41,7 @@ from sarvalanche.ml.v3.channels import N_SAR, N_STATIC
 from sarvalanche.ml.v3.patch_extraction import (
     V3_PATCH_SIZE,
     build_static_stack,
-    get_all_pairs,
+    get_all_season_pairs,
     normalize_dem_patch,
 )
 
@@ -139,6 +139,8 @@ def main():
                         help="Neg:pos ratio per position (default 1.0, pairs multiply data)")
     parser.add_argument("--max-span-days", type=int, default=60,
                         help="Max pair span in days (default 60, no limit on pair count)")
+    parser.add_argument("--max-pos-span-days", type=int, default=24,
+                        help="Max span for a pair to get a positive label (default 24)")
     parser.add_argument("--min-debris-frac", type=float, default=0.005)
     args = parser.parse_args()
 
@@ -186,57 +188,71 @@ def main():
     static_scene = build_static_stack(ds, hrrr_ds=hrrr_ds)
     log.info("  Static: %s", static_scene.shape)
 
-    # Get all crossing pairs
-    log.info("Extracting crossing pairs...")
-    pairs = get_all_pairs(
-        ds, args.date, max_span_days=args.max_span_days,
+    # Get ALL season pairs (not just those bracketing the label date)
+    log.info("Extracting all season pairs...")
+    pairs = get_all_season_pairs(
+        ds, max_span_days=args.max_span_days,
         hrrr_ds=hrrr_ds,
     )
-    log.info("  %d pairs", len(pairs))
+    log.info("  %d total pairs", len(pairs))
 
     if not pairs:
         log.error("No crossing pairs found")
         return
 
-    # Find patch positions
+    # Classify pairs: which ones bracket the avalanche date?
+    ref = pd.Timestamp(args.date)
+    pos_pair_indices = set()
+    for pi, pair in enumerate(pairs):
+        if pair['t_start'] <= ref < pair['t_end']:
+            pos_pair_indices.add(pi)
+    log.info("  %d pairs bracket %s", len(pos_pair_indices), args.date)
+
+    # Find patch positions with debris
     H, W = ds.sizes["y"], ds.sizes["x"]
-    pos_patches = []
-    neg_patches = []
+    debris_positions = []
+    nondebris_positions = []
 
     for y0 in range(0, H - patch_size + 1, args.stride):
         for x0 in range(0, W - patch_size + 1, args.stride):
             patch_mask = debris_mask[y0:y0 + patch_size, x0:x0 + patch_size]
             frac = patch_mask.mean()
             if frac >= args.min_debris_frac:
-                pos_patches.append((y0, x0, frac))
+                debris_positions.append((y0, x0, frac))
             else:
-                neg_patches.append((y0, x0, 0.0))
+                nondebris_positions.append((y0, x0, 0.0))
 
-    # Subsample negatives
-    n_neg_max = int(len(pos_patches) * args.neg_ratio)
-    if len(neg_patches) > n_neg_max:
+    # Subsample non-debris positions
+    n_neg_max = int(len(debris_positions) * args.neg_ratio)
+    if len(nondebris_positions) > n_neg_max:
         rng = np.random.default_rng(42)
-        idx = rng.choice(len(neg_patches), size=n_neg_max, replace=False)
-        neg_patches = [neg_patches[i] for i in sorted(idx)]
+        idx = rng.choice(len(nondebris_positions), size=n_neg_max, replace=False)
+        nondebris_positions = [nondebris_positions[i] for i in sorted(idx)]
 
-    all_patches = [(1, y0, x0, f) for y0, x0, f in pos_patches] + \
-                  [(0, y0, x0, f) for y0, x0, f in neg_patches]
-    log.info("Patches: %d pos, %d neg = %d total", len(pos_patches), len(neg_patches), len(all_patches))
-    log.info("Per-pair samples: %d patches × %d pairs = %d", len(all_patches), len(pairs), len(all_patches) * len(pairs))
+    log.info("Positions: %d with debris, %d without", len(debris_positions), len(nondebris_positions))
 
-    # Save
+    # Save patches with per-pair labels:
+    #   - Debris position + tight-bracketing pair → positive (label=1, label_mask=debris)
+    #   - Debris position + non-bracketing pair → negative (label=0, label_mask=0)
+    #   - Non-debris position + any pair → negative (label=0, label_mask=0)
     metadata = {}
     n_saved = 0
+    n_pos_saved = 0
+    n_neg_saved = 0
+    zero_mask = np.zeros((patch_size, patch_size), dtype=np.float32)
 
-    for label, y0, x0, debris_frac in all_patches:
-        patch_id = f"{'pos' if label == 1 else 'neg'}_{y0:04d}_{x0:04d}"
+    all_positions = list(debris_positions) + list(nondebris_positions)
+    is_debris_pos = [True] * len(debris_positions) + [False] * len(nondebris_positions)
 
-        # Slice static + labels (shared across pairs)
+    for pos_idx, (y0, x0, debris_frac) in enumerate(all_positions):
+        has_debris = is_debris_pos[pos_idx]
+        pos_id = f"{'pos' if has_debris else 'neg'}_{y0:04d}_{x0:04d}"
+
+        # Slice static (shared across pairs)
         static_patch = static_scene[:, y0:y0 + patch_size, x0:x0 + patch_size].copy()
         static_patch = normalize_dem_patch(static_patch)
         label_patch = debris_mask[y0:y0 + patch_size, x0:x0 + patch_size]
         val_patch = val_path_mask[y0:y0 + patch_size, x0:x0 + patch_size]
-
         on_val_path = bool(val_patch.any())
 
         for pi, pair in enumerate(pairs):
@@ -247,13 +263,26 @@ def main():
             if np.abs(sar_patch[0]).max() < 1e-6:
                 continue
 
-            fname = args.out_dir / f"{patch_id}_v3_pair{pi:02d}.npz"
+            # Per-pair label: positive only for debris positions with
+            # bracketing pairs
+            if has_debris and pi in pos_pair_indices:
+                pair_label = np.int8(1)
+                pair_mask = label_patch.copy()
+            else:
+                pair_label = np.int8(0)
+                pair_mask = zero_mask.copy()
+
+            # Zero out label wherever SAR has no coverage (no data → ignore)
+            no_coverage = np.abs(sar_patch[0]) < 1e-6
+            pair_mask[no_coverage] = 0.0
+
+            fname = args.out_dir / f"{pos_id}_v3_pair{pi:02d}.npz"
             np.savez_compressed(
                 fname,
                 sar=sar_patch,
                 static=static_patch,
-                label=np.int8(label),
-                label_mask=label_patch,
+                label=pair_label,
+                label_mask=pair_mask,
                 val_path_mask=val_patch,
                 pair_track=pair['track'],
                 t_start=str(pair['t_start']),
@@ -261,9 +290,14 @@ def main():
                 span_days=pair['span_days'],
             )
             n_saved += 1
+            if pair_label == 1:
+                n_pos_saved += 1
+            else:
+                n_neg_saved += 1
 
-        metadata[patch_id] = {
-            'label': int(label),
+        # Metadata uses the position-level label (for dataset split by val_path)
+        metadata[pos_id] = {
+            'label': 1 if has_debris else 0,
             'y0': int(y0),
             'x0': int(x0),
             'debris_frac': float(debris_frac),

@@ -7,8 +7,8 @@ Temporal aggregation happens post-inference via the temporal onset detector.
 Trimmed based on ablation study (2026-03-19):
   - Removed: vv_magnitude, vh_magnitude, cross_ratio, melt_weight (SAR)
   - Removed: fcf, water_mask, release_zones, runout_angle, curvature (static)
-  - Kept d_cr (most important static feature) and d_empirical_melt_filtered
   - Added TPI (not fairly tested in ablation — was zeros due to compute bug)
+  - Removed d_cr after further ablation showed no benefit
 """
 
 import numpy as np
@@ -34,7 +34,6 @@ STATIC_CHANNELS: list[str] = [
     'dem',                          # per-patch min-max normalized
     'cell_counts',
     'tpi',
-    'd_cr',                         # pooled cross-ratio change
 ]
 
 N_STATIC: int = len(STATIC_CHANNELS)
@@ -49,7 +48,6 @@ STATIC_NORM: dict[str, dict] = {
     'slope': {'scale': 0.6},
     'cell_counts': {'log1p': True, 'scale': 5.0},
     'tpi': {'scale': 50.0},
-    'd_cr': {'log1p': True, 'scale': 3.0},
 }
 
 

@@ -9,10 +9,10 @@ from pyproj.database import query_utm_crs_info
 def find_utm_crs(aoi, aoi_crs):
     """Find the UTM CRS for the center of an AOI polygon."""
 
+    aoi_crs = CRS(aoi_crs)
     to_wgs84 = Transformer.from_crs(aoi_crs, CRS.from_epsg(4326), always_xy=True)
     lon, lat = to_wgs84.transform(aoi.centroid.x, aoi.centroid.y)
 
-    lon, lat = aoi.centroid.x, aoi.centroid.y
     utm_info = query_utm_crs_info(
         datum_name="WGS 84",
         area_of_interest=AreaOfInterest(lon, lat, lon, lat),
