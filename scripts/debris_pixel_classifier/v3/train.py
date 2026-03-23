@@ -59,34 +59,49 @@ def dice_loss(logits, targets, sample_weights=None, smooth=1.0):
     return 1.0 - (2.0 * inter + smooth) / (probs.sum() + targets.sum() + smooth)
 
 
-def train_epoch(model, loader, optimizer, device, pos_weight):
+def train_epoch(model, loader, optimizer, device, pos_weight, epoch=0, scaler=None):
+    from tqdm import tqdm
     model.train()
     total_loss = 0.0
     n = 0
-    for batch in loader:
+    use_amp = scaler is not None
+    pbar = tqdm(loader, desc=f"Train ep{epoch+1}", leave=False,
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]")
+    for batch in pbar:
         x = batch['x'].to(device)
         targets = batch['label'].to(device)
         weights = batch['confidence'].to(device)
 
         optimizer.zero_grad()
-        logits = model(x)
-        loss = weighted_bce(logits, targets, pos_weight, weights) + dice_loss(logits, targets, weights)
-        loss.backward()
-        optimizer.step()
+        with torch.amp.autocast(device.type, enabled=use_amp):
+            logits = model(x)
+            loss = weighted_bce(logits, targets, pos_weight, weights) + dice_loss(logits, targets, weights)
+
+        if use_amp:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
 
         total_loss += loss.item()
         n += 1
+        if n % 100 == 0:
+            pbar.set_postfix(loss=f"{total_loss/n:.4f}")
     return total_loss / max(n, 1)
 
 
 @torch.no_grad()
 def validate(model, loader, device, threshold=0.5):
+    from tqdm import tqdm
     model.eval()
     total_loss = 0.0
     n = 0
     intersection = union = 0
 
-    for batch in loader:
+    for batch in tqdm(loader, desc="Val", leave=False,
+                      bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"):
         x = batch['x'].to(device)
         targets = batch['label'].to(device)
 
@@ -107,12 +122,14 @@ def main():
     parser.add_argument("--data-dir", type=Path, nargs="+", required=True)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--base-ch", type=int, default=16)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--val-frac", type=float, default=0.15)
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--resume", type=Path, default=None)
+    parser.add_argument("--test-mode", action="store_true",
+                        help="Fast iteration mode: subsample to ~30 min total training")
     args = parser.parse_args()
 
     device = _resolve_device(args.device)
@@ -165,15 +182,65 @@ def main():
     train_indices = [idx for pos in train_positions for idx in pos_to_indices[pos]]
     val_indices = [idx for pos in val_positions for idx in pos_to_indices[pos]]
 
-    train_ds = Subset(train_full, train_indices)
     val_ds = Subset(train_full, val_indices)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
+    # Split train indices by label for per-epoch subsampling
+    train_pos_indices = []
+    train_neg_indices = []
+
+    def _get_label(idx):
+        if hasattr(train_full, 'datasets'):
+            cumulative = 0
+            for sub_ds in train_full.datasets:
+                if idx < cumulative + len(sub_ds):
+                    return sub_ds.labels[idx - cumulative]
+                cumulative += len(sub_ds)
+        return train_full.labels[idx]
+
+    for idx in train_indices:
+        if _get_label(idx) == 1:
+            train_pos_indices.append(idx)
+        else:
+            train_neg_indices.append(idx)
+
+    train_pos_indices = np.array(train_pos_indices)
+    train_neg_indices = np.array(train_neg_indices)
+
+    # Per-epoch: all positives + random subset of negatives (new each epoch)
+    neg_sample_ratio = 1.0
+    n_pos_per_epoch = len(train_pos_indices)
+
+    if args.test_mode:
+        # Fast mode: cap at ~28k samples/epoch for ~1 min/epoch
+        max_samples = 28000
+        n_pos_per_epoch = min(n_pos_per_epoch, max_samples // 4)
+        log.info("TEST MODE: capping at %d samples/epoch", max_samples)
+
+    n_neg_per_epoch = min(int(n_pos_per_epoch * neg_sample_ratio), len(train_neg_indices))
+    samples_per_epoch = n_pos_per_epoch + n_neg_per_epoch
 
     log.info("Spatial split: %d positions (%d train, %d val)",
              len(positions), len(train_positions), len(val_positions))
-    log.info("Train: %d samples, Val: %d samples", len(train_indices), len(val_indices))
+    log.info("Train pool: %d pos + %d neg = %d total",
+             len(train_pos_indices), len(train_neg_indices),
+             len(train_pos_indices) + len(train_neg_indices))
+    log.info("Per-epoch: %d pos + %d neg = %d samples (%.0f%% pos)",
+             len(train_pos_indices), n_neg_per_epoch, samples_per_epoch,
+             100 * len(train_pos_indices) / samples_per_epoch)
+
+    # Cap validation to 5k samples for speed — same subset each epoch for consistency
+    max_val = 5000
+    if len(val_indices) > max_val:
+        val_rng = np.random.default_rng(99)
+        val_subset = val_rng.choice(val_indices, size=max_val, replace=False)
+        val_ds = Subset(train_full, val_subset)
+        log.info("Val capped to %d samples (from %d)", max_val, len(val_indices))
+    else:
+        val_ds = Subset(train_full, val_indices)
+
+    pin = device.type == 'cuda'
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False,
+                            num_workers=4, persistent_workers=True, pin_memory=pin)
 
     # Auto-compute pos weight
     all_files = []
@@ -202,17 +269,62 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
+    # Mixed precision — works on CUDA, partial support on MPS
+    use_amp = device.type == 'cuda'
+    scaler = torch.amp.GradScaler(enabled=use_amp) if use_amp else None
+    if use_amp:
+        log.info("Using mixed precision (AMP)")
+
     best_val_loss = float('inf')
     out_path = args.out or (args.data_dir[0] / 'v3_best.pt')
 
+    # Use a custom sampler that changes indices each epoch without recreating DataLoader
+    from torch.utils.data import Sampler
+
+    class EpochSubsampler(Sampler):
+        """Samples all positives + random negatives, reshuffled each epoch."""
+        def __init__(self, pos_indices, neg_indices, n_pos, n_neg):
+            self.pos_indices = pos_indices
+            self.neg_indices = neg_indices
+            self.n_pos = n_pos
+            self.n_neg = n_neg
+            self.epoch = 0
+
+        def set_epoch(self, epoch):
+            self.epoch = epoch
+
+        def __iter__(self):
+            rng = np.random.default_rng(self.epoch)
+            if self.n_pos < len(self.pos_indices):
+                pos = rng.choice(self.pos_indices, size=self.n_pos, replace=False)
+            else:
+                pos = self.pos_indices.copy()
+            neg = rng.choice(self.neg_indices, size=self.n_neg, replace=False)
+            all_idx = np.concatenate([pos, neg])
+            rng.shuffle(all_idx)
+            return iter(all_idx.tolist())
+
+        def __len__(self):
+            return self.n_pos + self.n_neg
+
+    train_sampler = EpochSubsampler(train_pos_indices, train_neg_indices,
+                                     n_pos_per_epoch, n_neg_per_epoch)
+
+    # Single DataLoader with persistent workers — no restart between epochs
+    # Sampler yields indices into train_full directly (not a Subset)
+    train_loader = DataLoader(train_full, batch_size=args.batch_size,
+                              sampler=train_sampler,
+                              num_workers=10, persistent_workers=True, pin_memory=pin)
+
     for epoch in range(args.epochs):
-        train_loss = train_epoch(model, train_loader, optimizer, device, pos_weight)
+        train_sampler.set_epoch(epoch)
+
+        train_loss = train_epoch(model, train_loader, optimizer, device, pos_weight, epoch, scaler)
         val_loss, iou = validate(model, val_loader, device)
         scheduler.step()
 
-        if (epoch + 1) % 10 == 0 or epoch == 0:
-            log.info("epoch %3d: train=%.4f  val=%.4f  IoU=%.4f",
-                     epoch + 1, train_loss, val_loss, iou)
+        log.info("epoch %3d: train=%.4f  val=%.4f  IoU=%.4f",
+                 epoch + 1, train_loss, val_loss, iou)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss

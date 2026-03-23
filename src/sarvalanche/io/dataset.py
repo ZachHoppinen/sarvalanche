@@ -144,19 +144,19 @@ def assemble_dataset(
 
     if sar_only:
         return ds
-    # --- 7. Load auxiliary layers ---
+    # --- 7. Load auxiliary layers (AOI derived from ref_grid) ---
     log.info('Getting DEM')
-    ds["dem"] = get_dem(aoi, aoi_crs, ref_grid)
+    ds["dem"] = get_dem(ref_grid)
     log.info('Getting slope')
-    ds["slope"] = get_slope(aoi, aoi_crs, ref_grid, dem=ds["dem"])
+    ds["slope"] = get_slope(ref_grid, dem=ds["dem"])
     log.info('Getting aspect')
-    ds["aspect"] = get_aspect(aoi, aoi_crs, ref_grid, dem=ds["dem"])
+    ds["aspect"] = get_aspect(ref_grid, dem=ds["dem"])
     log.info('Getting fcf')
-    ds["fcf"] = get_forest_cover(aoi, aoi_crs, ref_grid)
+    ds["fcf"] = get_forest_cover(ref_grid)
     log.info('Getting water cover')
-    ds["water_mask"] = get_water_extent(aoi, aoi_crs, ref_grid)
+    ds["water_mask"] = get_water_extent(ref_grid)
     log.info('Getting urban')
-    ds["urban_mask"] = get_urban_extent(aoi, aoi_crs, ref_grid)
+    ds["urban_mask"] = get_urban_extent(ref_grid)
 
     # add chunking
     spatial_chunks = {'x': chunks.get('x', 256), 'y': chunks.get('y', 256)}

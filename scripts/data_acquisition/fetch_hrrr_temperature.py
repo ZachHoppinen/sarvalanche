@@ -38,10 +38,13 @@ HOURS_TO_FETCH = [0, 3, 6, 9, 12, 15, 18, 21]  # UTC hours to sample
 KELVIN_TO_C = -273.15
 
 
+HRRR_MODEL = "hrrrak"  # default, overridden by --model flag
+
+
 def get_hrrr_t2m(date_str, hour):
-    """Fetch HRRR-AK 2m temperature for one date/hour. Returns (t2m_K, lat, lon) or None."""
+    """Fetch HRRR 2m temperature for one date/hour. Returns (t2m_K, lat, lon) or None."""
     try:
-        H = Herbie(f"{date_str} {hour:02d}:00", model="hrrrak", product="sfc", fxx=0, verbose=False)
+        H = Herbie(f"{date_str} {hour:02d}:00", model=HRRR_MODEL, product="sfc", fxx=0, verbose=False)
         ds = H.xarray("TMP:2 m above ground")
         t2m = ds["t2m"].values  # (y, x) in Kelvin
         lat = ds["latitude"].values  # (y, x)
@@ -159,7 +162,12 @@ def main():
                         help="Output NetCDF path")
     parser.add_argument("--hours", type=int, nargs="+", default=HOURS_TO_FETCH,
                         help="UTC hours to fetch (default: 0 3 6 9 12 15 18 21)")
+    parser.add_argument("--model", type=str, default="hrrrak",
+                        help="HRRR model: 'hrrrak' for Alaska, 'hrrr' for CONUS (default: hrrrak)")
     args = parser.parse_args()
+
+    global HRRR_MODEL
+    HRRR_MODEL = args.model
 
     hours_to_fetch = args.hours
 
@@ -249,7 +257,7 @@ def main():
             "x": sar_lon_1d,
         },
     )
-    out_ds.attrs["source"] = "HRRR-Alaska (3km) via Herbie, lapse-rate adjusted"
+    out_ds.attrs["source"] = f"HRRR ({HRRR_MODEL}, 3km) via Herbie, lapse-rate adjusted"
     out_ds.attrs["lapse_rate"] = f"{LAPSE_RATE} C/m"
     out_ds.attrs["hours_sampled"] = str(HOURS_TO_FETCH)
 

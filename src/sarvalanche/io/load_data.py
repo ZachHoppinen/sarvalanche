@@ -28,7 +28,28 @@ from rasterio.errors import NotGeoreferencedWarning
 # silence NotGeoreferencedWarning: Dataset has no geotransform, gcps, or rpcs. The identity matrix will be returned.
 warnings.filterwarnings('ignore', category=NotGeoreferencedWarning)
 
+from pyproj import Transformer
+from shapely.geometry import box
+from shapely.ops import transform as shapely_transform
+
 log = logging.getLogger(__name__)
+
+
+def _aoi_from_ref_grid(ref_grid, target_crs="EPSG:4326"):
+    """Derive a fetch-AOI polygon from a reference grid.
+
+    Returns a shapely Polygon in *target_crs* (default WGS 84) that fully
+    covers the ref_grid extent.  Useful for calling external data APIs
+    that need an AOI + CRS without having to thread the original user AOI
+    through every helper.
+    """
+    left, bottom, right, top = ref_grid.rio.bounds()
+    grid_crs = ref_grid.rio.crs
+    aoi = box(left, bottom, right, top)
+    if str(grid_crs) != target_crs:
+        t = Transformer.from_crs(grid_crs, target_crs, always_xy=True)
+        aoi = shapely_transform(t.transform, aoi)
+    return aoi, target_crs
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +263,9 @@ def _get_py3dep_map(
     return _clean_and_match(da, ref_grid, to_radians=to_radians)
 
 
-def get_dem(aoi, aoi_crs, ref_grid=None, resolution=30):
+def get_dem(ref_grid, aoi=None, aoi_crs=None, resolution=30):
+    if aoi is None:
+        aoi, aoi_crs = _aoi_from_ref_grid(ref_grid)
     dem = _with_retry(
         lambda: py3dep.get_dem(geometry=aoi, resolution=resolution, crs=aoi_crs),
         label="py3dep.get_dem",
@@ -252,7 +275,9 @@ def get_dem(aoi, aoi_crs, ref_grid=None, resolution=30):
     return dem.assign_attrs(units="m", source="py3dep", product="elevation")
 
 
-def get_slope(aoi, aoi_crs, ref_grid=None, resolution=30, dem=None):
+def get_slope(ref_grid, aoi=None, aoi_crs=None, resolution=30, dem=None):
+    if aoi is None:
+        aoi, aoi_crs = _aoi_from_ref_grid(ref_grid)
     try:
         slope = _get_py3dep_map(
             layer="Slope Degrees",
@@ -275,7 +300,9 @@ def get_slope(aoi, aoi_crs, ref_grid=None, resolution=30, dem=None):
         return slope.assign_attrs(units="radians", source="computed_from_dem", product="slope")
 
 
-def get_aspect(aoi, aoi_crs, ref_grid=None, resolution=30, dem=None):
+def get_aspect(ref_grid, aoi=None, aoi_crs=None, resolution=30, dem=None):
+    if aoi is None:
+        aoi, aoi_crs = _aoi_from_ref_grid(ref_grid)
     try:
         aspect = _get_py3dep_map(
             layer="Aspect Degrees",
@@ -366,12 +393,14 @@ def _get_hansen_tree_cover(aoi, aoi_crs, ref_grid=None):
     return fcf.assign_attrs(units="percent", source="hansen_gfc", product="forest_cover")
 
 
-def get_forest_cover(aoi, aoi_crs, ref_grid=None):
+def get_forest_cover(ref_grid, aoi=None, aoi_crs=None):
     """Get forest cover fraction (0-100%).
 
     Tries NLCD first (CONUS). If the result is all-NaN (e.g. Alaska),
     falls back to Hansen Global Forest Change tree cover.
     """
+    if aoi is None:
+        aoi, aoi_crs = _aoi_from_ref_grid(ref_grid)
     g = gpd.GeoSeries([aoi], crs=aoi_crs)
     try:
         fcf = _with_retry(
@@ -458,12 +487,14 @@ def _get_esa_water(aoi, aoi_crs, ref_grid=None):
     )
 
 
-def get_water_extent(aoi, aoi_crs, ref_grid=None, year=2021):
+def get_water_extent(ref_grid, aoi=None, aoi_crs=None, year=2021):
     """Get water extent mask (1=water, 0=land).
 
     Tries NLCD first (CONUS). If the result is all-NaN (e.g. Alaska),
     falls back to ESA WorldCover 2021 (global coverage).
     """
+    if aoi is None:
+        aoi, aoi_crs = _aoi_from_ref_grid(ref_grid)
     g = gpd.GeoSeries([aoi], crs=aoi_crs)
     try:
         years = {'impervious': [year], 'cover': [year], 'canopy': [year], 'descriptor': [year]}
@@ -485,12 +516,14 @@ def get_water_extent(aoi, aoi_crs, ref_grid=None, year=2021):
         return _get_esa_water(aoi, aoi_crs, ref_grid)
 
 
-def get_urban_extent(aoi, aoi_crs, ref_grid=None, year=2021):
+def get_urban_extent(ref_grid, aoi=None, aoi_crs=None, year=2021):
     """Get urban/developed extent mask (1=developed, 0=undeveloped).
 
     Tries NLCD first (CONUS). If the result is all-NaN (e.g. Alaska),
     falls back to ESA WorldCover 2021 (class 50 = built-up).
     """
+    if aoi is None:
+        aoi, aoi_crs = _aoi_from_ref_grid(ref_grid)
     g = gpd.GeoSeries([aoi], crs=aoi_crs)
     try:
         years = {'impervious': [year], 'cover': [year], 'canopy': [year], 'descriptor': [year]}

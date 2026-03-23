@@ -66,10 +66,9 @@ def extract_single_pair(
     da_vv, da_vh, i, j, times,
     anf_norm, hrrr_cache=None, tau_proximity=12.0,
 ):
-    """Extract 3-channel SAR array for one crossing pair.
+    """Extract 5-channel SAR array for one crossing pair.
 
-    Channels: change (log1p dB diff), ANF, proximity.
-    VH data is not used at the pair level (d_cr is pooled in static stack).
+    Channels: change_vv, change_vh, change_cr, ANF, proximity.
 
     Returns (N_SAR, H, W) float32 array, or None if data is missing.
     """
@@ -84,10 +83,28 @@ def extract_single_pair(
     if np.isfinite(vv_after).sum() < 100:
         return None
 
-    change = np.sign(vv_diff) * np.log1p(np.abs(vv_diff))
+    change_vv = np.sign(vv_diff) * np.log1p(np.abs(vv_diff))
+
+    # VH change
+    if da_vh is not None:
+        vh_before = da_vh[i]
+        vh_after = da_vh[j]
+        vh_diff = (vh_after - vh_before).astype(np.float32)
+        vh_diff = np.nan_to_num(vh_diff, nan=0.0)
+        change_vh = np.sign(vh_diff) * np.log1p(np.abs(vh_diff))
+    else:
+        change_vh = np.zeros((H, W), dtype=np.float32)
+
+    # Cross-ratio change: (VH-VV)_after - (VH-VV)_before = VH_diff - VV_diff
+    if da_vh is not None:
+        cr_diff = vh_diff - vv_diff
+        change_cr = np.sign(cr_diff) * np.log1p(np.abs(cr_diff))
+    else:
+        change_cr = np.zeros((H, W), dtype=np.float32)
+
     proximity = np.full((H, W), 1.0 / (1.0 + span_days / tau_proximity), dtype=np.float32)
 
-    stacked = np.stack([change, anf_norm, proximity], axis=0)
+    stacked = np.stack([change_vv, change_vh, change_cr, anf_norm, proximity], axis=0)
     return stacked.astype(np.float32)
 
 
@@ -274,6 +291,75 @@ def get_all_season_pairs(
     log.info('get_all_season_pairs: %d unique pairs (max span %dd)',
              len(results), max_span_days)
     return results
+
+
+def get_pair_metadata_and_tracks(
+    ds: xr.Dataset,
+    max_span_days: int = 60,
+    tau_proximity: float = 12.0,
+    hrrr_ds: xr.Dataset | None = None,
+) -> tuple[list[dict], dict, dict]:
+    """Return pair metadata + track data without materializing SAR arrays.
+
+    Use for memory-efficient extraction: compute one pair's SAR at a time
+    via extract_single_pair(tracks[meta['track']], meta['i'], meta['j'], ...).
+
+    Returns
+    -------
+    pair_metas : list of dicts with track, i, j, t_start, t_end, span_days, melt_weight_mean
+    tracks : dict from _get_track_data()
+    hrrr_cache : dict of melt weights per timestamp
+    """
+    hrrr_cache = {}
+    if hrrr_ds is not None:
+        hrrr_times = pd.DatetimeIndex(hrrr_ds.time.values)
+        for t in pd.DatetimeIndex(ds.time.values):
+            hrrr_cache[t] = _hrrr_pdd_melt_weight(hrrr_ds, t, hrrr_times)
+
+    tracks = _get_track_data(ds)
+    metas = []
+    seen = set()
+
+    for track_id, td in tracks.items():
+        times = td['times']
+        for i in range(len(times)):
+            for j in range(i + 1, len(times)):
+                span = (times[j] - times[i]).days
+                if span > max_span_days:
+                    continue
+
+                key = (track_id, str(times[i]), str(times[j]))
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                # Quick coverage check: does VV have data at both timestamps?
+                if np.isfinite(td['vv'][j]).sum() < 100:
+                    continue
+
+                mw_i = hrrr_cache.get(times[i])
+                mw_j = hrrr_cache.get(times[j])
+                melt_w = 1.0
+                if mw_i is not None and mw_j is not None:
+                    melt_w = float(np.minimum(mw_i, mw_j).mean())
+                elif mw_i is not None:
+                    melt_w = float(mw_i.mean())
+                elif mw_j is not None:
+                    melt_w = float(mw_j.mean())
+
+                metas.append({
+                    'track': track_id,
+                    'i': i,
+                    'j': j,
+                    't_start': times[i],
+                    't_end': times[j],
+                    'span_days': span,
+                    'melt_weight_mean': melt_w,
+                })
+
+    log.info('get_pair_metadata_and_tracks: %d pairs, %d tracks (max span %dd)',
+             len(metas), len(tracks), max_span_days)
+    return metas, tracks, hrrr_cache
 
 
 # ── Static stack ─────────────────────────────────────────────────────

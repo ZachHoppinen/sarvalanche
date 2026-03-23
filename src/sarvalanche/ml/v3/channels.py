@@ -5,9 +5,9 @@ The CNN evaluates each pair independently against static terrain context.
 Temporal aggregation happens post-inference via the temporal onset detector.
 
 Trimmed based on ablation study (2026-03-19):
-  - Removed: vv_magnitude, vh_magnitude, cross_ratio, melt_weight (SAR)
+  - Removed: vv_magnitude, vh_magnitude, melt_weight (SAR)
   - Removed: fcf, water_mask, release_zones, runout_angle, curvature (static)
-  - Added TPI (not fairly tested in ablation — was zeros due to compute bug)
+  - Added: VH change, cross-ratio change (2026-03-21)
   - Removed d_cr after further ablation showed no benefit
 """
 
@@ -17,7 +17,9 @@ import numpy as np
 # ── SAR channels (per pair) ──────────────────────────────────────────
 
 SAR_CHANNELS: list[str] = [
-    'change',           # log1p dB diff (after - before)
+    'change_vv',        # log1p VV dB diff (after - before)
+    'change_vh',        # log1p VH dB diff (after - before)
+    'change_cr',        # cross-ratio change (VH-VV)_after - (VH-VV)_before
     'anf',              # normalized local incidence angle
     'proximity',        # temporal proximity weight
 ]

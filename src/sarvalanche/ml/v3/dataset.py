@@ -113,9 +113,11 @@ class V3PairDataset(Dataset):
         sar = data['sar'].astype(np.float32)          # (N_SAR, H, W)
         static = data['static'].astype(np.float32)    # (N_STATIC, H, W)
 
-        # Handle patches extracted with more static channels than current config
+        # Handle patches extracted with different channel counts than current config
         if static.shape[0] > N_STATIC:
             static = static[:N_STATIC]
+        if sar.shape[0] > N_SAR:
+            sar = sar[:N_SAR]
 
         # Label mask
         if 'label_mask' in data:
