@@ -27,10 +27,13 @@ class V3InMemoryDataset(Dataset):
     """In-memory dataset — all arrays shared via fork."""
 
     def __init__(self, pair_diffs, pair_metas, anf_per_track, static_scene,
-                 positions, date_configs, augment=True, regional_cache=None):
+                 positions, date_configs, augment=True, regional_cache=None,
+                 anf_raw_per_track=None, max_label_anf=5.0):
         self.pair_diffs = pair_diffs  # list of (vv_diff, vh_diff) tuples
         self.pair_metas = pair_metas
         self.anf_per_track = anf_per_track
+        self.anf_raw_per_track = anf_raw_per_track or {}
+        self.max_label_anf = max_label_anf
         self.static_scene = static_scene
         self.positions = positions
         self.date_configs = date_configs
@@ -48,7 +51,7 @@ class V3InMemoryDataset(Dataset):
     def _make_sar_static(self, pair_idx, y0, x0, size):
         """Build SAR + static for a given window. Returns (N_SAR, size, size), (N_STATIC, size, size)."""
         meta = self.pair_metas[pair_idx]
-        vv_diff, vh_diff = self.pair_diffs[pair_idx]
+        vv_diff, vh_diff, vv_smooth, vh_smooth = self.pair_diffs[pair_idx]
         H, W = vv_diff.shape
 
         # Clamp to scene
@@ -64,7 +67,18 @@ class V3InMemoryDataset(Dataset):
         change_cr = np.sign(cr) * np.log1p(np.abs(cr))
         anf = self.anf_per_track[meta['track']][y0c:y1, x0c:x1]
         prox = np.full(vv.shape, 1.0 / (1.0 + meta['span_days'] / 12.0), dtype=np.float32)
-        sar = np.stack([change_vv, change_vh, change_cr, anf, prox], axis=0)
+
+        # Smoothed channels (TV-denoised, then log1p like raw)
+        vvs = vv_smooth[y0c:y1, x0c:x1].astype(np.float32)
+        vhs = vh_smooth[y0c:y1, x0c:x1].astype(np.float32)
+        change_vv_s = np.sign(vvs) * np.log1p(np.abs(vvs))
+        change_vh_s = np.sign(vhs) * np.log1p(np.abs(vhs))
+
+        # Coverage mask: 1 where we have real SAR data, 0 where NaN-filled
+        coverage = (np.abs(vv) > 1e-6).astype(np.float32)
+
+        sar = np.stack([change_vv, change_vh, change_cr, anf, prox,
+                        change_vv_s, change_vh_s, coverage], axis=0)
         static = self.static_scene[:, y0c:y1, x0c:x1].copy()
         static = normalize_dem_patch(static)
 
@@ -130,6 +144,11 @@ class V3InMemoryDataset(Dataset):
         no_cov = np.abs(sar_patch[0]) < 1e-6
         label_mask[no_cov] = 0.0
 
+        # Mask debris in high-ANF zones (layover/foreshortening) for this track
+        if self.anf_raw_per_track and meta['track'] in self.anf_raw_per_track:
+            anf_raw = self.anf_raw_per_track[meta['track']][y0:y0+ps, x0:x0+ps]
+            label_mask[anf_raw >= self.max_label_anf] = 0.0
+
         # Augmentation (same flip for fine + context, NOT regional)
         if self.augment:
             if np.random.random() > 0.5:
@@ -152,8 +171,10 @@ class V3InMemoryDataset(Dataset):
         }
 
 
-def precompute_pair_diffs(tracks, pair_metas):
-    """Precompute raw VV/VH diffs for all pairs."""
+def precompute_pair_diffs(tracks, pair_metas, tv_weight=1.0):
+    """Precompute raw VV/VH diffs and TV-smoothed versions for all pairs."""
+    from skimage.restoration import denoise_tv_chambolle
+
     pair_diffs = []
     for pi, meta in enumerate(pair_metas):
         td = tracks[meta['track']]
@@ -161,7 +182,12 @@ def precompute_pair_diffs(tracks, pair_metas):
             (td['vv'][meta['j']] - td['vv'][meta['i']]).astype(np.float32), nan=0.0)
         vh_diff = np.nan_to_num(
             (td['vh'][meta['j']] - td['vh'][meta['i']]).astype(np.float32), nan=0.0) if td['vh'] is not None else np.zeros_like(vv_diff)
-        pair_diffs.append((vv_diff, vh_diff))
+
+        # TV-denoise the raw dB diffs
+        vv_smooth = denoise_tv_chambolle(vv_diff, weight=tv_weight).astype(np.float32)
+        vh_smooth = denoise_tv_chambolle(vh_diff, weight=tv_weight).astype(np.float32)
+
+        pair_diffs.append((vv_diff, vh_diff, vv_smooth, vh_smooth))
         if (pi + 1) % 100 == 0:
             log.info("    Precomputed %d/%d pair diffs", pi + 1, len(pair_metas))
     return pair_diffs
@@ -194,9 +220,17 @@ def build_inmemory_dataset(
     t0 = _time.time()
     pair_diffs = precompute_pair_diffs(tracks, pair_metas)
     log.info("  Done in %.0fs (%.1f GB)", _time.time() - t0,
-             sum(d[0].nbytes + d[1].nbytes for d in pair_diffs) / 1e9)
+             sum(sum(a.nbytes for a in d) for d in pair_diffs) / 1e9)
 
     anf_per_track = {tid: td['anf'] for tid, td in tracks.items()}
+
+    # Raw ANF for label masking (exclude high-ANF layover zones)
+    anf_raw_per_track = {}
+    if 'anf' in ds:
+        static_tracks = ds.static_track.values
+        anf_data = ds['anf'].values
+        for si, st in enumerate(static_tracks):
+            anf_raw_per_track[str(int(st))] = anf_data[si].squeeze().astype(np.float32)
 
     # Per-date setup
     date_configs = []
@@ -227,9 +261,35 @@ def build_inmemory_dataset(
 
         ref = pd.Timestamp(date_str)
         pos_pair_indices = set()
-        for pi, meta in enumerate(pair_metas):
-            if meta['t_start'] <= ref < meta['t_end']:
-                pos_pair_indices.add(pi)
+
+        # Check if this GeoPackage has pair constraints (autolabels)
+        # If so, only allow pairs matching the track + time window that generated the label
+        has_pair_constraint = (
+            len(gdf) > 0
+            and 'track' in gdf.columns
+            and 't_start' in gdf.columns
+            and 't_end' in gdf.columns
+        )
+
+        if has_pair_constraint:
+            # Autolabel: only match pairs from the same track/time windows
+            allowed_pairs = set()
+            for _, row in gdf[['track', 't_start', 't_end']].drop_duplicates().iterrows():
+                label_track = str(int(row['track']))
+                label_ts = pd.Timestamp(row['t_start'])
+                label_te = pd.Timestamp(row['t_end'])
+                for pi, meta in enumerate(pair_metas):
+                    if (meta['track'] == label_track
+                            and abs((meta['t_start'] - label_ts).days) <= 1
+                            and abs((meta['t_end'] - label_te).days) <= 1):
+                        allowed_pairs.add(pi)
+            pos_pair_indices = allowed_pairs
+            log.info("  %s: autolabel — %d constrained pairs", date_str, len(pos_pair_indices))
+        else:
+            # Human label: all bracketing pairs
+            for pi, meta in enumerate(pair_metas):
+                if meta['t_start'] <= ref < meta['t_end']:
+                    pos_pair_indices.add(pi)
 
         cfg = {'pos_pair_indices': pos_pair_indices, 'debris_mask': debris_mask}
         date_configs.append(cfg)
@@ -275,7 +335,7 @@ def build_inmemory_dataset(
                              (target, target), order=1,
                              preserve_range=True).transpose(2, 0, 1).astype(np.float32)
     regional_cache = {}
-    for pi, (vv_diff, vh_diff) in enumerate(pair_diffs):
+    for pi, (vv_diff, vh_diff, vv_sm, vh_sm) in enumerate(pair_diffs):
         meta = pair_metas[pi]
         vv_s = resize(vv_diff, (target, target), order=1, preserve_range=True).astype(np.float32)
         vh_s = resize(vh_diff, (target, target), order=1, preserve_range=True).astype(np.float32)
@@ -286,7 +346,15 @@ def build_inmemory_dataset(
         anf_s = resize(anf_per_track[meta['track']], (target, target),
                         order=1, preserve_range=True).astype(np.float32)
         prox = np.full((target, target), 1.0 / (1.0 + meta['span_days'] / 12.0), dtype=np.float32)
-        sar_r = np.stack([cv, ch, ccr, anf_s, prox], axis=0)
+        # Smoothed channels for regional
+        vv_sm_s = resize(vv_sm, (target, target), order=1, preserve_range=True).astype(np.float32)
+        vh_sm_s = resize(vh_sm, (target, target), order=1, preserve_range=True).astype(np.float32)
+        cvs = np.sign(vv_sm_s) * np.log1p(np.abs(vv_sm_s))
+        chs = np.sign(vh_sm_s) * np.log1p(np.abs(vh_sm_s))
+        # Coverage: fraction of valid pixels at regional scale
+        cov = (np.abs(vv_diff) > 1e-6).astype(np.float32)
+        cov_r = resize(cov, (target, target), order=1, preserve_range=True).astype(np.float32)
+        sar_r = np.stack([cv, ch, ccr, anf_s, prox, cvs, chs, cov_r], axis=0)
         regional_cache[pi] = np.concatenate([sar_r, static_regional], axis=0)
     log.info("  Regional: %d pairs (%.0fs, %.0f MB)", len(regional_cache),
              _time.time() - t0, sum(v.nbytes for v in regional_cache.values()) / 1e6)
@@ -294,6 +362,7 @@ def build_inmemory_dataset(
     return V3InMemoryDataset(
         pair_diffs, pair_metas, anf_per_track, static_scene, all_positions,
         date_configs, augment=augment, regional_cache=regional_cache,
+        anf_raw_per_track=anf_raw_per_track,
     )
 
 

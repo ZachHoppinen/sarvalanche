@@ -65,13 +65,17 @@ def _hrrr_pdd_melt_weight(hrrr_ds, sar_date, hrrr_times, pdd_threshold=0.1):
 def extract_single_pair(
     da_vv, da_vh, i, j, times,
     anf_norm, hrrr_cache=None, tau_proximity=12.0,
+    tv_weight=1.0,
 ):
-    """Extract 5-channel SAR array for one crossing pair.
+    """Extract 7-channel SAR array for one crossing pair.
 
-    Channels: change_vv, change_vh, change_cr, ANF, proximity.
+    Channels: change_vv, change_vh, change_cr, ANF, proximity,
+              change_vv_smooth, change_vh_smooth.
 
     Returns (N_SAR, H, W) float32 array, or None if data is missing.
     """
+    from skimage.restoration import denoise_tv_chambolle
+
     H, W = da_vv.shape[1], da_vv.shape[2]
     span_days = (times[j] - times[i]).days
 
@@ -93,6 +97,7 @@ def extract_single_pair(
         vh_diff = np.nan_to_num(vh_diff, nan=0.0)
         change_vh = np.sign(vh_diff) * np.log1p(np.abs(vh_diff))
     else:
+        vh_diff = np.zeros((H, W), dtype=np.float32)
         change_vh = np.zeros((H, W), dtype=np.float32)
 
     # Cross-ratio change: (VH-VV)_after - (VH-VV)_before = VH_diff - VV_diff
@@ -104,7 +109,17 @@ def extract_single_pair(
 
     proximity = np.full((H, W), 1.0 / (1.0 + span_days / tau_proximity), dtype=np.float32)
 
-    stacked = np.stack([change_vv, change_vh, change_cr, anf_norm, proximity], axis=0)
+    # TV-smoothed channels
+    vv_smooth = denoise_tv_chambolle(vv_diff, weight=tv_weight).astype(np.float32)
+    vh_smooth = denoise_tv_chambolle(vh_diff, weight=tv_weight).astype(np.float32)
+    change_vv_s = np.sign(vv_smooth) * np.log1p(np.abs(vv_smooth))
+    change_vh_s = np.sign(vh_smooth) * np.log1p(np.abs(vh_smooth))
+
+    # Coverage mask: 1 where real SAR data, 0 where NaN-filled
+    coverage = (np.abs(vv_diff) > 1e-6).astype(np.float32)
+
+    stacked = np.stack([change_vv, change_vh, change_cr, anf_norm, proximity,
+                        change_vv_s, change_vh_s, coverage], axis=0)
     return stacked.astype(np.float32)
 
 

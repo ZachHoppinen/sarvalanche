@@ -105,6 +105,13 @@ def run_pair_temporal_onset(
 ):
     """Run pair-aware temporal onset detection with multi-peak support.
 
+    Candidate detection is per-track then combined:
+      - Single track: 2+ clean firing dates, OR 1+ clean date with peak prob >= single_track_high_prob
+      - Cross-track: 2+ tracks each with 1+ clean firing date
+
+    This handles layover correctly — a pixel only visible to 1 track can still
+    be detected if that track is confident enough.
+
     Returns dataset with per-event arrays (event_rank, y, x).
     """
     H, W = pair_probs[0].shape
@@ -125,16 +132,26 @@ def run_pair_temporal_onset(
 
     # Parse track IDs
     pair_tracks = [str(m.get('track', '')) for m in pair_meta]
+    unique_tracks = sorted(set(pair_tracks))
+    n_tracks = len(unique_tracks)
+    log.info("  Tracks: %s", unique_tracks)
 
     # ── Pass 1: find which pairs fire at each pixel ──────────────────
     date_fires = np.zeros((T, H, W), dtype=bool)
     pixel_firing_pairs = {}  # (y,x) → list of (t_start, t_end, prob, track)
     n_covered = np.zeros((H, W), dtype=np.int32)  # total pairs with coverage
 
+    # Per-track stats: clean firing dates and peak prob
+    track_clean_fires = {t: np.zeros((H, W), dtype=np.int32) for t in unique_tracks}
+    track_peak_prob = {t: np.zeros((H, W), dtype=np.float32) for t in unique_tracks}
+    track_n_covered = {t: np.zeros((H, W), dtype=np.int32) for t in unique_tracks}
+
     for pi in range(N):
         prob = pair_probs[pi]
         has_data = ~np.isnan(prob)
         n_covered += has_data.astype(np.int32)
+        track = pair_tracks[pi]
+        track_n_covered[track] += has_data.astype(np.int32)
 
         fires = has_data & (prob >= threshold)
         if not fires.any():
@@ -144,7 +161,18 @@ def run_pair_temporal_onset(
         ti = unique_dates.index(te_date)
         date_fires[ti] |= fires
 
-        track = pair_tracks[pi]
+        # Per-track: update peak prob
+        better = fires & (prob > track_peak_prob[track])
+        track_peak_prob[track][better] = prob[better]
+
+        # Per-track: is this a clean firing date?
+        mw = melt_weights[te_date]
+        if np.isscalar(mw):
+            is_clean = fires if mw >= melt_threshold else np.zeros_like(fires)
+        else:
+            is_clean = fires & (mw >= melt_threshold)
+        track_clean_fires[track] += is_clean.astype(np.int32)
+
         fy, fx = np.where(fires)
         for i in range(len(fy)):
             key = (int(fy[i]), int(fx[i]))
@@ -156,7 +184,28 @@ def run_pair_temporal_onset(
 
     log.info("  Pixels with any firing pair: %d", len(pixel_firing_pairs))
 
-    # Count clean dates per pixel
+    # ── Per-track candidate logic ────────────────────────────────────
+    # Always require 2+ clean firing dates, but count per-track:
+    #   (a) Single track with 2+ clean firing dates (including long pairs)
+    #   (b) 2+ tracks each with 1+ clean firing date (cross-track = independent confirmation)
+    # This ensures temporal confirmation while handling NaN/layover correctly.
+    track_confirms = np.zeros((H, W), dtype=np.int32)  # tracks with 2+ clean dates
+
+    for t in unique_tracks:
+        has_coverage = track_n_covered[t] > 0
+        multi_clean = track_clean_fires[t] >= 2
+        confirms = has_coverage & multi_clean
+        track_confirms += confirms.astype(np.int32)
+
+    # Cross-track: 2+ tracks each saw it on at least 1 clean date
+    tracks_with_clean = np.zeros((H, W), dtype=np.int32)
+    for t in unique_tracks:
+        tracks_with_clean += (track_clean_fires[t] >= 1).astype(np.int32)
+    cross_track = tracks_with_clean >= 2
+
+    candidate_mask = (track_confirms >= 1) | cross_track
+
+    # Also compute overall clean dates for logging/output
     n_dates_clean = np.zeros((H, W), dtype=np.int32)
     n_dates_all = np.zeros((H, W), dtype=np.int32)
     for ti, d in enumerate(unique_dates):
@@ -168,15 +217,21 @@ def run_pair_temporal_onset(
         else:
             n_dates_clean += (date_fires[ti] & (mw >= melt_threshold)).astype(np.int32)
 
-    candidate_mask = n_dates_clean >= min_dates
     n_cand = candidate_mask.sum()
-    log.info("  Candidates (>=%d clean dates): %d (%.1f%%)",
-             min_dates, n_cand, 100 * n_cand / max(H * W, 1))
+    n_single = int((track_confirms >= 1).sum())
+    n_cross = int(cross_track.sum())
+    log.info("  Candidates: %d total — %d single-track (2+ clean dates), %d cross-track (2+ tracks × 1+ clean)",
+             n_cand, n_single, n_cross)
 
     # ── Pass 2: multi-peak event splitting for candidates ────────────
     # Output: up to MAX_EVENTS events per pixel
     appearance_dates = np.full((MAX_EVENTS, H, W), np.datetime64("NaT"), dtype="datetime64[ns]")
     disappearance_dates = np.full((MAX_EVENTS, H, W), np.datetime64("NaT"), dtype="datetime64[ns]")
+    # Bracket dates: the 4 key dates per event
+    min_t_start = np.full((MAX_EVENTS, H, W), np.datetime64("NaT"), dtype="datetime64[ns]")  # first signal appearance
+    max_t_start = np.full((MAX_EVENTS, H, W), np.datetime64("NaT"), dtype="datetime64[ns]")  # start of likely event period
+    min_t_end = np.full((MAX_EVENTS, H, W), np.datetime64("NaT"), dtype="datetime64[ns]")    # end of likely event period
+    max_t_end = np.full((MAX_EVENTS, H, W), np.datetime64("NaT"), dtype="datetime64[ns]")    # last image with debris increase
     event_peak_prob = np.full((MAX_EVENTS, H, W), np.nan, dtype=np.float32)
     event_n_pairs = np.zeros((MAX_EVENTS, H, W), dtype=np.int32)
     event_n_tracks = np.zeros((MAX_EVENTS, H, W), dtype=np.int32)
@@ -222,9 +277,15 @@ def run_pair_temporal_onset(
             if ei >= MAX_EVENTS:
                 break
 
-            # Appearance = max(t_start) in this event
-            app = max(ts for ts, te, p, tr in event_pairs)
+            # Bracket dates from firing pairs
+            t_starts = [ts for ts, te, p, tr in event_pairs]
+            t_ends = [te for ts, te, p, tr in event_pairs]
+            app = max(t_starts)
             appearance_dates[ei, y, x] = np.datetime64(app)
+            min_t_start[ei, y, x] = np.datetime64(min(t_starts))
+            max_t_start[ei, y, x] = np.datetime64(max(t_starts))
+            min_t_end[ei, y, x] = np.datetime64(min(t_ends))
+            max_t_end[ei, y, x] = np.datetime64(max(t_ends))
 
             # Peak prob in this event
             best_p = max(p for ts, te, p, tr in event_pairs)
@@ -315,9 +376,15 @@ def run_pair_temporal_onset(
         log.info("  Mean peak prob: %.3f", np.nanmean(peak_all[candidate_mask]))
         log.info("  Mean firing ratio: %.3f", firing_ratio[candidate_mask].mean())
         log.info("  Mean max tracks per event: %.1f", max_tracks[candidate_mask].mean())
+        log.info("  Mean confirming tracks: %.1f", track_confirms[candidate_mask].mean())
         for nt in range(1, 4):
             n_with = (max_tracks[candidate_mask] >= nt).sum()
             log.info("    %d+ tracks: %d (%.0f%%)", nt, n_with, 100 * n_with / n_cand)
+        n_single_only = int(((track_confirms >= 1) & ~cross_track & candidate_mask).sum())
+        n_cross_only = int((cross_track & ~(track_confirms >= 1) & candidate_mask).sum())
+        n_both = int(((track_confirms >= 1) & cross_track & candidate_mask).sum())
+        log.info("  Candidate sources: single-track-only=%d, cross-track-only=%d, both=%d",
+                 n_single_only, n_cross_only, n_both)
 
     # Build output
     out_coords = coords or {}
@@ -325,6 +392,10 @@ def run_pair_temporal_onset(
         {
             "appearance_date": (["event", "y", "x"], appearance_dates),
             "disappearance_date": (["event", "y", "x"], disappearance_dates),
+            "min_t_start": (["event", "y", "x"], min_t_start),
+            "max_t_start": (["event", "y", "x"], max_t_start),
+            "min_t_end": (["event", "y", "x"], min_t_end),
+            "max_t_end": (["event", "y", "x"], max_t_end),
             "event_peak_prob": (["event", "y", "x"], event_peak_prob),
             "event_n_pairs": (["event", "y", "x"], event_n_pairs),
             "event_n_tracks": (["event", "y", "x"], event_n_tracks),
@@ -337,8 +408,8 @@ def run_pair_temporal_onset(
             "n_firing_total": (["y", "x"], n_firing_total),
             "firing_ratio": (["y", "x"], firing_ratio if n_cand > 0 else np.zeros((H, W), dtype=np.float32)),
             "peak_prob": (["y", "x"], np.nanmax(event_peak_prob, axis=0)),
-            # Peak date = t_end of the pair with highest prob across all events
-            # (computed in pass 1 but not tracked per-event currently)
+            "tracks_confirming": (["y", "x"], track_confirms),
+            "tracks_with_clean_fire": (["y", "x"], tracks_with_clean),
         },
         coords={**out_coords, "event": np.arange(MAX_EVENTS)},
     )

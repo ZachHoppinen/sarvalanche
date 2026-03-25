@@ -22,6 +22,9 @@ SAR_CHANNELS: list[str] = [
     'change_cr',        # cross-ratio change (VH-VV)_after - (VH-VV)_before
     'anf',              # normalized local incidence angle
     'proximity',        # temporal proximity weight
+    'change_vv_smooth', # TV-denoised VV change (weight=1.0)
+    'change_vh_smooth', # TV-denoised VH change (weight=1.0)
+    'coverage',         # 1=valid SAR data, 0=no coverage (NaN-filled)
 ]
 
 N_SAR: int = len(SAR_CHANNELS)

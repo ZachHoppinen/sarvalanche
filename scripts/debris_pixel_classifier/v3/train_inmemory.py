@@ -30,7 +30,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
 
 from sarvalanche.io.dataset import load_netcdf_to_dataset
-from sarvalanche.ml.v3.channels import N_INPUT, N_STATIC
+from sarvalanche.ml.v3.channels import N_INPUT, N_SAR, N_STATIC, SAR_CHANNELS, STATIC_CHANNELS
 from sarvalanche.ml.v3.model import SinglePairDetector
 from sarvalanche.ml.v3.patch_extraction import (
     build_static_stack,
@@ -52,29 +52,13 @@ def _resolve_device(device_str):
     return torch.device("cpu")
 
 
-def focal_bce(logits, targets, pos_weight, sample_weights=None, gamma=2.0, alpha=0.75):
-    """Focal loss — downweights easy examples, focuses on hard ones.
-
-    gamma: focusing parameter (0 = standard BCE, 2 = strong focusing)
-    alpha: weight for positive class (like pos_weight but multiplicative)
-    """
-    bce = nn.functional.binary_cross_entropy_with_logits(
-        logits, targets, reduction="none",
+def weighted_bce(logits, targets, pos_weight, sample_weights=None):
+    per_pixel = nn.functional.binary_cross_entropy_with_logits(
+        logits, targets, pos_weight=pos_weight, reduction="none",
     )
-    probs = torch.sigmoid(logits)
-    # p_t = prob of correct class
-    p_t = probs * targets + (1 - probs) * (1 - targets)
-    focal_weight = (1 - p_t) ** gamma
-
-    # Alpha weighting for class imbalance
-    alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
-
-    loss = alpha_t * focal_weight * bce
-
     if sample_weights is not None:
-        w = sample_weights.view(-1, 1, 1, 1)
-        return (loss * w).mean()
-    return loss.mean()
+        return (per_pixel * sample_weights.view(-1, 1, 1, 1)).mean()
+    return per_pixel.mean()
 
 
 def dice_loss(logits, targets, sample_weights=None, smooth=1.0):
@@ -108,7 +92,7 @@ def train_epoch(model, loader, optimizer, device, pos_weight, epoch=0, scaler=No
         optimizer.zero_grad()
         with torch.amp.autocast(device.type, enabled=use_amp):
             logits = model(x)
-            loss = focal_bce(logits, targets, pos_weight, weights) + dice_loss(logits, targets, weights)
+            loss = weighted_bce(logits, targets, pos_weight, weights) + dice_loss(logits, targets, weights)
 
         if use_amp:
             scaler.scale(loss).backward()
@@ -134,20 +118,30 @@ def validate(model, loader, device, thresholds=(0.2, 0.3, 0.5)):
     # Track IoU at multiple thresholds
     intersection = {t: 0 for t in thresholds}
     union = {t: 0 for t in thresholds}
+    max_prob = 0.0
+    total_pos_px = 0
+    total_px = 0
     for batch in tqdm(loader, desc="Val", leave=False,
                       bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"):
         x = batch["x"].to(device)
         targets = batch["label"].to(device)
         logits = model(x)
-        loss = nn.functional.binary_cross_entropy_with_logits(logits, targets)
+        loss = (nn.functional.binary_cross_entropy_with_logits(logits, targets)
+                + dice_loss(logits, targets))
         total_loss += loss.item()
         n += 1
         probs = torch.sigmoid(logits)
+        max_prob = max(max_prob, probs.max().item())
+        total_pos_px += targets.sum().item()
+        total_px += targets.numel()
         for t in thresholds:
             preds = (probs >= t).float()
             intersection[t] += (preds * targets).sum().item()
             union[t] += ((preds + targets) >= 1).float().sum().item()
     ious = {t: intersection[t] / max(union[t], 1) for t in thresholds}
+    log.info("  val diag: max_prob=%.4f  pos_px=%d/%d (%.4f%%)",
+             max_prob, int(total_pos_px), total_px,
+             100.0 * total_pos_px / max(total_px, 1))
     return total_loss / max(n, 1), ious
 
 
@@ -276,7 +270,7 @@ def main():
     else:
         val_subset = val_indices
     val_ds = Subset(dataset, val_subset)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
     # Pos weight — compute from PIXEL ratio, not patch ratio
     # Positive patches have ~2% debris pixels, so even with 1:1 patch sampling
@@ -300,17 +294,13 @@ def main():
     ckpt_in_ch = N_INPUT
     model = SinglePairDetector(in_ch=ckpt_in_ch, base_ch=args.base_ch).to(device)
     if args.resume and args.resume.exists():
-        model.load_state_dict(torch.load(args.resume, map_location=device, weights_only=True))
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+        if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+            model.load_state_dict(ckpt["model_state_dict"])
+        else:
+            model.load_state_dict(ckpt)
         log.info("Resumed from %s", args.resume)
     log.info("Model: %d params (in_ch=%d)", sum(p.numel() for p in model.parameters()), ckpt_in_ch)
-
-    # JIT compile for speed (10-30% faster forward/backward)
-    if hasattr(torch, 'compile'):
-        try:
-            model = torch.compile(model)
-            log.info("Model compiled with torch.compile")
-        except Exception as e:
-            log.warning("torch.compile failed: %s", e)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     # Warm restarts synced with curriculum transitions at epochs 10 and 20
@@ -366,8 +356,48 @@ def main():
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save(model.state_dict(), out_path)
-            log.info("  Saved (val_loss=%.4f) at epoch %d", val_loss, epoch + 1)
+            torch.save({
+                "epoch": epoch + 1,
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "ious": ious,
+                "model_state_dict": model.state_dict(),
+                "model_config": {
+                    "architecture": "SinglePairDetector",
+                    "in_ch": ckpt_in_ch,
+                    "base_ch": args.base_ch,
+                    "n_sar": N_SAR,
+                    "n_static": N_STATIC,
+                    "sar_channels": SAR_CHANNELS,
+                    "static_channels": STATIC_CHANNELS,
+                },
+                "zones": [str(args.nc)],
+                "seasons": args.date,
+                "training_args": {
+                    "lr": args.lr,
+                    "batch_size": args.batch_size,
+                    "stride": args.stride,
+                    "val_frac": args.val_frac,
+                    "epochs": args.epochs,
+                    "resume": str(args.resume) if args.resume else None,
+                    "hrrr": str(args.hrrr) if args.hrrr else None,
+                    "pos_weight": pw,
+                    "n_train_pos": len(train_pos_idx),
+                    "n_train_neg": len(train_neg_idx),
+                    "n_val": len(val_subset),
+                },
+            }, out_path)
+            log.info("  Saved best (val_loss=%.4f) at epoch %d", val_loss, epoch + 1)
+
+        # Always save latest checkpoint so we know how far training got
+        latest_path = out_path.with_stem(out_path.stem + "_latest")
+        torch.save({
+            "epoch": epoch + 1,
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "ious": ious,
+            "model_state_dict": model.state_dict(),
+        }, latest_path)
 
     log.info("Done. Best val_loss=%.4f → %s", best_val_loss, out_path)
 

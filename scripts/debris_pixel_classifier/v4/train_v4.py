@@ -44,17 +44,12 @@ def _resolve_device(s):
     return torch.device("cpu")
 
 
-def focal_bce(logits, targets, sample_weights=None, gamma=2.0, alpha=0.75):
-    """Focal loss. alpha=0.75 gives 3× weight to positive (debris) class."""
-    bce = nn.functional.binary_cross_entropy_with_logits(logits, targets, reduction="none")
-    probs = torch.sigmoid(logits)
-    p_t = probs * targets + (1 - probs) * (1 - targets)
-    focal_weight = (1 - p_t) ** gamma
-    alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
-    loss = alpha_t * focal_weight * bce
+def weighted_bce(logits, targets, pos_weight, sample_weights=None):
+    per_pixel = nn.functional.binary_cross_entropy_with_logits(
+        logits, targets, pos_weight=pos_weight, reduction="none")
     if sample_weights is not None:
-        return (loss * sample_weights.view(-1, 1, 1, 1)).mean()
-    return loss.mean()
+        return (per_pixel * sample_weights.view(-1, 1, 1, 1)).mean()
+    return per_pixel.mean()
 
 
 def dice_loss(logits, targets, sample_weights=None, smooth=1.0):
@@ -72,7 +67,7 @@ def dice_loss(logits, targets, sample_weights=None, smooth=1.0):
     return 1.0 - (2.0 * inter + smooth) / (probs.sum() + targets.sum() + smooth)
 
 
-def train_epoch(model, loader, optimizer, device, epoch=0):
+def train_epoch(model, loader, optimizer, device, pos_weight, epoch=0):
     from tqdm import tqdm
     model.train()
     total_loss = 0.0
@@ -88,7 +83,7 @@ def train_epoch(model, loader, optimizer, device, epoch=0):
 
         optimizer.zero_grad()
         logits = model(fine, local_ctx, regional)
-        loss = focal_bce(logits, targets, weights) + dice_loss(logits, targets, weights)
+        loss = weighted_bce(logits, targets, pos_weight, weights) + dice_loss(logits, targets, weights)
         loss.backward()
         optimizer.step()
 
@@ -107,6 +102,9 @@ def validate(model, loader, device, thresholds=(0.2, 0.3, 0.5)):
     n = 0
     intersection = {t: 0 for t in thresholds}
     union = {t: 0 for t in thresholds}
+    max_prob = 0.0
+    total_pos_px = 0
+    total_px = 0
     for batch in tqdm(loader, desc="Val", leave=False,
                       bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"):
         fine = batch["x"].to(device)
@@ -114,15 +112,22 @@ def validate(model, loader, device, thresholds=(0.2, 0.3, 0.5)):
         regional = batch["regional"].to(device)
         targets = batch["label"].to(device)
         logits = model(fine, local_ctx, regional)
-        loss = nn.functional.binary_cross_entropy_with_logits(logits, targets)
+        loss = (nn.functional.binary_cross_entropy_with_logits(logits, targets)
+                + dice_loss(logits, targets))
         total_loss += loss.item()
         n += 1
         probs = torch.sigmoid(logits)
+        max_prob = max(max_prob, probs.max().item())
+        total_pos_px += targets.sum().item()
+        total_px += targets.numel()
         for t in thresholds:
             preds = (probs >= t).float()
             intersection[t] += (preds * targets).sum().item()
             union[t] += ((preds + targets) >= 1).float().sum().item()
     ious = {t: intersection[t] / max(union[t], 1) for t in thresholds}
+    log.info("  val diag: max_prob=%.4f  pos_px=%d/%d (%.4f%%)",
+             max_prob, int(total_pos_px), total_px,
+             100.0 * total_pos_px / max(total_px, 1))
     return total_loss / max(n, 1), ious
 
 
@@ -142,6 +147,8 @@ def main():
     parser.add_argument("--val-frac", type=float, default=0.15)
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--resume", type=Path, default=None)
+    parser.add_argument("--pretrain-v3", type=Path, default=None,
+                        help="Initialize shared layers from a v3 SinglePairDetector checkpoint")
     parser.add_argument("--test-mode", action="store_true")
     parser.add_argument("--stride", type=int, default=64)
     args = parser.parse_args()
@@ -219,22 +226,104 @@ def main():
     else:
         val_subset = val_indices
     val_ds = Subset(dataset, val_subset)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=8, persistent_workers=True)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4, persistent_workers=True)
 
     # Model
     model = MultiScaleDetector(in_ch=N_INPUT, base_ch=args.base_ch).to(device)
+    if args.pretrain_v3 and args.pretrain_v3.exists():
+        v3_raw = torch.load(args.pretrain_v3, map_location=device, weights_only=False)
+        v3_ckpt = v3_raw["model_state_dict"] if isinstance(v3_raw, dict) and "model_state_dict" in v3_raw else v3_raw
+        v4_state = model.state_dict()
+        transferred, skipped = 0, 0
+        for k, v in v3_ckpt.items():
+            # v3 keys: enc1.block.*, enc2.block.*, ..., pool.*
+            # v4 enc1 is now a ModuleList (per-scale): encoder.enc1.{0,1,2}.block.*
+            # v4 enc2-4 use SharedConvBlock: encoder.enc2.conv1/bn1.bns.{0,1,2}/conv2/bn2.bns.{0,1,2}
+            if k.startswith("enc1."):
+                # Copy v3 enc1 weights into all 3 scale-specific enc1 blocks
+                for si in range(3):
+                    v4_key = f"encoder.enc1.{si}.{k[len('enc1.'):]}"
+                    if v4_key in v4_state and v4_state[v4_key].shape == v.shape:
+                        v4_state[v4_key] = v
+                        transferred += 1
+                    else:
+                        skipped += 1
+            elif k.startswith(("enc2.", "enc3.", "enc4.")):
+                # Map v3 Sequential block.{0=conv,1=bn,...,3=conv,4=bn} to SharedConvBlock
+                prefix = k[:4]  # "enc2", "enc3", "enc4"
+                rest = k[len(prefix) + 1:]  # after "encN."
+                # v3: block.0.weight → conv1.weight, block.1.* → bn1.bns.{0,1,2}.*
+                # v3: block.3.weight → conv2.weight, block.4.* → bn2.bns.{0,1,2}.*
+                mapped = None
+                if rest.startswith("block.0."):
+                    mapped = f"encoder.{prefix}.conv1.{rest[len('block.0.'):]}"
+                elif rest.startswith("block.1."):
+                    # BN after conv1 → copy into all 3 scale BNs
+                    bn_suffix = rest[len("block.1."):]
+                    for si in range(3):
+                        v4_key = f"encoder.{prefix}.bn1.bns.{si}.{bn_suffix}"
+                        if v4_key in v4_state and v4_state[v4_key].shape == v.shape:
+                            v4_state[v4_key] = v
+                            transferred += 1
+                        else:
+                            skipped += 1
+                    continue
+                elif rest.startswith("block.3."):
+                    mapped = f"encoder.{prefix}.conv2.{rest[len('block.3.'):]}"
+                elif rest.startswith("block.4."):
+                    bn_suffix = rest[len("block.4."):]
+                    for si in range(3):
+                        v4_key = f"encoder.{prefix}.bn2.bns.{si}.{bn_suffix}"
+                        if v4_key in v4_state and v4_state[v4_key].shape == v.shape:
+                            v4_state[v4_key] = v
+                            transferred += 1
+                        else:
+                            skipped += 1
+                    continue
+                if mapped and mapped in v4_state and v4_state[mapped].shape == v.shape:
+                    v4_state[mapped] = v
+                    transferred += 1
+                elif mapped:
+                    log.debug("  skip: %s → %s", k, mapped)
+                    skipped += 1
+            elif k.startswith("pool"):
+                v4_key = f"encoder.{k}"
+                if v4_key in v4_state:
+                    v4_state[v4_key] = v
+                    transferred += 1
+            else:
+                # Decoder/FPN keys — try direct match
+                if k in v4_state and v4_state[k].shape == v.shape:
+                    v4_state[k] = v
+                    transferred += 1
+                else:
+                    log.debug("  skip (no match): %s", k)
+                    skipped += 1
+        model.load_state_dict(v4_state)
+        log.info("Pretrained from v3: %d layers transferred, %d skipped", transferred, skipped)
     if args.resume and args.resume.exists():
-        model.load_state_dict(torch.load(args.resume, map_location=device, weights_only=True))
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+        if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+            model.load_state_dict(ckpt["model_state_dict"])
+        else:
+            model.load_state_dict(ckpt)
         log.info("Resumed from %s", args.resume)
     log.info("Model: %d params (in_ch=%d, base_ch=%d)",
              sum(p.numel() for p in model.parameters()), N_INPUT, args.base_ch)
 
-    if hasattr(torch, 'compile'):
-        try:
-            model = torch.compile(model)
-            log.info("Model compiled with torch.compile")
-        except Exception as e:
-            log.warning("torch.compile failed: %s", e)
+    # Pos weight from pixel ratio
+    log.info("Sampling pixel ratio...")
+    n_pos_px = n_total_px = 0
+    sample_rng = np.random.default_rng(77)
+    sample_idx = sample_rng.choice(train_pos_idx, size=min(500, len(train_pos_idx)), replace=False)
+    for si in sample_idx:
+        batch = dataset[si]
+        mask = batch['label'].numpy()
+        n_pos_px += mask.sum()
+        n_total_px += mask.size
+    pw = min(50.0, float((n_total_px - n_pos_px) / max(n_pos_px, 1)))
+    pos_weight = torch.tensor([pw], device=device)
+    log.info("Pos weight: %.1f", pw)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
@@ -263,12 +352,12 @@ def main():
         def __len__(self): return self.n_pos + self.n_neg
 
     sampler = EpochSubsampler(train_pos_idx, train_neg_idx, n_pos_per_epoch, n_neg_per_epoch)
-    train_loader = DataLoader(dataset, batch_size=args.batch_size, sampler=sampler, num_workers=8, persistent_workers=True)
+    train_loader = DataLoader(dataset, batch_size=args.batch_size, sampler=sampler, num_workers=4, persistent_workers=True)
 
     for epoch in range(args.epochs):
         sampler.set_epoch(epoch)
         dataset.epoch = epoch
-        train_loss = train_epoch(model, train_loader, optimizer, device, epoch)
+        train_loss = train_epoch(model, train_loader, optimizer, device, pos_weight, epoch)
         val_loss, ious = validate(model, val_loader, device)
         scheduler.step()
         iou_str = "  ".join(f"IoU@{t}={v:.4f}" for t, v in sorted(ious.items()))
@@ -277,7 +366,13 @@ def main():
                  optimizer.param_groups[0]['lr'])
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save(model.state_dict(), out_path)
+            torch.save({
+                "epoch": epoch + 1,
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "ious": ious,
+                "model_state_dict": model.state_dict(),
+            }, out_path)
             log.info("  Saved (val_loss=%.4f) at epoch %d", val_loss, epoch + 1)
 
     log.info("Done. Best val_loss=%.4f → %s", best_val_loss, out_path)
