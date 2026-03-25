@@ -104,3 +104,75 @@ def backscatter_changes_crossing_date(
     stacked.name = name
 
     return stacked
+
+
+def backscatter_changes_all_pairs(
+    da: xr.DataArray,
+    max_span_days: int = 60,
+    time_dim: str = "time",
+    pair_dim: str = "pair",
+    name: str = "delta_backscatter",
+):
+    """
+    Generate all unique backscatter changes (ti -> tj) with span <= max_span_days.
+
+    Unlike backscatter_changes_crossing_date, this does not filter by a
+    reference timestamp — it returns every pair in the time series that
+    satisfies the span constraint.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Input data with a time dimension.
+    max_span_days : int
+        Maximum number of days between ti and tj.
+    time_dim : str, optional
+        Name of the time dimension.
+    pair_dim : str, optional
+        Name of the stacked pair dimension.
+    name : str, optional
+        Name of the output DataArray.
+
+    Returns
+    -------
+    xr.DataArray
+        Stacked DataArray with dimension `pair` and coordinates
+        `t_start`, `t_end`.
+    """
+    da = da.drop_vars('platform') if 'platform' in da.coords else da
+
+    times = pd.to_datetime(da[time_dim].values)
+
+    diffs = []
+    t_start = []
+    t_end = []
+
+    for i, j in combinations(range(len(times)), 2):
+        ti, tj = times[i], times[j]
+        span = (tj - ti).days
+        if span > max_span_days or span < 1:
+            continue
+
+        diff = da.isel({time_dim: j}) - da.isel({time_dim: i})
+        diffs.append(diff)
+        t_start.append(ti)
+        t_end.append(tj)
+
+    log.debug("backscatter_changes_all_pairs: %d pairs (max span %dd)",
+              len(diffs), max_span_days)
+
+    if not diffs:
+        raise ValueError(
+            f"No time pairs with span <= {max_span_days} days found."
+        )
+
+    stacked = xr.concat(diffs, dim=pair_dim)
+    stacked = stacked.assign_coords(
+        {
+            "t_start": (pair_dim, t_start),
+            "t_end": (pair_dim, t_end),
+        }
+    )
+    stacked.name = name
+
+    return stacked

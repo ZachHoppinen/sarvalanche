@@ -41,6 +41,9 @@ def assemble_dataset(
     cache_dir=Path("/tmp/sarvalanche_cache"),
     static_layer_nc = None,
     sar_only = False,
+    fetch_hrrr = False,
+    hrrr_model = None,
+    hrrr_max_threads = 10,
     # TODO implement dask/chunking...
     chunks = None
 ) -> xr.Dataset:
@@ -59,6 +62,14 @@ def assemble_dataset(
     resolution : float, optional
         Ignored (kept for backwards compatibility).  The output grid is
         always snapped to the OPERA 30 m posting.
+    fetch_hrrr : bool, optional
+        If True, download HRRR 2m temperature for each SAR overpass time
+        and add a ``t2m`` variable to the dataset.
+    hrrr_model : str or None, optional
+        ``"hrrrak"`` (Alaska, 3-hourly), ``"hrrr"`` (CONUS, hourly), or
+        *None* to auto-detect from the dataset's bounding box.
+    hrrr_max_threads : int, optional
+        Number of parallel threads for HRRR downloads (default 10).
     chunks : dict, optional
         Dask chunking strategy. Default: {'time': 1, 'x': 256, 'y': 256}
 
@@ -157,6 +168,12 @@ def assemble_dataset(
     ds["water_mask"] = get_water_extent(ref_grid)
     log.info('Getting urban')
     ds["urban_mask"] = get_urban_extent(ref_grid)
+
+    # --- 8. Optionally fetch HRRR temperature ---
+    if fetch_hrrr:
+        from sarvalanche.io.hrrr import get_hrrr_for_dataset
+        log.info('Fetching HRRR 2m temperature')
+        ds["t2m"] = get_hrrr_for_dataset(ds, model=hrrr_model, max_threads=hrrr_max_threads)
 
     # add chunking
     spatial_chunks = {'x': chunks.get('x', 256), 'y': chunks.get('y', 256)}
