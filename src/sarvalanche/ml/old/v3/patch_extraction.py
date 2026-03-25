@@ -262,6 +262,8 @@ def get_all_season_pairs(
     results = []
     seen = set()
 
+    # Count candidate pairs for progress bar
+    candidate_pairs = []
     for track_id, td in tracks.items():
         times = td['times']
         for i in range(len(times)):
@@ -269,42 +271,47 @@ def get_all_season_pairs(
                 span = (times[j] - times[i]).days
                 if span > max_span_days:
                     continue
-
                 key = (track_id, str(times[i]), str(times[j]))
-                if key in seen:
-                    continue
-                seen.add(key)
+                if key not in seen:
+                    seen.add(key)
+                    candidate_pairs.append((track_id, i, j, span))
 
-                sar = extract_single_pair(
-                    td['vv'], td['vh'], i, j, times,
-                    td['anf'], hrrr_cache, tau_proximity,
-                )
-                if sar is None:
-                    continue
+    from tqdm import tqdm
+    for track_id, i, j, span in tqdm(candidate_pairs, desc="Extracting pairs",
+                                      bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"):
+        td = tracks[track_id]
+        times = td['times']
 
-                # Compute melt weight from HRRR (not a SAR channel anymore,
-                # but still needed for temporal aggregation weighting)
-                mw_i = hrrr_cache.get(times[i])
-                mw_j = hrrr_cache.get(times[j])
-                melt_w = 1.0
-                if mw_i is not None and mw_j is not None:
-                    melt_w = float(np.minimum(mw_i, mw_j).mean())
-                elif mw_i is not None:
-                    melt_w = float(mw_i.mean())
-                elif mw_j is not None:
-                    melt_w = float(mw_j.mean())
+        sar = extract_single_pair(
+            td['vv'], td['vh'], i, j, times,
+            td['anf'], hrrr_cache, tau_proximity,
+        )
+        if sar is None:
+            continue
 
-                results.append({
-                    'sar': sar,
-                    'track': track_id,
-                    't_start': times[i],
-                    't_end': times[j],
-                    'span_days': span,
-                    'melt_weight_mean': melt_w,
-                })
+        # Compute melt weight from HRRR (not a SAR channel anymore,
+        # but still needed for temporal aggregation weighting)
+        mw_i = hrrr_cache.get(times[i])
+        mw_j = hrrr_cache.get(times[j])
+        melt_w = 1.0
+        if mw_i is not None and mw_j is not None:
+            melt_w = float(np.minimum(mw_i, mw_j).mean())
+        elif mw_i is not None:
+            melt_w = float(mw_i.mean())
+        elif mw_j is not None:
+            melt_w = float(mw_j.mean())
 
-    log.info('get_all_season_pairs: %d unique pairs (max span %dd)',
-             len(results), max_span_days)
+        results.append({
+            'sar': sar,
+            'track': track_id,
+            't_start': times[i],
+            't_end': times[j],
+            'span_days': span,
+            'melt_weight_mean': melt_w,
+        })
+
+    log.info('get_all_season_pairs: %d unique pairs from %d candidates (max span %dd)',
+             len(results), len(candidate_pairs), max_span_days)
     return results
 
 

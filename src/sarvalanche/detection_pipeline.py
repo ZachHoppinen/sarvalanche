@@ -49,7 +49,7 @@ logging.getLogger('rasterio.session').setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
 
-def run_detection(
+def run_empirical_detection(
         aoi,
         avalanche_date,
         cache_dir,

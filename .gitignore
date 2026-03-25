@@ -167,3 +167,5 @@ $*
 *.parquet
 *.png
 *.gif
+*.pth
+*.pt
