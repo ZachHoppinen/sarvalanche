@@ -41,17 +41,25 @@ def fetch_avalanche_zones(center_id: str = None, save_path: str = None):
         geom  = feature['geometry']
 
         zone_name   = props['name']
+        zone_id     = feature.get('id')
         center_name = props.get('center', 'unknown')
         center_code = props.get('center_id', 'unknown')
 
+        # Use zone_id as key suffix if names collide (e.g. CAIC names all
+        # zones "CAIC zone")
+        key = zone_name
+        if key in zones:
+            key = f"{zone_name}_{zone_id}"
+
         try:
             polygon = shape(geom)
-            zones[zone_name] = {
+            zones[key] = {
                 'geometry': polygon,
                 'bbox': polygon.bounds,          # (minx, miny, maxx, maxy)
                 'shapely_box': box(*polygon.bounds),
                 'center': center_name,
                 'center_id': center_code,
+                'zone_id': zone_id,
             }
         except Exception as e:
             print(f"  Skipping {zone_name}: {e}")

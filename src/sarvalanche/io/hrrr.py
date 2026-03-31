@@ -43,17 +43,21 @@ _CYCLE_HOURS: dict[str, list[int]] = {
 _AK_LAT_MIN, _AK_LAT_MAX = 51.0, 72.0
 _AK_LON_MIN, _AK_LON_MAX = -180.0, -129.0
 
+# Rough CONUS bounding box (lat/lon) — anything inside uses hrrr.
+_CONUS_LAT_MIN, _CONUS_LAT_MAX = 20.0, 55.0
+_CONUS_LON_MIN, _CONUS_LON_MAX = -135.0, -60.0
+
 
 # ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------
 
 
-def detect_hrrr_model(ds: xr.Dataset) -> str:
-    """Choose ``"hrrrak"`` or ``"hrrr"`` based on the dataset's bounding box.
+def detect_hrrr_model(ds: xr.Dataset) -> str | None:
+    """Choose ``"hrrrak"``, ``"hrrr"``, or ``None`` based on bounding box.
 
-    Reprojects the grid corners to EPSG:4326 and checks whether the
-    centroid falls inside the Alaska domain.
+    Returns None if the dataset is outside both HRRR-AK and HRRR-CONUS
+    coverage areas (e.g. Europe, Central Asia).
     """
     crs = ds.rio.crs
     if crs is None:
@@ -72,8 +76,12 @@ def detect_hrrr_model(ds: xr.Dataset) -> str:
     if _AK_LAT_MIN <= cy <= _AK_LAT_MAX and _AK_LON_MIN <= cx <= _AK_LON_MAX:
         log.info('Auto-detected HRRR model: hrrrak (centroid lat=%.2f, lon=%.2f)', cy, cx)
         return 'hrrrak'
-    log.info('Auto-detected HRRR model: hrrr (centroid lat=%.2f, lon=%.2f)', cy, cx)
-    return 'hrrr'
+    if _CONUS_LAT_MIN <= cy <= _CONUS_LAT_MAX and _CONUS_LON_MIN <= cx <= _CONUS_LON_MAX:
+        log.info('Auto-detected HRRR model: hrrr (centroid lat=%.2f, lon=%.2f)', cy, cx)
+        return 'hrrr'
+    log.warning('Site outside HRRR coverage (centroid lat=%.2f, lon=%.2f). '
+                'No temperature data will be fetched.', cy, cx)
+    return None
 
 
 def nearest_cycle_hour(timestamp: pd.Timestamp, model: str = 'hrrrak') -> int:
@@ -242,6 +250,96 @@ def _projected_to_latlon(y: np.ndarray, x: np.ndarray, crs: CRS | str) -> tuple[
 # ---------------------------------------------------------------------------
 
 
+def get_openmeteo_t2m(ds: xr.Dataset) -> xr.DataArray:
+    """Fetch 2m temperature from Open-Meteo for non-CONUS/non-Alaska sites.
+
+    Uses the Open-Meteo Archive API (free, no auth, global coverage).
+    Fetches hourly temperature at the scene centroid, finds the nearest
+    hour to each SAR timestamp, broadcasts to the grid, and applies
+    lapse-rate correction using the DEM.
+
+    Returns the same format as get_hrrr_for_dataset: DataArray with
+    dims (time, y, x) in °C.
+    """
+    import urllib.request
+    import json
+
+    times = pd.DatetimeIndex(ds.time.values)
+    y_vals = ds.y.values
+    x_vals = ds.x.values
+    crs = ds.rio.crs
+
+    # Get centroid in lat/lon
+    cy, cx = float(y_vals.mean()), float(x_vals.mean())
+    crs_obj = CRS(crs)
+    if not crs_obj.is_geographic:
+        transformer = Transformer.from_crs(crs_obj, CRS.from_epsg(4326), always_xy=True)
+        cx, cy = transformer.transform(cx, cy)
+
+    # Date range
+    start = times.min().strftime('%Y-%m-%d')
+    end = times.max().strftime('%Y-%m-%d')
+
+    # Fetch from Open-Meteo Archive API
+    url = (f"https://archive-api.open-meteo.com/v1/archive?"
+           f"latitude={cy:.4f}&longitude={cx:.4f}"
+           f"&start_date={start}&end_date={end}"
+           f"&hourly=temperature_2m")
+    log.info("Fetching Open-Meteo temperature: lat=%.2f, lon=%.2f, %s to %s", cy, cx, start, end)
+
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            data = json.loads(resp.read())
+    except Exception as e:
+        log.warning("Open-Meteo fetch failed: %s. Returning NaN temperatures.", e)
+        ny, nx = len(y_vals), len(x_vals)
+        return xr.DataArray(
+            np.full((len(times), ny, nx), np.nan, dtype=np.float32),
+            dims=['time', 'y', 'x'],
+            coords={'time': times, 'y': y_vals, 'x': x_vals},
+            attrs={'units': 'celsius', 'source': 'open-meteo', 'product': 't2m'},
+        )
+
+    # Parse hourly temperatures
+    om_times = pd.DatetimeIndex(data['hourly']['time'])
+    om_temps = np.array(data['hourly']['temperature_2m'], dtype=np.float32)
+
+    # Load DEM for lapse-rate correction
+    dem = ds['dem'].values if 'dem' in ds else None
+    if dem is not None:
+        if dem.ndim == 3:
+            dem = dem[0]
+        dem = np.where(np.isfinite(dem), dem, 0.0)
+
+    ny, nx = len(y_vals), len(x_vals)
+    t2m_out = np.full((len(times), ny, nx), np.nan, dtype=np.float32)
+
+    for i, sar_time in enumerate(times):
+        # Find nearest Open-Meteo hour
+        diffs = np.abs((om_times - sar_time).total_seconds())
+        nearest_idx = int(diffs.argmin())
+        t_celsius = om_temps[nearest_idx]
+
+        if np.isfinite(t_celsius):
+            # Broadcast to grid
+            t2m_scene = np.full((ny, nx), t_celsius, dtype=np.float32)
+            # Lapse-rate correction
+            if dem is not None:
+                t2m_scene = lapse_rate_correct(t2m_scene, dem)
+            t2m_out[i] = t2m_scene
+
+    log.info("Open-Meteo: %d/%d timestamps filled, centroid temp range [%.1f, %.1f]°C",
+             np.isfinite(t2m_out[:, 0, 0]).sum(), len(times),
+             float(np.nanmin(om_temps)), float(np.nanmax(om_temps)))
+
+    return xr.DataArray(
+        t2m_out,
+        dims=['time', 'y', 'x'],
+        coords={'time': times, 'y': y_vals, 'x': x_vals},
+        attrs={'units': 'celsius', 'source': 'open-meteo', 'product': 't2m'},
+    )
+
+
 def get_hrrr_for_dataset(
     ds: xr.Dataset,
     model: str | None = None,
@@ -277,6 +375,10 @@ def get_hrrr_for_dataset(
 
     if model is None:
         model = detect_hrrr_model(ds)
+    if model is None:
+        raise ValueError(
+            'Site is outside HRRR/HRRR-AK coverage. Cannot fetch temperature data. '
+            'Pass fetch_hrrr=False to assemble_dataset to skip temperature fetch.')
 
     times = pd.DatetimeIndex(ds.time.values)
     y_vals = ds.y.values
@@ -365,6 +467,7 @@ def _make_attrs(model: str) -> dict:
     """Standard attributes for the t2m DataArray."""
     return {
         'units': 'degC',
+        'product': 't2m',
         'long_name': '2m temperature (lapse-rate adjusted, nearest HRRR cycle)',
         'source': f'HRRR ({model}) via Herbie',
         'lapse_rate': f'{LAPSE_RATE} C/m',

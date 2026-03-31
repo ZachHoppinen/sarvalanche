@@ -42,6 +42,9 @@ def mosaic_group(sub: xr.DataArray) -> xr.DataArray:
     import xarray as xr
     import numpy as np
 
+    if sub.sizes['time'] == 1:
+        return sub
+
     # combine time slices
     merged = reduce(lambda a, b: a.combine_first(b), [sub.isel(time=i) for i in range(sub.sizes['time'])])
 
@@ -65,28 +68,40 @@ def mosaic_group(sub: xr.DataArray) -> xr.DataArray:
     return merged
 
 
-def combine_close_images(da, time_tol = pd.Timedelta('2min')):
-    # Define tolerance
-    time_tol = pd.Timedelta('2min')
+def combine_close_images(da, time_tol=pd.Timedelta('2min')):
+    """Merge time steps that are closer than *time_tol* (same-pass frames).
 
-    time_diff = da['time'].diff('time', label='upper')
+    When no merging is needed (all timestamps separated by > time_tol),
+    returns the input unchanged — no materialization.
+    """
+    times = pd.DatetimeIndex(da['time'].values)
+    diffs = times[1:] - times[:-1]
 
-    # Convert to NumPy, prepend zero along the 'time' axis
-    data_padded = np.concatenate([[0], time_diff.values], axis=0)
+    # Fast path: if no frames are close, return unchanged (stays lazy)
+    if len(diffs) == 0 or all(d >= time_tol for d in diffs):
+        return da
 
-    # rebuild DataArray with same 'time' coordinate
-    time_diff = xr.DataArray(
-        data_padded,
-        dims=['time'],
-        coords={'time': da['time']},
-        name='time_diff'
-    )
+    # Build group labels: frames within time_tol get the same group ID
+    close = np.array([0] + [int(d >= time_tol) for d in diffs])
+    groups = close.cumsum()
 
-    # cumulative sum adds when over time tolerance
-    groups = (time_diff >= time_tol).cumsum(dim='time')
+    # Only materialize the groups that actually need merging
+    unique_groups, group_counts = np.unique(groups, return_counts=True)
+    needs_merge = set(unique_groups[group_counts > 1])
 
-    # group images closer than time difference
-    return da.groupby(groups).map(mosaic_group)
+    if not needs_merge:
+        return da
+
+    result_slices = []
+    for gid in unique_groups:
+        mask = groups == gid
+        sub = da.isel(time=mask)
+        if gid in needs_merge:
+            result_slices.append(mosaic_group(sub))
+        else:
+            result_slices.append(sub)
+
+    return xr.concat(result_slices, dim='time')
 
 def label_raster(da: xr.DataArray) -> xr.DataArray:
     """

@@ -1,0 +1,18 @@
+# Training config for pairwise debris detector — Alaska (CNFAIC).
+# All paths relative to repository root.
+#
+# Note: CNFAIC uses HRRR-AK (hrrrak model), not CONUS HRRR.
+# Only 2025-2026 season has both labels and HRRR data.
+
+zones:
+  # ── Turnagain Pass 2025-2026 ──────────────────────────────────────
+  - name: turnagain_2526
+    nc: local/issw/cnfaic/netcdfs/Turnagain_Pass_and_Girdwood/season_2025-2026_Turnagain_Pass_and_Girdwood.nc
+    hrrr: local/issw/cnfaic/hrrr_temperature_2526.nc
+    labels:
+      - date: "2025-12-15"
+        polygons: local/issw/debris_shapes/cnfaic/avalanche_labels_2025-12-15.gpkg
+        geotiff_dir: local/issw/debris_shapes/cnfaic/geotiffs/2025-12-15
+      - date: "2026-02-14"
+        polygons: local/issw/debris_shapes/cnfaic/old/avalanche_labels_2026-02-14.gpkg
+        geotiff_dir: local/issw/debris_shapes/cnfaic/geotiffs/2026-02-14

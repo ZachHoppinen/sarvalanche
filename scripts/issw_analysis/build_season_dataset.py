@@ -97,6 +97,7 @@ def build_season_dataset(
     track_gpkg: Path | None = None,
     baseline_days: int = 60,
     nc_filename: str = "season_dataset.nc",
+    opera_cache_dir: Path | None = None,
 ) -> None:
     """Assemble full-season SAR + terrain, preprocess, compute static layers.
 
@@ -108,11 +109,20 @@ def build_season_dataset(
       5. Static probabilities (p_fcf, p_runout, p_slope)
       6. Drop tracks with < 3 acquisitions
       7. Save season_dataset.nc
+
+    Parameters
+    ----------
+    opera_cache_dir : Path, optional
+        Shared directory for OPERA tile downloads. When set, OPERA tiles
+        are downloaded to ``opera_cache_dir/opera/`` instead of
+        ``cache_dir/opera/``, enabling shared downloads across zones
+        within the same center. Output nc is still written to cache_dir.
     """
     import geopandas as gpd
 
     from sarvalanche.io.dataset import assemble_dataset, load_netcdf_to_dataset
     from sarvalanche.io.export import export_netcdf
+    from sarvalanche.io.load_data import cleanup_temp_files
     from sarvalanche.features.debris_flow_modeling import generate_runcount_alpha_angle
     from sarvalanche.preprocessing.pipelines import preprocess_rtc
     from sarvalanche.weights.local_resolution import get_local_resolution_weights
@@ -149,10 +159,12 @@ def build_season_dataset(
             stop_date=fetch_end,
             resolution=resolution,
             crs=crs,
-            cache_dir=cache_dir,
+            cache_dir=opera_cache_dir or cache_dir,
             static_layer_nc=static_fp,
             sar_only=False,
         )
+        # Free memmap temp files immediately after assembly
+        cleanup_temp_files()
 
     # Ensure time is datetime
     if not np.issubdtype(ds["time"].dtype, np.datetime64):
@@ -175,13 +187,11 @@ def build_season_dataset(
                 ds[v] = donor_ds[v]
                 ds[v].attrs = donor_ds[v].attrs
         del donor_ds
-        ds = ds.load()
         export_netcdf(ds, season_nc, overwrite=True)
     else:
         log.info("Running FlowPy terrain modeling")
         ds, paths_gdf = generate_runcount_alpha_angle(ds)
         paths_gdf.to_file(track_gpkg, driver="GPKG")
-        ds = ds.load()
         export_netcdf(ds, season_nc, overwrite=True)
 
     validate_canonical(ds)
@@ -217,16 +227,16 @@ def build_season_dataset(
 
     if needs_save:
         log.info("Saving preprocessed dataset to %s", season_nc)
-        ds = ds.load()
         export_netcdf(ds, season_nc, overwrite=True)
 
     # ── 6. Drop sparse tracks ────────────────────────────────────────────
     if "track" in ds.coords:
         all_times = pd.DatetimeIndex(ds["time"].values)
-        track_vals, track_counts = np.unique(ds["track"].values, return_counts=True)
+        track_arr = np.asarray(ds["track"].values)
+        track_vals, track_counts = np.unique(track_arr, return_counts=True)
         log.info("Tracks: %s", dict(zip(track_vals, track_counts)))
         for tv in track_vals:
-            track_times = all_times[ds["track"].values == tv]
+            track_times = all_times[track_arr == tv]
             log.info(
                 "  Track %s: %d times, %s to %s",
                 tv, len(track_times), track_times.min().date(), track_times.max().date(),
@@ -234,7 +244,7 @@ def build_season_dataset(
 
         sparse_tracks = track_vals[track_counts < 3]
         if len(sparse_tracks) > 0:
-            keep_mask = ~ds["track"].isin(sparse_tracks)
+            keep_mask = ~np.isin(track_arr, sparse_tracks)
             n_before = len(ds.time)
             ds = ds.sel(time=keep_mask)
             log.info(

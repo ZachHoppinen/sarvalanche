@@ -22,19 +22,6 @@ from sarvalanche.features.debris_flow_modeling import generate_runcount_alpha_an
 # preprocessing
 from sarvalanche.preprocessing.pipelines import preprocess_rtc
 
-# weights and static probabilities
-from sarvalanche.weights.pipelines import get_static_weights
-from sarvalanche.probabilities.pipelines import get_static_probabilities
-
-# pixelwise terrain, snow, SAR probabilities
-from sarvalanche.detection.pixelwise import get_pixelwise_probabilities
-
-# grouping of probabilities
-from sarvalanche.probabilities.pipelines import group_classes
-
-# masking
-from sarvalanche.masks.pipelines import apply_exclusion_masks
-
 # timing utilities
 from sarvalanche.utils.timing import PipelineTimer
 
@@ -47,6 +34,180 @@ logging.basicConfig(
 logging.getLogger('asf_search').setLevel(logging.WARNING)  # or logging.ERROR
 logging.getLogger('rasterio.session').setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
+
+
+def prepare_dataset(
+        aoi,
+        cache_dir,
+        avalanche_date=None,
+        resolution=None,
+        crs='EPSG:4326',
+        start_date=None,
+        stop_date=None,
+        static_fp=None,
+        track_gpkg=None,
+        overwrite=False,
+        job_name=None,
+        debug=False):
+    """
+    Run steps 1–3.5 of the pipeline: validate inputs, assemble the SAR +
+    static dataset, compute FlowPy runout, and preprocess (TV despeckle).
+
+    Returns the preprocessed xr.Dataset ready for detection or ML training.
+
+    Parameters
+    ----------
+    aoi : shapely.geometry.Polygon
+        Area of interest in WGS84 geographic coordinates (lon/lat).
+    cache_dir : str or Path
+        Directory for caching intermediate files and outputs.
+    avalanche_date : str or datetime, optional
+        Date of the avalanche event. Used for default start/stop window and
+        job naming. If None, start_date and stop_date must be provided.
+    resolution : float, optional
+        Spatial resolution. Defaults to 30m (projected) or 1 arcsec (geographic).
+    crs : str or int, optional
+        Target CRS. Default 'EPSG:4326'.
+    start_date, stop_date : str or datetime, optional
+        SAR acquisition window. Default: 6 revisit cycles before / 3 after
+        avalanche_date.
+    static_fp : Path, optional
+        Pre-built static layers NetCDF.
+    track_gpkg : Path, optional
+        GeoPackage for caching FlowPy debris track outputs.
+    overwrite : bool
+        Recompute and overwrite cached results. Default False.
+    job_name : str, optional
+        Stem for output filenames.
+    debug : bool
+        Enable DEBUG logging. Default False.
+
+    Returns
+    -------
+    ds : xr.Dataset
+        Preprocessed dataset with SAR (TV-despeckled, dB), static layers,
+        and FlowPy outputs.
+    track_gpkg_path : Path
+        Path to the FlowPy avalanche paths GeoPackage. Load with
+        ``gpd.read_file(track_gpkg_path)`` to get the path geometries.
+    """
+    if debug:
+        logging.getLogger('sarvalanche').setLevel(logging.DEBUG)
+        log.debug('Debug logging enabled')
+
+    timer = PipelineTimer()
+    log.info(f"prepare_dataset arguments: {locals()}")
+
+    # ================================================================
+    # Step 1: Validate all input arguments
+    # ================================================================
+    timer.step('1_validation')
+
+    if avalanche_date is not None:
+        avalanche_date = validate_date(avalanche_date)
+    aoi = validate_aoi(aoi)
+
+    S1_REVISIT_DAYS = 12
+    if start_date is None and avalanche_date is not None:
+        start_date = avalanche_date - pd.Timedelta(days=6 * S1_REVISIT_DAYS)
+        log.info(f'No start date provided. Using {start_date}')
+    if stop_date is None and avalanche_date is not None:
+        stop_date = avalanche_date + pd.Timedelta(days=3 * S1_REVISIT_DAYS)
+        log.info(f'No stop date provided. Using {stop_date}')
+
+    if start_date is not None and stop_date is not None:
+        start_date, stop_date = validate_start_end(start_date, stop_date)
+
+    crs = validate_crs(crs)
+
+    if resolution is None:
+        if crs.is_projected:
+            resolution = 30
+        else:
+            resolution = 1 / 3600
+        log.info(f'No resolution provided. Using: {resolution}')
+
+    resolution = validate_resolution(resolution)
+    cache_dir = validate_path(cache_dir, should_exist=None, make_directory=True)
+    log.info('Initial validation checks passed')
+
+    # ================================================================
+    # Step 2: Set up cache directory structure
+    # ================================================================
+    timer.step('2_setup_cache')
+
+    for sub in ['opera', 'arrays']:
+        cache_dir.joinpath(sub).mkdir(exist_ok=True)
+
+    if avalanche_date is not None:
+        ds_stem = job_name or avalanche_date.strftime('%Y-%m-%d')
+    else:
+        ds_stem = job_name or 'full_season'
+    ds_nc = cache_dir.joinpath(ds_stem).with_suffix('.nc')
+    log.info(f'Dataset will be saved to {ds_nc}')
+
+    # ================================================================
+    # Step 3: Load or assemble dataset
+    # ================================================================
+    timer.step('3_load_assemble_dataset')
+
+    if not ds_nc.exists() or ds_nc.stat().st_size == 0 or overwrite:
+        if not ds_nc.exists() or ds_nc.stat().st_size == 0:
+            log.info('Netcdf not found. Assembling dataset now.')
+        elif overwrite:
+            log.info('Netcdf found. Overwriting dataset based on overwrite = True.')
+
+        ds = assemble_dataset(
+            aoi=aoi,
+            start_date=start_date,
+            stop_date=stop_date,
+            resolution=resolution,
+            crs=crs,
+            cache_dir=cache_dir,
+            static_layer_nc=static_fp,
+            sar_only=False)
+    else:
+        log.info(f'Found netcdf at {ds_nc}. Loading from cache...')
+        ds = load_netcdf_to_dataset(ds_nc)
+
+    # FlowPy runout
+    track_gpkg_path = Path(track_gpkg) if track_gpkg else ds_nc.with_suffix('.gpkg')
+    _flowpy_vars = ['cell_counts', 'runout_angle', 'release_zones']
+    missing_flowpy = not all(v in ds.data_vars for v in _flowpy_vars)
+    gpkg_exists = track_gpkg_path.exists() and track_gpkg_path.stat().st_size > 0
+
+    if not missing_flowpy and gpkg_exists and not overwrite:
+        log.info('FlowPy outputs already present in dataset.')
+    elif gpkg_exists and not overwrite and static_fp is not None and Path(static_fp).exists():
+        log.info('Loading flowpy variables from existing netcdf: %s', static_fp)
+        donor_ds = load_netcdf_to_dataset(Path(static_fp))
+        for v in _flowpy_vars:
+            if v in donor_ds.data_vars:
+                ds[v] = donor_ds[v]
+                ds[v].attrs = donor_ds[v].attrs
+        del donor_ds
+    else:
+        ds, paths_gdf = generate_runcount_alpha_angle(ds)
+        paths_gdf.to_file(track_gpkg_path, driver='GPKG')
+        log.info(f'Saving netcdf to {ds_nc}')
+        export_netcdf(ds, ds_nc, overwrite=True)
+
+    validate_canonical(ds)
+
+    # ================================================================
+    # Step 3.5: Preprocessing (TV despeckle)
+    # ================================================================
+    timer.step('3.5_preprocessing')
+
+    if ds.attrs.get('preprocessed') != 'rtc_tv':
+        ds = preprocess_rtc(ds, tv_weight=0.5)
+        ds.attrs['preprocessed'] = 'rtc_tv'
+        log.info(f'Saving preprocessed netcdf to {ds_nc}')
+        export_netcdf(ds, ds_nc, overwrite=True)
+
+    timer.summary()
+    log.info('Dataset preparation complete.')
+    return ds, track_gpkg_path
 
 
 def run_empirical_detection(
@@ -258,6 +419,13 @@ def run_empirical_detection(
     # ================================================================
     timer.step('4_calculate_weights')
 
+    # Lazy imports: detection-only dependencies (avoid broken import chain
+    # from sarvalanche.ml.inference when only prepare_dataset is needed)
+    from sarvalanche.weights.pipelines import get_static_weights
+    from sarvalanche.probabilities.pipelines import get_static_probabilities, group_classes
+    from sarvalanche.detection.pixelwise import get_pixelwise_probabilities
+    from sarvalanche.masks.pipelines import apply_exclusion_masks
+
     ds = get_static_weights(ds, avalanche_date, temporal_decay_factor=temporal_decay_factor)
 
     # ================================================================
@@ -342,7 +510,6 @@ def run_ml_detections(
         inference_stride=32,
         inference_batch_size=16,
         onset_threshold=0.2,
-        onset_min_dates=2,
         onset_gap_days=18,
         device=None,
         debug=False):
@@ -388,8 +555,6 @@ def run_ml_detections(
         Batch size for model inference.
     onset_threshold : float
         Probability threshold for temporal onset.
-    onset_min_dates : int
-        Minimum clean firing dates for candidate detection.
     onset_gap_days : int
         Temporal gap to separate distinct events.
     device : str, optional
@@ -538,7 +703,6 @@ def run_ml_detections(
     onset_result, onset_dates, _ = run_pair_temporal_onset(
         pair_probs, pair_meta,
         threshold=onset_threshold,
-        min_dates=onset_min_dates,
         gap_days=onset_gap_days,
         hrrr_ds=hrrr_ds,
         coords={'y': ds.y.values, 'x': ds.x.values},

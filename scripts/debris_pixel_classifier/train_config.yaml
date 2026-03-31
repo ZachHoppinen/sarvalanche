@@ -1,0 +1,115 @@
+# Training config for pairwise debris detector.
+# All paths relative to repository root.
+
+zones:
+  # ── Sawtooth 2021-2022 ────────────────────────────────────────────
+  - name: sawtooth_2122
+    nc: "local/issw/snfac/netcdfs/Sawtooth_&_Western_Smoky_Mtns/season_2021-2022_Sawtooth_&_Western_Smoky_Mtns.nc"
+    hrrr: local/issw/snfac/hrrr_temperature_sawtooth_2122.nc
+    labels:
+      - date: "2021-12-26"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2021-12-26.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2021-12-26
+    autolabels: local/issw/debris_shapes/snfac/autolabels/sawtooth_2122/autolabels_combined.gpkg
+
+  # ── Sawtooth 2022-2023 ────────────────────────────────────────────
+  - name: sawtooth_2223
+    nc: "local/issw/snfac/netcdfs/Sawtooth_&_Western_Smoky_Mtns/season_2022-2023_Sawtooth_&_Western_Smoky_Mtns.nc"
+    hrrr: local/issw/snfac/hrrr_temperature_sawtooth_2223.nc
+    labels:
+      - date: "2022-12-01"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2022-12-01.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2022-12-01
+    autolabels: local/issw/debris_shapes/snfac/autolabels/sawtooth_2223/autolabels_combined.gpkg
+
+  # ── Sawtooth 2023-2024 ────────────────────────────────────────────
+  - name: sawtooth_2324
+    nc: "local/issw/snfac/netcdfs/Sawtooth_&_Western_Smoky_Mtns/season_2023-2024_Sawtooth_&_Western_Smoky_Mtns.nc"
+    hrrr: local/issw/snfac/hrrr_temperature_sawtooth_2324.nc
+    labels:
+      - date: "2023-03-10"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2023-03-10.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2023-03-10
+      - date: "2024-01-10"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2024-01-10.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2024-01-10
+      - date: "2024-01-12"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2024-01-12.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2024-01-12
+      - date: "2024-02-04"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2024-02-04.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2024-02-04
+      - date: "2024-02-26"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2024-02-26.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2024-02-26
+      - date: "2024-02-29"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2024-02-29.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2024-02-29
+    autolabels: local/issw/debris_shapes/snfac/autolabels/sawtooth_2324/autolabels_combined.gpkg
+
+  # ── Sawtooth 2024-2025 ────────────────────────────────────────────
+  - name: sawtooth_2425
+    nc: "local/issw/snfac/netcdfs/Sawtooth_&_Western_Smoky_Mtns/season_2024_2025_Sawtooth_&_Western_Smoky_Mtns.nc"
+    hrrr: local/issw/snfac/hrrr_temperature_sawtooth_2425.nc
+    labels:
+      - date: "2024-11-15"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2024-11-15.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2024-11-15
+      - date: "2024-12-29"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2024-12-29.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2024-12-29
+      - date: "2025-02-04"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2025-02-04.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2025-02-04
+      - date: "2025-02-19"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2025-02-19.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2025-02-19
+      - date: "2025-03-15"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2025-03-15.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2025-03-15
+      - date: "2025-04-10"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2025-04-10.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2025-04-10
+    autolabels: local/issw/debris_shapes/snfac/autolabels/autolabels_combined.gpkg
+
+  # ── Galena 2021-2022 ──────────────────────────────────────────────
+  - name: galena_2122
+    nc: "local/issw/snfac/netcdfs/Galena_Summit_&_Eastern_Mtns/season_2021-2022_Galena_Summit_&_Eastern_Mtns.nc"
+    hrrr: local/issw/snfac/hrrr_temperature_galena_2122.nc
+    autolabels: local/issw/debris_shapes/snfac/autolabels/galena_2122/autolabels_combined.gpkg
+
+  # ── Galena 2022-2023 ──────────────────────────────────────────────
+  - name: galena_2223
+    nc: "local/issw/snfac/netcdfs/Galena_Summit_&_Eastern_Mtns/season_2022-2023_Galena_Summit_&_Eastern_Mtns.nc"
+    hrrr: local/issw/snfac/hrrr_temperature_galena_2223.nc
+    autolabels: local/issw/debris_shapes/snfac/autolabels/galena_2223/autolabels_combined.gpkg
+
+  # ── Galena 2023-2024 ──────────────────────────────────────────────
+  - name: galena_2324
+    nc: "local/issw/snfac/netcdfs/Galena_Summit_&_Eastern_Mtns/season_2023-2024_Galena_Summit_&_Eastern_Mtns.nc"
+    hrrr: local/issw/snfac/hrrr_temperature_galena_2324.nc
+    autolabels: local/issw/debris_shapes/snfac/autolabels/galena_2324/autolabels_combined.gpkg
+
+  # ── Galena 2024-2025 ──────────────────────────────────────────────
+  - name: galena_2425
+    nc: "local/issw/snfac/netcdfs/Galena_Summit_&_Eastern_Mtns/season_2024-2025_Galena_Summit_&_Eastern_Mtns.nc"
+    hrrr: local/issw/snfac/hrrr_temperature_galena_2425.nc
+    autolabels: local/issw/debris_shapes/snfac/autolabels/galena_2425/autolabels_combined.gpkg
+
+  # ── Banner 2022-2023 ──────────────────────────────────────────────
+  - name: banner_2223
+    nc: local/issw/snfac/netcdfs/Banner_Summit/season_2022-2023_Banner_Summit.nc
+    hrrr: local/issw/snfac/hrrr_temperature_banner_2223.nc
+    autolabels: local/issw/debris_shapes/snfac/autolabels/banner_2223/autolabels_combined.gpkg
+
+  # ── Banner 2023-2024 ──────────────────────────────────────────────
+  - name: banner_2324
+    nc: local/issw/snfac/netcdfs/Banner_Summit/season_2023-2024_Banner_Summit.nc
+    hrrr: local/issw/snfac/hrrr_temperature_banner_2324.nc
+    autolabels: local/issw/debris_shapes/snfac/autolabels/banner_2324/autolabels_combined.gpkg
+
+  # ── Banner 2024-2025 ──────────────────────────────────────────────
+  - name: banner_2425
+    nc: local/issw/snfac/netcdfs/Banner_Summit/season_2024-2025_Banner_Summit.nc
+    hrrr: local/issw/snfac/hrrr_temperature_banner_2425.nc
+    autolabels: local/issw/debris_shapes/snfac/autolabels/banner_2425/autolabels_combined.gpkg

@@ -47,6 +47,28 @@ def generate_runcount_alpha_angle(ds):
 
     flow_accum = compute_flow_accumulation(dem_proj)
 
+    # Diagnostic logging for slope
+    slope_vals = ds['slope'].values
+    slope_valid = slope_vals[np.isfinite(slope_vals)]
+    if len(slope_valid) > 0:
+        slope_deg = np.rad2deg(slope_valid)
+        log.info("generate_runcount_alpha_angle: slope stats (degrees): "
+                 "min=%.1f, mean=%.1f, max=%.1f, >28deg=%.1f%%, >35deg=%.1f%%",
+                 slope_deg.min(), slope_deg.mean(), slope_deg.max(),
+                 100 * (slope_deg > 28).mean(), 100 * (slope_deg > 35).mean())
+        log.info("generate_runcount_alpha_angle: slope units=%s, source=%s",
+                 ds['slope'].attrs.get('units', '?'), ds['slope'].attrs.get('source', '?'))
+    else:
+        log.warning("generate_runcount_alpha_angle: slope is all NaN!")
+
+    # Diagnostic logging for DEM
+    dem_valid = dem_proj.values[np.isfinite(dem_proj.values)]
+    if len(dem_valid) > 0:
+        log.info("generate_runcount_alpha_angle: DEM range=[%.0f, %.0f]m, CRS=%s",
+                 dem_valid.min(), dem_valid.max(), dem_proj.rio.crs)
+    else:
+        log.warning("generate_runcount_alpha_angle: DEM is all NaN!")
+
     # generate start area
     release_mask = generate_release_mask_simple(
         slope=ds['slope'],
@@ -56,6 +78,12 @@ def generate_runcount_alpha_angle(ds):
         max_flow_accum_channel=10,
         reference=dem_proj,
     )
+
+    n_release = int((release_mask > 0).sum())
+    if n_release == 0:
+        log.warning("generate_runcount_alpha_angle: 0 release zones! "
+                    "Check slope units (expected radians) and DEM quality. "
+                    "Slope >28deg pixels: %d", int((slope_deg > 28).sum()) if len(slope_valid) > 0 else 0)
 
     # run FlowPy
     cell_counts_da, runout_angle_da, paths_gdf = run_flowpy_on_mask(

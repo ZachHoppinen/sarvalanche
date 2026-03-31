@@ -1,0 +1,36 @@
+# Training config for pairwise debris detector — Utah (UAC).
+# All paths relative to repository root.
+# Labels are pair-specific — pair metadata parsed from filename.
+
+zones:
+  # ── Abajos 2023-2024 ──────────────────────────────────────────────
+  - name: abajos_2324
+    nc: local/issw/uac/netcdfs/Abajos/season_2023-2024_Abajos.nc
+    labels:
+      - date: "2024-02-12"
+        polygons: local/issw/debris_shapes/uac/avalanche_labels_trk129_2024-01-31_2024-02-12_11d.gpkg
+        geotiff_dir: local/issw/debris_shapes/uac/geotiffs/trk129_2024-01-31_2024-02-12_11d
+
+  # ── Provo 2023-2024 ───────────────────────────────────────────────
+  - name: provo_2324
+    nc: local/issw/uac/netcdfs/Provo/season_2023-2024_Provo.nc
+    labels:
+      - date: "2024-02-10"
+        polygons: local/issw/debris_shapes/uac/avalanche_labels_trk100_2024-01-29_2024-02-10_11d.gpkg
+        geotiff_dir: local/issw/debris_shapes/uac/geotiffs/trk100_2024-01-29_2024-02-10_11d
+
+  # ── Uintas 2023-2024 ──────────────────────────────────────────────
+  - name: uintas_2324
+    nc: local/issw/uac/netcdfs/Uintas/season_2023-2024_Uintas.nc
+    labels:
+      - date: "2024-03-05"
+        polygons: local/issw/debris_shapes/uac/avalanche_labels_trk100_2024-02-22_2024-03-05_12d.gpkg
+        geotiff_dir: local/issw/debris_shapes/uac/geotiffs/trk100_2024-02-22_2024-03-05_12d
+
+  # ── Salt Lake 2024-2025 ───────────────────────────────────────────
+  - name: salt_lake_2425
+    nc: local/issw/uac/netcdfs/Salt_Lake/season_2024-2025_Salt_Lake.nc
+    labels:
+      - date: "2025-02-16"
+        polygons: local/issw/debris_shapes/uac/avalanche_labels_trk100_2025-02-04_2025-02-16_11d.gpkg
+        geotiff_dir: local/issw/debris_shapes/uac/geotiffs/trk100_2025-02-04_2025-02-16_11d

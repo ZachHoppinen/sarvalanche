@@ -1,7 +1,7 @@
 """Shared pair extraction utilities for training and inference.
 
 Extracts per-track VV/VH pair diffs with valid masks and ANF from a
-pre-denoised xr.Dataset. Used by both inference.py and dataset_inmemory.py.
+pre-denoised xr.Dataset. Used by both inference.py and dataset.py.
 """
 
 import logging

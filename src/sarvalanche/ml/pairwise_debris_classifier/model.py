@@ -12,7 +12,7 @@ Architecture notes:
     base_ch*4, not base_ch*8). With base_ch=16 and a small geographically
     clustered dataset, a full-width decoder would overfit. The narrow
     decoder constrains capacity in lieu of dropout.
-  - BatchNorm is used throughout. No dropout.
+  - BatchNorm is used throughout. Optional Dropout2d between encoder stages.
 """
 
 import torch
@@ -48,10 +48,13 @@ class SinglePairDetector(nn.Module):
         Total input channels (N_SAR + N_STATIC). Default from channels.py.
     base_ch : int
         Base channel width. Encoder doubles each level.
+    dropout : float
+        Dropout2d rate applied after each encoder block. 0.0 disables.
     """
 
-    def __init__(self, in_ch: int = N_INPUT, base_ch: int = 16):
+    def __init__(self, in_ch: int = N_INPUT, base_ch: int = 16, dropout: float = 0.0):
         super().__init__()
+        self.dropout_rate = dropout
 
         # Encoder: channels double each level
         self.enc1 = ConvBlock(in_ch, base_ch)           # H → H
@@ -62,6 +65,7 @@ class SinglePairDetector(nn.Module):
         self.bottleneck = ConvBlock(base_ch * 8, base_ch * 8)  # H/16
 
         self.pool = nn.MaxPool2d(2)
+        self.drop = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
 
         # Decoder: narrower than encoder (see module docstring)
         self.up4 = nn.ConvTranspose2d(base_ch * 8, base_ch * 8, 2, stride=2)
@@ -93,12 +97,12 @@ class SinglePairDetector(nn.Module):
         assert H % 16 == 0 and W % 16 == 0, (
             f"Input spatial dims must be divisible by 16, got ({H}, {W})")
 
-        e1 = self.enc1(x)
-        e2 = self.enc2(self.pool(e1))
-        e3 = self.enc3(self.pool(e2))
-        e4 = self.enc4(self.pool(e3))
+        e1 = self.drop(self.enc1(x))
+        e2 = self.drop(self.enc2(self.pool(e1)))
+        e3 = self.drop(self.enc3(self.pool(e2)))
+        e4 = self.drop(self.enc4(self.pool(e3)))
 
-        b = self.bottleneck(self.pool(e4))
+        b = self.drop(self.bottleneck(self.pool(e4)))
 
         d4 = self.dec4(torch.cat([self.up4(b), e4], dim=1))
         d3 = self.dec3(torch.cat([self.up3(d4), e3], dim=1))

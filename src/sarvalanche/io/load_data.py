@@ -263,16 +263,90 @@ def _get_py3dep_map(
     return _clean_and_match(da, ref_grid, to_radians=to_radians)
 
 
+def _get_copernicus_dem(aoi, aoi_crs, ref_grid=None):
+    """Fetch Copernicus GLO-30 DEM from AWS S3 (global coverage).
+
+    Fallback for sites outside CONUS where py3dep returns NaN.
+    """
+    import rioxarray  # noqa: F401
+    from pyproj import CRS, Transformer
+
+    # Convert AOI to WGS84 for tile lookup
+    crs_obj = CRS(aoi_crs) if aoi_crs else CRS.from_epsg(4326)
+    if not crs_obj.is_geographic:
+        transformer = Transformer.from_crs(crs_obj, CRS.from_epsg(4326), always_xy=True)
+        minx, miny = transformer.transform(aoi.bounds[0], aoi.bounds[1])
+        maxx, maxy = transformer.transform(aoi.bounds[2], aoi.bounds[3])
+    else:
+        minx, miny, maxx, maxy = aoi.bounds
+
+    # Copernicus GLO-30 tiles on AWS: 1° x 1° tiles
+    import math
+    lat_min = int(math.floor(miny))
+    lat_max = int(math.floor(maxy))
+    lon_min = int(math.floor(minx))
+    lon_max = int(math.floor(maxx))
+
+    tiles = []
+    for lat in range(lat_min, lat_max + 1):
+        for lon in range(lon_min, lon_max + 1):
+            lat_str = f"{'N' if lat >= 0 else 'S'}{abs(lat):02d}"
+            lon_str = f"{'E' if lon >= 0 else 'W'}{abs(lon):03d}"
+            url = (f"https://copernicus-dem-30m.s3.amazonaws.com/"
+                   f"Copernicus_DSM_COG_10_{lat_str}_00_{lon_str}_00_DEM/"
+                   f"Copernicus_DSM_COG_10_{lat_str}_00_{lon_str}_00_DEM.tif")
+            tiles.append(url)
+
+    log.info("Copernicus GLO-30 DEM: fetching %d tile(s)", len(tiles))
+
+    import rioxarray
+    merged = None
+    for url in tiles:
+        try:
+            tile = rioxarray.open_rasterio(url).squeeze('band', drop=True)
+            if merged is None:
+                merged = tile
+            else:
+                from rioxarray.merge import merge_arrays
+                merged = merge_arrays([merged, tile])
+        except Exception as e:
+            log.warning("Copernicus DEM tile failed: %s", e)
+
+    if merged is None:
+        raise ValueError("No Copernicus DEM tiles found")
+
+    if ref_grid is not None:
+        merged = merged.rio.reproject_match(ref_grid)
+
+    return merged.astype(np.float32).assign_attrs(
+        units="m", source="copernicus_glo30", product="elevation")
+
+
 def get_dem(ref_grid, aoi=None, aoi_crs=None, resolution=30):
     if aoi is None:
         aoi, aoi_crs = _aoi_from_ref_grid(ref_grid)
-    dem = _with_retry(
-        lambda: py3dep.get_dem(geometry=aoi, resolution=resolution, crs=aoi_crs),
-        label="py3dep.get_dem",
-    )
-    if ref_grid is not None:
-        dem = dem.rio.reproject_match(ref_grid)
-    return dem.assign_attrs(units="m", source="py3dep", product="elevation")
+
+    # Try py3dep first (CONUS, fast)
+    try:
+        dem = _with_retry(
+            lambda: py3dep.get_dem(geometry=aoi, resolution=resolution, crs=aoi_crs),
+            label="py3dep.get_dem",
+        )
+        if ref_grid is not None:
+            dem = dem.rio.reproject_match(ref_grid)
+
+        # Check if py3dep returned valid data (all-NaN = outside CONUS)
+        valid_frac = float(np.isfinite(dem.values).mean())
+        if valid_frac > 0.5:
+            return dem.assign_attrs(units="m", source="py3dep", product="elevation")
+        else:
+            log.warning("py3dep DEM is %.0f%% NaN (outside CONUS?), falling back to Copernicus GLO-30",
+                        (1 - valid_frac) * 100)
+    except Exception as e:
+        log.warning("py3dep DEM failed: %s. Falling back to Copernicus GLO-30", e)
+
+    # Fallback: Copernicus GLO-30 (global)
+    return _get_copernicus_dem(aoi, aoi_crs, ref_grid)
 
 
 def get_slope(ref_grid, aoi=None, aoi_crs=None, resolution=30, dem=None):
@@ -289,15 +363,31 @@ def get_slope(ref_grid, aoi=None, aoi_crs=None, resolution=30, dem=None):
         )
         if ref_grid is not None:
             slope = slope.rio.reproject_match(ref_grid)
-        return slope.assign_attrs(units="radians", source="py3dep", product="slope")
+        slope_vals = slope.values
+        valid = np.isfinite(slope_vals) & (slope_vals != 0)
+        valid_frac = float(valid.mean())
+        if valid_frac > 0.5:
+            log.info("py3dep slope: valid=%.0f%%, max=%.2f rad",
+                     valid_frac * 100, float(np.nanmax(slope_vals)))
+            return slope.assign_attrs(units="radians", source="py3dep", product="slope")
+        log.warning("py3dep slope is %.0f%% invalid (outside CONUS?), computing from DEM",
+                    (1 - valid_frac) * 100)
     except Exception as e:
         if dem is None:
             raise
-        log.warning("py3dep slope failed after all retries (%s); computing from DEM", e)
-        slope = _slope_from_dem(dem)
-        if ref_grid is not None:
-            slope = slope.rio.reproject_match(ref_grid)
-        return slope.assign_attrs(units="radians", source="computed_from_dem", product="slope")
+        log.warning("py3dep slope failed (%s); computing from DEM", e)
+
+    if dem is None:
+        raise ValueError("Slope unavailable: py3dep failed and no DEM provided for fallback")
+    log.info("Computing slope from DEM (CRS=%s, shape=%s)", dem.rio.crs, dem.shape)
+    slope = _slope_from_dem(dem)
+    slope_vals = slope.values[np.isfinite(slope.values)]
+    if len(slope_vals) > 0:
+        log.info("Computed slope: max=%.2f rad, mean=%.2f rad, >0.49rad(28deg)=%.1f%%",
+                 slope_vals.max(), slope_vals.mean(), 100 * (slope_vals > 0.49).mean())
+    if ref_grid is not None:
+        slope = slope.rio.reproject_match(ref_grid)
+    return slope.assign_attrs(units="radians", source="computed_from_dem", product="slope")
 
 
 def get_aspect(ref_grid, aoi=None, aoi_crs=None, resolution=30, dem=None):
@@ -314,15 +404,30 @@ def get_aspect(ref_grid, aoi=None, aoi_crs=None, resolution=30, dem=None):
         )
         if ref_grid is not None:
             aspect = aspect.rio.reproject_match(ref_grid)
-        return aspect.assign_attrs(units="radians", source="py3dep", product="aspect")
+        aspect_vals = aspect.values
+        valid = np.isfinite(aspect_vals) & (aspect_vals != 0)
+        valid_frac = float(valid.mean())
+        if valid_frac > 0.5:
+            log.info("py3dep aspect: valid=%.0f%%", valid_frac * 100)
+            return aspect.assign_attrs(units="radians", source="py3dep", product="aspect")
+        log.warning("py3dep aspect is %.0f%% invalid (outside CONUS?), computing from DEM",
+                    (1 - valid_frac) * 100)
     except Exception as e:
         if dem is None:
             raise
-        log.warning("py3dep aspect failed after all retries (%s); computing from DEM", e)
-        aspect = _aspect_from_dem(dem)
-        if ref_grid is not None:
-            aspect = aspect.rio.reproject_match(ref_grid)
-        return aspect.assign_attrs(units="radians", source="computed_from_dem", product="aspect")
+        log.warning("py3dep aspect failed (%s); computing from DEM", e)
+
+    if dem is None:
+        raise ValueError("Aspect unavailable: py3dep failed and no DEM provided for fallback")
+    log.info("Computing aspect from DEM (CRS=%s, shape=%s)", dem.rio.crs, dem.shape)
+    aspect = _aspect_from_dem(dem)
+    aspect_vals = aspect.values[np.isfinite(aspect.values)]
+    if len(aspect_vals) > 0:
+        log.info("Computed aspect: range=[%.2f, %.2f] rad, valid=%.0f%%",
+                 aspect_vals.min(), aspect_vals.max(), 100 * len(aspect_vals) / aspect.values.size)
+    if ref_grid is not None:
+        aspect = aspect.rio.reproject_match(ref_grid)
+    return aspect.assign_attrs(units="radians", source="computed_from_dem", product="aspect")
 
 
 def _get_hansen_tree_cover(aoi, aoi_crs, ref_grid=None):
@@ -501,9 +606,13 @@ def get_water_extent(ref_grid, aoi=None, aoi_crs=None, year=2021):
         lc = gh.nlcd_bygeom(geometry=g, years=years)[0][f"cover_{year}"]
         if "band" in lc.dims:
             lc = lc.isel(band=0, drop=True)
-        if np.all(np.isnan(lc.values)):
-            log.info("NLCD cover is all-NaN (outside CONUS?), falling back to ESA WorldCover")
-            raise ValueError("NLCD no data")
+        lc_vals = lc.values
+        valid = np.isfinite(lc_vals) & (lc_vals != 127)  # 127 = NLCD no-data fill
+        valid_frac = float(valid.mean()) if lc_vals.size > 0 else 0
+        if valid_frac < 0.5:
+            log.info("NLCD cover is %.0f%% invalid (outside CONUS?), falling back to ESA WorldCover",
+                     (1 - valid_frac) * 100)
+            raise ValueError("NLCD insufficient data")
         water_extent = (lc == 11).astype(int)
         if ref_grid is not None:
             water_extent = water_extent.rio.reproject_match(ref_grid)
@@ -530,9 +639,13 @@ def get_urban_extent(ref_grid, aoi=None, aoi_crs=None, year=2021):
         lc = gh.nlcd_bygeom(geometry=g, years=years)[0][f"cover_{year}"]
         if "band" in lc.dims:
             lc = lc.isel(band=0, drop=True)
-        if np.all(np.isnan(lc.values)):
-            log.info("NLCD cover is all-NaN (outside CONUS?), falling back to ESA WorldCover")
-            raise ValueError("NLCD no data")
+        lc_vals = lc.values
+        valid = np.isfinite(lc_vals) & (lc_vals != 127)  # 127 = NLCD no-data fill
+        valid_frac = float(valid.mean()) if lc_vals.size > 0 else 0
+        if valid_frac < 0.5:
+            log.info("NLCD cover is %.0f%% invalid (outside CONUS?), falling back to ESA WorldCover",
+                     (1 - valid_frac) * 100)
+            raise ValueError("NLCD insufficient data")
         urban_extent = ((lc >= 21) & (lc <= 24)).astype(int)
         if ref_grid is not None:
             urban_extent = urban_extent.rio.reproject_match(ref_grid)

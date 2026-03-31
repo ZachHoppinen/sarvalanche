@@ -41,7 +41,7 @@ def assemble_dataset(
     cache_dir=Path("/tmp/sarvalanche_cache"),
     static_layer_nc = None,
     sar_only = False,
-    fetch_hrrr = False,
+    fetch_hrrr = True,
     hrrr_model = None,
     hrrr_max_threads = 10,
     # TODO implement dask/chunking...
@@ -132,6 +132,10 @@ def assemble_dataset(
 
     if static_layer_nc is not None:
         ds = add_static_layers(ds, static_layer_nc)
+        if fetch_hrrr and 't2m' not in ds.data_vars:
+            from sarvalanche.io.hrrr import get_hrrr_for_dataset
+            log.info('Fetching HRRR 2m temperature (static_layer_nc path)')
+            ds["t2m"] = get_hrrr_for_dataset(ds, model=hrrr_model, max_threads=hrrr_max_threads)
         return ds
 
     # --- 6. Load static LIA ---
@@ -171,9 +175,14 @@ def assemble_dataset(
 
     # --- 8. Optionally fetch HRRR temperature ---
     if fetch_hrrr:
-        from sarvalanche.io.hrrr import get_hrrr_for_dataset
-        log.info('Fetching HRRR 2m temperature')
-        ds["t2m"] = get_hrrr_for_dataset(ds, model=hrrr_model, max_threads=hrrr_max_threads)
+        from sarvalanche.io.hrrr import detect_hrrr_model, get_hrrr_for_dataset, get_openmeteo_t2m
+        detected_model = hrrr_model or detect_hrrr_model(ds)
+        if detected_model is None:
+            log.info('Site outside HRRR coverage — using Open-Meteo for temperature')
+            ds["t2m"] = get_openmeteo_t2m(ds)
+        else:
+            log.info('Fetching HRRR 2m temperature (model=%s)', detected_model)
+            ds["t2m"] = get_hrrr_for_dataset(ds, model=detected_model, max_threads=hrrr_max_threads)
 
     # add chunking
     spatial_chunks = {'x': chunks.get('x', 256), 'y': chunks.get('y', 256)}
@@ -203,7 +212,7 @@ def load_netcdf_to_dataset(filepath, decode_times=True, chunks = 'auto'):
     if crs is None and 'crs' in ds.attrs:
         crs = ds.attrs['crs']
     if crs is not None:
-        ds = ds.rio.write_crs(crs, inplace=True)
+        ds = ds.rio.write_crs(crs)
         ds.attrs['crs'] = str(crs)
 
     # Drop stray scalar coords that can cause merge conflicts

@@ -27,10 +27,10 @@ def reproject_align(
     """
     # Convert xarray to rioxarray if needed
     if not hasattr(src, "rio"):
-        src = src.rio.write_crs("EPSG:4326", inplace=True)  # default CRS if missing
+        src = src.rio.write_crs("EPSG:4326")  # default CRS if missing
 
     if not hasattr(target, "rio"):
-        target = target.rio.write_crs("EPSG:4326", inplace=True)
+        target = target.rio.write_crs("EPSG:4326")
 
     # Use rioxarray's built-in reprojection + resampling
     resampling_method = {

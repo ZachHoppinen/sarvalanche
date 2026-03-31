@@ -1,0 +1,272 @@
+# Training config for pairwise debris detector — combined Idaho + Alaska.
+# All paths relative to repository root.
+
+zones:
+  # ═══ IDAHO (SNFAC) ════════════════════════════════════════════════
+
+  # ── Sawtooth 2021-2022 ────────────────────────────────────────────
+  - name: sawtooth_2122
+    nc: "local/issw/snfac/netcdfs/Sawtooth_&_Western_Smoky_Mtns/season_2021-2022_Sawtooth_&_Western_Smoky_Mtns.nc"
+    hrrr: local/issw/snfac/hrrr_temperature_sawtooth_2122.nc
+    labels:
+      - date: "2021-12-26"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2021-12-26.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2021-12-26
+    autolabels: local/issw/debris_shapes/snfac/autolabels/sawtooth_2122/autolabels_combined.gpkg
+
+  # ── Sawtooth 2022-2023 ────────────────────────────────────────────
+  - name: sawtooth_2223
+    nc: "local/issw/snfac/netcdfs/Sawtooth_&_Western_Smoky_Mtns/season_2022-2023_Sawtooth_&_Western_Smoky_Mtns.nc"
+    hrrr: local/issw/snfac/hrrr_temperature_sawtooth_2223.nc
+    labels:
+      - date: "2022-12-01"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2022-12-01.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2022-12-01
+    autolabels: local/issw/debris_shapes/snfac/autolabels/sawtooth_2223/autolabels_combined.gpkg
+
+  # ── Sawtooth 2023-2024 ────────────────────────────────────────────
+  - name: sawtooth_2324
+    nc: "local/issw/snfac/netcdfs/Sawtooth_&_Western_Smoky_Mtns/season_2023-2024_Sawtooth_&_Western_Smoky_Mtns.nc"
+    hrrr: local/issw/snfac/hrrr_temperature_sawtooth_2324.nc
+    labels:
+      - date: "2023-03-10"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2023-03-10.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2023-03-10
+      - date: "2024-01-10"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2024-01-10.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2024-01-10
+      - date: "2024-01-12"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2024-01-12.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2024-01-12
+      - date: "2024-02-04"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2024-02-04.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2024-02-04
+      - date: "2024-02-26"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2024-02-26.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2024-02-26
+      - date: "2024-02-29"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2024-02-29.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2024-02-29
+    autolabels: local/issw/debris_shapes/snfac/autolabels/sawtooth_2324/autolabels_combined.gpkg
+
+  # ── Sawtooth 2024-2025 ────────────────────────────────────────────
+  - name: sawtooth_2425
+    nc: "local/issw/snfac/netcdfs/Sawtooth_&_Western_Smoky_Mtns/season_2024_2025_Sawtooth_&_Western_Smoky_Mtns.nc"
+    hrrr: local/issw/snfac/hrrr_temperature_sawtooth_2425.nc
+    labels:
+      - date: "2024-11-15"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2024-11-15.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2024-11-15
+      - date: "2024-12-29"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2024-12-29.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2024-12-29
+      - date: "2025-02-04"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2025-02-04.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2025-02-04
+      - date: "2025-02-19"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2025-02-19.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2025-02-19
+      - date: "2025-03-15"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2025-03-15.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2025-03-15
+      - date: "2025-04-10"
+        polygons: local/issw/debris_shapes/SNFAC/avalanche_labels_2025-04-10.gpkg
+        geotiff_dir: local/issw/debris_shapes/SNFAC/geotiffs/2025-04-10
+    autolabels: local/issw/debris_shapes/snfac/autolabels/autolabels_combined.gpkg
+
+  # ── Galena 2021-2022 ──────────────────────────────────────────────
+  - name: galena_2122
+    nc: "local/issw/snfac/netcdfs/Galena_Summit_&_Eastern_Mtns/season_2021-2022_Galena_Summit_&_Eastern_Mtns.nc"
+    hrrr: local/issw/snfac/hrrr_temperature_galena_2122.nc
+    autolabels: local/issw/debris_shapes/snfac/autolabels/galena_2122/autolabels_combined.gpkg
+
+  # ── Galena 2022-2023 ──────────────────────────────────────────────
+  - name: galena_2223
+    nc: "local/issw/snfac/netcdfs/Galena_Summit_&_Eastern_Mtns/season_2022-2023_Galena_Summit_&_Eastern_Mtns.nc"
+    hrrr: local/issw/snfac/hrrr_temperature_galena_2223.nc
+    autolabels: local/issw/debris_shapes/snfac/autolabels/galena_2223/autolabels_combined.gpkg
+
+  # ── Galena 2023-2024 ──────────────────────────────────────────────
+  - name: galena_2324
+    nc: "local/issw/snfac/netcdfs/Galena_Summit_&_Eastern_Mtns/season_2023-2024_Galena_Summit_&_Eastern_Mtns.nc"
+    hrrr: local/issw/snfac/hrrr_temperature_galena_2324.nc
+    autolabels: local/issw/debris_shapes/snfac/autolabels/galena_2324/autolabels_combined.gpkg
+
+  # ── Galena 2024-2025 ──────────────────────────────────────────────
+  - name: galena_2425
+    nc: "local/issw/snfac/netcdfs/Galena_Summit_&_Eastern_Mtns/season_2024-2025_Galena_Summit_&_Eastern_Mtns.nc"
+    hrrr: local/issw/snfac/hrrr_temperature_galena_2425.nc
+    autolabels: local/issw/debris_shapes/snfac/autolabels/galena_2425/autolabels_combined.gpkg
+
+  # ── Banner 2022-2023 ──────────────────────────────────────────────
+  - name: banner_2223
+    nc: local/issw/snfac/netcdfs/Banner_Summit/season_2022-2023_Banner_Summit.nc
+    hrrr: local/issw/snfac/hrrr_temperature_banner_2223.nc
+    autolabels: local/issw/debris_shapes/snfac/autolabels/banner_2223/autolabels_combined.gpkg
+
+  # ── Banner 2023-2024 ──────────────────────────────────────────────
+  - name: banner_2324
+    nc: local/issw/snfac/netcdfs/Banner_Summit/season_2023-2024_Banner_Summit.nc
+    hrrr: local/issw/snfac/hrrr_temperature_banner_2324.nc
+    autolabels: local/issw/debris_shapes/snfac/autolabels/banner_2324/autolabels_combined.gpkg
+
+  # ── Banner 2024-2025 ──────────────────────────────────────────────
+  - name: banner_2425
+    nc: local/issw/snfac/netcdfs/Banner_Summit/season_2024-2025_Banner_Summit.nc
+    hrrr: local/issw/snfac/hrrr_temperature_banner_2425.nc
+    autolabels: local/issw/debris_shapes/snfac/autolabels/banner_2425/autolabels_combined.gpkg
+
+  # ═══ ALASKA (CNFAIC) ══════════════════════════════════════════════
+
+  # ── Turnagain Pass 2025-2026 ──────────────────────────────────────
+  - name: turnagain_2526
+    nc: local/issw/cnfaic/netcdfs/Turnagain_Pass_and_Girdwood/season_2025-2026_Turnagain_Pass_and_Girdwood.nc
+    hrrr: local/issw/cnfaic/hrrr_temperature_2526.nc
+    labels:
+      - date: "2025-12-15"
+        polygons: local/issw/debris_shapes/cnfaic/avalanche_labels_2025-12-15.gpkg
+        geotiff_dir: local/issw/debris_shapes/cnfaic/geotiffs/2025-12-15
+      - date: "2026-02-14"
+        polygons: local/issw/debris_shapes/cnfaic/old/avalanche_labels_2026-02-14.gpkg
+        geotiff_dir: local/issw/debris_shapes/cnfaic/geotiffs/2026-02-14
+
+  # ═══ UTAH (UAC) ═══════════════════════════════════════════════════
+
+  # ── Abajos 2023-2024 ──────────────────────────────────────────────
+  - name: abajos_2324
+    nc: local/issw/uac/netcdfs/Abajos/season_2023-2024_Abajos.nc
+    labels:
+      - date: "2024-02-12"
+        polygons: local/issw/debris_shapes/uac/avalanche_labels_trk129_2024-01-31_2024-02-12_11d.gpkg
+        geotiff_dir: local/issw/debris_shapes/uac/geotiffs/trk129_2024-01-31_2024-02-12_11d
+
+  # ── Provo 2023-2024 ───────────────────────────────────────────────
+  - name: provo_2324
+    nc: local/issw/uac/netcdfs/Provo/season_2023-2024_Provo.nc
+    labels:
+      - date: "2024-02-10"
+        polygons: local/issw/debris_shapes/uac/avalanche_labels_trk100_2024-01-29_2024-02-10_11d.gpkg
+        geotiff_dir: local/issw/debris_shapes/uac/geotiffs/trk100_2024-01-29_2024-02-10_11d
+
+  # ── Uintas 2023-2024 ──────────────────────────────────────────────
+  - name: uintas_2324
+    nc: local/issw/uac/netcdfs/Uintas/season_2023-2024_Uintas.nc
+    labels:
+      - date: "2024-03-05"
+        polygons: local/issw/debris_shapes/uac/avalanche_labels_trk100_2024-02-22_2024-03-05_12d.gpkg
+        geotiff_dir: local/issw/debris_shapes/uac/geotiffs/trk100_2024-02-22_2024-03-05_12d
+
+  # ── Salt Lake 2024-2025 ───────────────────────────────────────────
+  - name: salt_lake_2425
+    nc: local/issw/uac/netcdfs/Salt_Lake/season_2024-2025_Salt_Lake.nc
+    labels:
+      - date: "2025-02-16"
+        polygons: local/issw/debris_shapes/uac/avalanche_labels_trk100_2025-02-04_2025-02-16_11d.gpkg
+        geotiff_dir: local/issw/debris_shapes/uac/geotiffs/trk100_2025-02-04_2025-02-16_11d
+
+  # ═══ ITALY — Gatti et al. (2026) ══════════════════════════════════
+
+  # ── Livigno 2024-04-03 ────────────────────────────────────────────
+  - name: livigno_20240403
+    nc: local/issw/gatti/netcdfs/Livigno_20240403/season_Livigno_20240403.nc
+    labels:
+      - date: "2024-04-03"
+        polygons: local/issw/debris_shapes/gatti_et_al_2026/Livigno_20240403/Livigno_20240403_GT.gpkg
+
+  # ── Livigno 2025-01-29 ────────────────────────────────────────────
+  - name: livigno_20250129
+    nc: local/issw/gatti/netcdfs/Livigno_20250129/season_Livigno_20250129.nc
+    labels:
+      - date: "2025-01-29"
+        polygons: local/issw/debris_shapes/gatti_et_al_2026/Livigno_20250129/Livigno_20250129_GT.gpkg
+
+  # ── Livigno 2025-03-18 ────────────────────────────────────────────
+  - name: livigno_20250318
+    nc: local/issw/gatti/netcdfs/Livigno_20250318/season_Livigno_20250318.nc
+    labels:
+      - date: "2025-03-18"
+        polygons: local/issw/debris_shapes/gatti_et_al_2026/Livigno_20250318/Livigno_20250318_GT.gpkg
+
+  # ═══ TAJIKISTAN — Gatti et al. (2026) ═════════════════════════════
+
+  # ── Pish 2023-02-21 ───────────────────────────────────────────────
+  - name: pish_20230221
+    nc: local/issw/gatti/netcdfs/Pish_20230221/season_Pish_20230221.nc
+    labels:
+      - date: "2023-02-21"
+        polygons: local/issw/debris_shapes/gatti_et_al_2026/Pish_20230221/Pish_20230221_GT.gpkg
+
+  # ═══ NORWAY — Gatti et al. (2026) ═════════════════════════════════
+
+  # ── Tromso 2024-12-20 ─────────────────────────────────────────────
+  - name: tromso_20241220
+    nc: local/issw/gatti/netcdfs/Tromso_20241220/season_Tromso_20241220.nc
+    labels:
+      - date: "2024-12-20"
+        polygons: local/issw/debris_shapes/gatti_et_al_2026/Tromso_20241220/Tromso_20241220_GT.gpkg
+
+  # ═══ WYOMING — Keskinen et al. (2020) ═════════════════════════════
+
+  # ── Jackson Hole 2019-2020 ────────────────────────────────────────
+  - name: jackson_hole
+    nc: local/issw/keskinen/netcdfs/jackson_hole/season_jackson_hole.nc
+    labels:
+      - date: "2020-01-14"
+        polygons: local/issw/keskinen/netcdfs/jackson_hole/labels/avalanche_labels_trk100_2020-01-02_2020-01-14_12d.gpkg
+      - date: "2020-01-17"
+        polygons: local/issw/keskinen/netcdfs/jackson_hole/labels/avalanche_labels_trk49_2020-01-05_2020-01-17_12d.gpkg
+      - date: "2020-01-21"
+        polygons: local/issw/keskinen/netcdfs/jackson_hole/labels/avalanche_labels_trk27_2020-01-09_2020-01-21_12d.gpkg
+      - date: "2020-01-22"
+        polygons: local/issw/keskinen/netcdfs/jackson_hole/labels/avalanche_labels_trk122_2020-01-10_2020-01-22_12d.gpkg
+
+  # ═══ SWITZERLAND — Hafner et al. (2018) ═══════════════════════════
+
+  # ── Davos 2018 ────────────────────────────────────────────────────
+  - name: davos_2018
+    nc: local/issw/hafner/netcdfs/davos_2018/season_davos_2018.nc
+    labels:
+      - date: "2018-01-21"
+        polygons: local/issw/hafner/netcdfs/davos_2018/labels/avalanche_labels_2018-01-21.gpkg
+      - date: "2018-01-22"
+        polygons: local/issw/hafner/netcdfs/davos_2018/labels/avalanche_labels_2018-01-22.gpkg
+      - date: "2018-01-23"
+        polygons: local/issw/hafner/netcdfs/davos_2018/labels/avalanche_labels_2018-01-23.gpkg
+      - date: "2018-01-24"
+        polygons: local/issw/hafner/netcdfs/davos_2018/labels/avalanche_labels_2018-01-24.gpkg
+
+  # ── Davos 2019 ────────────────────────────────────────────────────
+  - name: davos_2019
+    nc: local/issw/hafner/netcdfs/davos_2019/season_davos_2019.nc
+    labels:
+      - date: "2019-01-13"
+        polygons: local/issw/hafner/netcdfs/davos_2019/labels/avalanche_labels_2019-01-13.gpkg
+      - date: "2019-01-14"
+        polygons: local/issw/hafner/netcdfs/davos_2019/labels/avalanche_labels_2019-01-14.gpkg
+      - date: "2019-01-15"
+        polygons: local/issw/hafner/netcdfs/davos_2019/labels/avalanche_labels_2019-01-15.gpkg
+      - date: "2019-01-16"
+        polygons: local/issw/hafner/netcdfs/davos_2019/labels/avalanche_labels_2019-01-16.gpkg
+
+  # ═══ FRANCE — Sinha et al. ════════════════════════════════════════
+
+  # ── Haute-Bigorre 2019 ────────────────────────────────────────────
+  - name: haute_bigorre_20190207
+    nc: local/issw/france/netcdfs/haute_bigorre_20190207/season_haute_bigorre_20190207.nc
+    labels:
+      - date: "2019-02-07"
+        polygons: "local/issw/debris_shapes/france/Avalanche shapefiles/Haute-Bigorre_manual_polygons_25_01-07_02_2019.shp"
+
+  # ── Mont-Blanc 2021 ───────────────────────────────────────────────
+  - name: mbm_20210206
+    nc: local/issw/france/netcdfs/mbm_20210206/season_mbm_20210206.nc
+    labels:
+      - date: "2021-02-06"
+        polygons: "local/issw/debris_shapes/france/Avalanche shapefiles/MBM_manual_polygons_24_01-06_02_2021.shp"
+
+  # ── Vanoise 2018-2019 ─────────────────────────────────────────────
+  - name: vanoise_20180110
+    nc: local/issw/france/netcdfs/vanoise_20180110/season_vanoise_20180110.nc
+    labels:
+      - date: "2018-01-10"
+        polygons: "local/issw/debris_shapes/france/Avalanche shapefiles/Vanoise_manual_polygons_29_12-10_01_2018.shp"

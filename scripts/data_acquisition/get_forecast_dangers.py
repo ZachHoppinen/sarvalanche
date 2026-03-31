@@ -174,12 +174,30 @@ def get_dangers(
         skipped = 0
 
         for forecast in forecasts:
-            # Only keep rows that belong to this zone (if zone info present)
+            # Only keep rows that belong to this zone (if zone info present).
+            # Some centers (e.g. UAC) store zone info in a forecast_zone list
+            # instead of top-level zone_id / forecast_zone_id fields.
             f_zone_id = forecast.get("zone_id") or forecast.get("forecast_zone_id")
-            if f_zone_id and str(f_zone_id) != str(zone_id):
+            if not f_zone_id:
+                # Try forecast_zone list (UAC-style)
+                fz_list = forecast.get("forecast_zone", [])
+                if fz_list:
+                    fz_ids = {str(fz.get("id")) for fz in fz_list}
+                    if str(zone_id) not in fz_ids:
+                        continue
+            elif str(f_zone_id) != str(zone_id):
                 continue
 
-            if not forecast.get("danger"):
+            # Some centers provide per-elevation danger breakdown in a
+            # "danger" list; others (e.g. UAC) only have a scalar
+            # "danger_rating" field. Handle both.
+            has_danger_list = bool(forecast.get("danger"))
+            has_scalar_rating = (
+                not has_danger_list
+                and isinstance(forecast.get("danger_rating"), (int, float))
+                and forecast.get("danger_rating", 0) > 0
+            )
+            if not has_danger_list and not has_scalar_rating:
                 skipped += 1
                 continue
 
@@ -195,7 +213,18 @@ def get_dangers(
                 "zone_name": zone_name,
                 "center_id": center_id,
             }
-            row.update(_parse_danger(forecast))
+
+            if has_danger_list:
+                row.update(_parse_danger(forecast))
+            else:
+                # Scalar danger_rating — apply to all elevations
+                rating = int(forecast["danger_rating"])
+                row["danger_above_current"] = rating
+                row["danger_near_current"] = rating
+                row["danger_below_current"] = rating
+                row["bottom_line"] = forecast.get("bottom_line")
+                row["published_time"] = forecast.get("published_time")
+                row["expires_time"] = forecast.get("expires_time")
 
             problems = forecast.get("forecast_avalanche_problems", [])
             for i, prob in enumerate(problems[:3]):

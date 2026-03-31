@@ -110,6 +110,20 @@ def build_sar_channels(
     return np.stack([change_vv, change_vh, change_cr, anf_norm], axis=0)
 
 
+def _gaussian_weight_kernel(size, sigma=None):
+    """Create a 2D Gaussian weight kernel for tile blending.
+
+    Center pixels get weight ~1.0, edges taper to ~0. This reduces
+    boundary artifacts when blending overlapping tiles.
+    """
+    if sigma is None:
+        sigma = size / 4.0  # covers ~2 sigma to the edge
+    ax = np.arange(size, dtype=np.float64) - (size - 1) / 2.0
+    xx, yy = np.meshgrid(ax, ax)
+    kernel = np.exp(-(xx**2 + yy**2) / (2 * sigma**2))
+    return kernel
+
+
 def sliding_window_inference(
     sar_scene: np.ndarray,
     static_scene: np.ndarray,
@@ -119,10 +133,11 @@ def sliding_window_inference(
     stride: int = 32,
     batch_size: int = 16,
 ) -> np.ndarray:
-    """Run model on sliding windows, return (H, W) averaged probability.
+    """Run model on sliding windows with Gaussian-weighted blending.
 
     Pads the scene so that edge pixels are covered even when
-    (H - patch_size) is not divisible by stride.
+    (H - patch_size) is not divisible by stride. Center pixels of each
+    tile contribute more than edges, reducing boundary artifacts.
     """
     H, W = sar_scene.shape[1], sar_scene.shape[2]
     C_sar = sar_scene.shape[0]
@@ -138,7 +153,9 @@ def sliding_window_inference(
 
     Hp, Wp = sar_scene.shape[1], sar_scene.shape[2]
     prob_sum = np.zeros((Hp, Wp), dtype=np.float64)
-    count = np.zeros((Hp, Wp), dtype=np.float64)
+    weight_sum = np.zeros((Hp, Wp), dtype=np.float64)
+    gauss_kernel = _gaussian_weight_kernel(patch_size)
+
     coords = [(y0, x0)
               for y0 in range(0, Hp - patch_size + 1, stride)
               for x0 in range(0, Wp - patch_size + 1, stride)]
@@ -162,11 +179,11 @@ def sliding_window_inference(
             probs = torch.sigmoid(logits).cpu().numpy()[:, 0]
 
             for idx, (y0, x0) in enumerate(batch_coords):
-                prob_sum[y0:y0 + patch_size, x0:x0 + patch_size] += probs[idx]
-                count[y0:y0 + patch_size, x0:x0 + patch_size] += 1
+                prob_sum[y0:y0 + patch_size, x0:x0 + patch_size] += probs[idx] * gauss_kernel
+                weight_sum[y0:y0 + patch_size, x0:x0 + patch_size] += gauss_kernel
 
-    result = np.where(count[:H, :W] > 0,
-                      prob_sum[:H, :W] / count[:H, :W],
+    result = np.where(weight_sum[:H, :W] > 0,
+                      prob_sum[:H, :W] / weight_sum[:H, :W],
                       np.nan).astype(np.float32)
     return result
 

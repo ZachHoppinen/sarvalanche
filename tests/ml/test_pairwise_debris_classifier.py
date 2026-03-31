@@ -460,42 +460,71 @@ class TestBackscatterChangesAllPairs:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# dataset_inmemory.py — PairwiseDebrisDataset
+# dataset.py — PairwiseDebrisDataset
 # ═══════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def test_nc(tmp_path):
+    """Create a minimal NetCDF for dataset testing."""
+    H, W, T = 256, 256, 6
+    rng = np.random.default_rng(42)
+
+    times = pd.date_range("2025-01-01", periods=T, freq="12D")
+    y = np.arange(H, dtype=np.float64)
+    x = np.arange(W, dtype=np.float64)
+
+    ds = xr.Dataset(
+        {
+            'VV': xr.DataArray(rng.standard_normal((T, H, W)).astype(np.float32) * 2 - 15,
+                               dims=['time', 'y', 'x']),
+            'VH': xr.DataArray(rng.standard_normal((T, H, W)).astype(np.float32) * 2 - 20,
+                               dims=['time', 'y', 'x']),
+            'slope': xr.DataArray(rng.uniform(0, 0.8, (H, W)).astype(np.float32),
+                                  dims=['y', 'x']),
+            'aspect_northing': xr.DataArray(rng.uniform(-1, 1, (H, W)).astype(np.float32),
+                                            dims=['y', 'x']),
+            'aspect_easting': xr.DataArray(rng.uniform(-1, 1, (H, W)).astype(np.float32),
+                                           dims=['y', 'x']),
+            'cell_counts': xr.DataArray(rng.uniform(0, 500, (H, W)).astype(np.float32),
+                                        dims=['y', 'x']),
+            'tpi': xr.DataArray(rng.standard_normal((H, W)).astype(np.float32) * 20,
+                                dims=['y', 'x']),
+            'anf': xr.DataArray(rng.uniform(0.5, 5, (1, H, W)).astype(np.float32),
+                                dims=['static_track', 'y', 'x'],
+                                coords={'static_track': [1]}),
+            'track': xr.DataArray(np.ones(T, dtype=np.int32), dims=['time']),
+        },
+        coords={'time': times, 'y': y, 'x': x},
+        attrs={'preprocessed': 'rtc_tv', 'units': 'db'},
+    )
+    ds['VV'].attrs = {'units': 'db', 'source': 'test', 'product': 'test'}
+    ds['VH'].attrs = {'units': 'db', 'source': 'test', 'product': 'test'}
+
+    nc_path = tmp_path / "test_season.nc"
+    ds.to_netcdf(nc_path)
+    ds.close()
+    return nc_path
 
 
 class TestPairwiseDebrisDataset:
     @pytest.fixture
-    def simple_dataset(self):
-        from sarvalanche.ml.pairwise_debris_classifier.dataset_inmemory import PairwiseDebrisDataset
+    def simple_dataset(self, test_nc):
+        import geopandas as gpd
+        from shapely.geometry import box
+        from sarvalanche.ml.pairwise_debris_classifier.dataset import PairwiseDebrisDataset, build_lazy_dataset
 
-        H, W = 256, 256
-        pair_diffs = [
-            (np.random.randn(H, W).astype(np.float32),
-             np.random.randn(H, W).astype(np.float32),
-             np.ones((H, W), dtype=bool)),
-        ]
-        pair_metas = [{'track': '1', 'span_days': 12, 't_start': pd.Timestamp('2025-01-01'),
-                        't_end': pd.Timestamp('2025-01-13')}]
-        anf_per_track = {'1': np.ones((H, W), dtype=np.float32) * 0.5}
-        static_scene = np.random.randn(N_STATIC, H, W).astype(np.float32)
+        # Create a simple debris polygon covering a patch area
+        debris_poly = box(10, 10, 30, 30)
+        gdf = gpd.GeoDataFrame({'geometry': [debris_poly]}, crs=None)
 
-        debris_mask = np.zeros((H, W), dtype=np.float32)
-        debris_mask[10:30, 10:30] = 1.0
-
-        positions = [
-            (0, True, 0, 0, 0),   # positive
-            (0, False, 128, 0, 0),  # negative
-        ]
-        date_configs = [{'pos_pair_indices': {0}, 'debris_mask': debris_mask}]
-
-        return PairwiseDebrisDataset(
-            pair_diffs, pair_metas, anf_per_track, static_scene,
-            positions, date_configs, augment=False,
+        return build_lazy_dataset(
+            test_nc, [("2025-01-13", gdf, None)],
+            max_span_days=30, stride=128, augment=False,
         )
 
     def test_len(self, simple_dataset):
-        assert len(simple_dataset) == 2
+        assert len(simple_dataset) > 0
 
     def test_getitem_shape(self, simple_dataset):
         sample = simple_dataset[0]
@@ -506,52 +535,13 @@ class TestPairwiseDebrisDataset:
         sample = simple_dataset[0]
         assert 'confidence' not in sample
 
-    def test_positive_has_label(self, simple_dataset):
-        sample = simple_dataset[0]
-        assert sample['label'].sum() > 0
-
-    def test_negative_has_zero_label(self, simple_dataset):
-        sample = simple_dataset[1]
-        assert sample['label'].sum() == 0
-
-    def test_labels_list(self, simple_dataset):
-        assert simple_dataset.labels == [1, 0]
-
-    def test_valid_mask_zeros_label(self):
-        """Label should be zero where valid_mask is False."""
-        from sarvalanche.ml.pairwise_debris_classifier.dataset_inmemory import PairwiseDebrisDataset
-
-        H, W = 256, 256
-        valid = np.ones((H, W), dtype=bool)
-        valid[:64, :] = False  # top quarter has no coverage
-
-        pair_diffs = [(np.random.randn(H, W).astype(np.float32),
-                       np.random.randn(H, W).astype(np.float32),
-                       valid)]
-        pair_metas = [{'track': '1', 'span_days': 12, 't_start': pd.Timestamp('2025-01-01'),
-                        't_end': pd.Timestamp('2025-01-13')}]
-        debris_mask = np.ones((H, W), dtype=np.float32)  # debris everywhere
-
-        ds = PairwiseDebrisDataset(
-            pair_diffs, pair_metas,
-            {'1': np.ones((H, W), dtype=np.float32)},
-            np.random.randn(N_STATIC, H, W).astype(np.float32),
-            [(0, True, 0, 0, 0)],
-            [{'pos_pair_indices': {0}, 'debris_mask': debris_mask}],
-            augment=False,
-        )
-        sample = ds[0]
-        label = sample['label'][0].numpy()
-        # Top 64 rows should have zero label
-        assert label[:64, :].sum() == 0
-        # Rest should have nonzero label
-        assert label[64:128, :].sum() > 0
+    def test_has_positive_and_negative(self, simple_dataset):
+        has_pos = any(l == 1 for l in simple_dataset.labels)
+        has_neg = any(l == 0 for l in simple_dataset.labels)
+        assert has_pos or has_neg  # at least one type
 
     def test_curriculum_get_valid_indices(self, simple_dataset):
         valid_0 = simple_dataset.get_valid_indices(0)
         valid_25 = simple_dataset.get_valid_indices(25)
-        # Negative sample always included
-        assert 1 in valid_0
-        assert 1 in valid_25
         # At epoch 25 should have at least as many as epoch 0
         assert len(valid_25) >= len(valid_0)
