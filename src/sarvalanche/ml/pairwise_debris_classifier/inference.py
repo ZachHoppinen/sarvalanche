@@ -132,6 +132,7 @@ def sliding_window_inference(
     patch_size: int = PATCH_SIZE,
     stride: int = 32,
     batch_size: int = 16,
+    verbose: bool = True,
 ) -> np.ndarray:
     """Run model on sliding windows with Gaussian-weighted blending.
 
@@ -164,6 +165,7 @@ def sliding_window_inference(
     with torch.no_grad():
         for batch_start in tqdm(range(0, len(coords), batch_size),
                                 desc="  Inference", leave=False,
+                                disable=not verbose,
                                 bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"):
             batch_coords = coords[batch_start:batch_start + batch_size]
 
